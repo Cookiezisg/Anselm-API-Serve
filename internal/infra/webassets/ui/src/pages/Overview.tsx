@@ -1,0 +1,239 @@
+// Overview page — the live operational snapshot from GET /api/overview. Polls on
+// a fixed interval but PAUSES while the tab is hidden (visibilitychange) so a
+// backgrounded dashboard does not hammer the gateway; it refetches immediately on
+// becoming visible again.
+//
+// 总览:定时轮询 /api/overview,页面隐藏时暂停(visibilitychange),复显即刷。
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  Row,
+  Col,
+  Card,
+  Statistic,
+  Progress,
+  Tag,
+  Typography,
+  Empty,
+  Alert,
+  Spin,
+  Space,
+  Button,
+} from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
+import type { OverviewResponse, AlertState } from '../lib/types'
+import { getOverview, ApiError } from '../lib/api'
+
+const { Title, Text } = Typography
+const REFRESH_MS = 10_000
+
+function fmtInt(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+function severityColor(sev: string): string {
+  switch (sev) {
+    case 'critical':
+      return 'red'
+    case 'warning':
+      return 'orange'
+    default:
+      return 'blue'
+  }
+}
+
+export default function Overview() {
+  const [data, setData] = useState<OverviewResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const timer = useRef<number | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const d = await getOverview()
+      setData(d)
+      setError(null)
+    } catch (e) {
+      // A 401 is handled globally (redirect); only surface real errors here.
+      if (e instanceof ApiError && e.status !== 401) {
+        setError(e.message)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    let stopped = false
+
+    const start = () => {
+      if (timer.current !== null) return
+      timer.current = window.setInterval(() => {
+        if (!stopped) refresh()
+      }, REFRESH_MS)
+    }
+    const stop = () => {
+      if (timer.current !== null) {
+        window.clearInterval(timer.current)
+        timer.current = null
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop()
+      } else {
+        refresh()
+        start()
+      }
+    }
+
+    refresh()
+    if (!document.hidden) start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stopped = true
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [refresh])
+
+  if (loading && !data) {
+    return (
+      <div style={{ textAlign: 'center', padding: 80 }}>
+        <Spin size="large" />
+      </div>
+    )
+  }
+
+  const budgetPct = data && data.budget.limit > 0 ? Math.min(100, (data.budget.used / data.budget.limit) * 100) : 0
+  const alerts: AlertState[] = data?.alerts ?? []
+  const firing = alerts.filter((a) => a.firing)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0 }}>
+          总览
+        </Title>
+        <Space>
+          <Text type="secondary">每 {REFRESH_MS / 1000}s 自动刷新</Text>
+          <Button icon={<ReloadOutlined />} size="small" onClick={refresh}>
+            刷新
+          </Button>
+        </Space>
+      </div>
+
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
+
+      {data && (
+        <>
+          <Card title="今日全局预算" style={{ marginBottom: 16 }} extra={<Text type="secondary">{data.budget.day}</Text>}>
+            <Row gutter={[24, 16]}>
+              <Col xs={24} sm={8}>
+                <Statistic title="已用 (tokens)" value={fmtInt(data.budget.used)} />
+              </Col>
+              <Col xs={24} sm={8}>
+                <Statistic title="剩余 (tokens)" value={fmtInt(data.budget.remaining)} />
+              </Col>
+              <Col xs={24} sm={8}>
+                <Statistic title="上限 (tokens)" value={fmtInt(data.budget.limit)} />
+              </Col>
+            </Row>
+            <Progress
+              percent={Number(budgetPct.toFixed(1))}
+              status={budgetPct >= 95 ? 'exception' : budgetPct >= 80 ? 'active' : 'normal'}
+              style={{ marginTop: 16 }}
+            />
+          </Card>
+
+          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+            <Col xs={12} sm={8} md={6}>
+              <Card>
+                <Statistic title="并发处理中 (inflight)" value={data.inflightConcurrency} />
+              </Card>
+            </Col>
+            <Col xs={12} sm={8} md={6}>
+              <Card>
+                <Statistic title="待结算预占 (open reservations)" value={data.openReservations} />
+              </Card>
+            </Col>
+            <Col xs={12} sm={8} md={6}>
+              <Card>
+                <Statistic
+                  title="今日新增 install"
+                  value={data.installsToday}
+                  suffix={data.installGlobalCap > 0 ? `/ ${fmtInt(data.installGlobalCap)}` : '/ 无上限'}
+                />
+              </Card>
+            </Col>
+            <Col xs={12} sm={8} md={6}>
+              <Card>
+                <Statistic
+                  title="近窗 QPS"
+                  value={data.recent.qps.toFixed(2)}
+                  suffix={data.recent.windowSec > 0 ? `(${data.recent.windowSec.toFixed(0)}s)` : ''}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+            <Col xs={24} sm={12}>
+              <Card>
+                <Space size="large">
+                  <Text strong>上游熔断器</Text>
+                  {data.upstreamBreakerOpen ? <Tag color="red">OPEN（已熔断）</Tag> : <Tag color="green">CLOSED（正常）</Tag>}
+                </Space>
+              </Card>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Card>
+                <Space size="large">
+                  <Text strong>磁盘状态</Text>
+                  {data.diskDegraded ? <Tag color="red">DEGRADED（只读降级）</Tag> : <Tag color="green">OK</Tag>}
+                </Space>
+              </Card>
+            </Col>
+          </Row>
+
+          <Card title={`告警（${firing.length} 触发中 / ${alerts.length} 已配置）`}>
+            {alerts.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无告警状态" />
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }}>
+                {alerts.map((a) => (
+                  <div
+                    key={a.reason}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '8px 12px',
+                      borderRadius: 6,
+                      background: a.firing ? '#fff1f0' : '#fafafa',
+                    }}
+                  >
+                    {a.firing ? (
+                      <Tag color={severityColor(a.severity)}>触发中</Tag>
+                    ) : (
+                      <Tag>正常</Tag>
+                    )}
+                    <Text strong>{a.reason}</Text>
+                    <Text type="secondary" style={{ flex: 1 }}>
+                      {a.message}
+                    </Text>
+                    {a.lastFiredAt && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        最近触发 {new Date(a.lastFiredAt).toLocaleString()}
+                      </Text>
+                    )}
+                  </div>
+                ))}
+              </Space>
+            )}
+          </Card>
+        </>
+      )}
+    </div>
+  )
+}

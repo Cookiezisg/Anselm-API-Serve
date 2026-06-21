@@ -1,0 +1,49 @@
+# Anselm Free-Tier Gateway — systemd unit (蓝图 §10.2)
+# 安装到 /etc/systemd/system/anselm-gateway.service
+# 机密经 /etc/anselm-gateway.env 注入(EnvironmentFile),绝不写进 unit。
+
+[Unit]
+Description=Anselm Free-Tier Gateway
+After=network-online.target
+Wants=network-online.target
+# 业务端口 8080 的 listen fd 由 socket unit 持有(OPS-2):service 经 socket
+# activation 接管它,重启期间内核 backlog 不丢/不 RST(业务端口跨 restart 不掉连接;
+# admin 9090 进程自绑、restart 有短 gap,不声称全端口零停机)。
+Requires=anselm-gateway.socket
+After=anselm-gateway.socket
+
+[Service]
+# Type=notify:进程在 DB open+migrate 完成、listener 就绪后调 sd_notify(READY=1),
+# systemd 才视为已就绪 —— 配合 socket activation 让业务端口 8080 跨 restart 不掉连接
+# (OPS-2;admin 9090 自绑、restart 有短 gap)。
+Type=notify
+NotifyAccess=main
+# 机密由部署流水线写入(0600,root:root),包含 DEEPSEEK_API_KEY 等。
+EnvironmentFile=/etc/anselm-gateway.env
+# /usr/local/bin/anselm-gateway 是原子 symlink,指向当前版本化二进制
+# anselm-gateway-<gitsha>(OPS-1 回滚:切 symlink 即回退)。
+ExecStart=/usr/local/bin/anselm-gateway
+Restart=always
+RestartSec=2
+
+# 数据目录(SQLite WAL/SHM 落盘);需与 GATEWAY_DB_PATH 对齐。
+WorkingDirectory=/var/lib/anselm-gateway
+
+# === 沙箱加固 ===
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# 唯一可写路径:数据目录。
+ReadWritePaths=/var/lib/anselm-gateway
+
+# 非特权用户运行(部署时:useradd -r -s /usr/sbin/nologin anselm)。
+User=anselm
+Group=anselm
+
+[Install]
+WantedBy=multi-user.target

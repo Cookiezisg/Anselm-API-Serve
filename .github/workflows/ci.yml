@@ -1,0 +1,158 @@
+# Anselm Free-Tier Gateway — CI 质量 + 安全 + 架构门(PR 必过,独立于 deploy.yml)。
+#
+# Clean-checkout PR gate:每个 job 都从干净 checkout 起跑,在 PR 上必过、push main 复跑、
+# 并按 schedule 周期重扫漏洞(新 CVE 可能命中既有依赖,故定时而非只在改动时扫)。门项:
+#   - golangci-lint v2.6.1(repo .golangci.yml:errcheck/staticcheck/gosec/govet/...+depguard 分层门)
+#   - govulncheck(Go 漏洞数据库)
+#   - gofmt -l 零漂移 + go mod verify(校验和未被篡改)+ go vet
+#   - go test -race -cover + 钱相关包覆盖率地板(app/quota>=70% app/chat>=65%)
+#   - integration e2e(-tags=integration ./internal/e2e/...)
+#   - fuzz smoke 30s/个(domain/chat + pkg/clientip + pkg/pow 的公网解析面)
+#   - SBOM(anchore/syft,SPDX JSON)
+#   - frontend drift-guard:npm ci + npm run build + git diff --exit-code(证明已提交的
+#     dist 与源同步,修 B0;dist 由 Go embed 进二进制,部署不跑 Node)
+#
+# Actions 全部钉 40 位 commit SHA(供应链加固),行尾注释对应 tag。最小权限 contents:read。
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly re-scan: a new CVE can land against unchanged deps. Mondays 03:17 UTC.
+    - cron: "17 3 * * 1"
+
+# Least-privilege default for every job (no write scopes).
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: golangci-lint (repo .golangci.yml incl depguard arch门)
+        uses: golangci/golangci-lint-action@0a35821d5c230e903fcfe077583637dea1b27b47 # v9.0.0
+        with:
+          version: v2.6.1
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt (no diff)
+        run: |
+          # gofmt -l lists files that are NOT formatted; any output → fail.
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::gofmt would reformat:"; echo "$out"; exit 1
+          fi
+      - name: go mod verify
+        run: go mod verify
+      - name: go vet
+        run: go vet ./...
+
+  # SBOM: emit a Software Bill of Materials (SPDX JSON) for the whole Go module via
+  # anchore/syft and archive it. When a new CVE lands against a dependency, the SBOM
+  # answers "which shipped version is affected?" without re-deriving the dep tree.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: anselm-gateway-sbom.spdx.json
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: test (race + coverage)
+        run: go test -race -count=1 -coverprofile=cover.out -covermode=atomic ./...
+      - name: integration e2e (real http stack, build tag)
+        # Full-stack black-box behind the `integration` build tag so it never runs
+        # in the plain unit pass. Skip cleanly until the e2e package lands so the
+        # gate stays green on a from-scratch tree (pure go test, no Docker).
+        run: |
+          set -euo pipefail
+          if [ -d internal/e2e ]; then
+            go test -tags=integration -race -count=1 ./internal/e2e/...
+          else
+            echo "internal/e2e absent — skipping integration e2e"
+          fi
+      - name: fuzz smoke (public-facing parsers, 30s each)
+        # The gateway faces the public internet; its inbound parsers / IP extraction
+        # / PoW verifier are the attack surface. Run each native fuzz target 30s as a
+        # CI smoke (seed corpus in-tree under testdata/) — a guardrail against
+        # panics/regressions, not an exhaustive search.
+        run: |
+          set -euo pipefail
+          go test -run '^$' -fuzz '^FuzzDecodeInbound$' -fuzztime=30s ./internal/domain/chat/
+          go test -run '^$' -fuzz '^FuzzIPKey$'        -fuzztime=30s ./internal/pkg/clientip/
+          go test -run '^$' -fuzz '^FuzzVerify$'       -fuzztime=30s ./internal/pkg/pow/
+      - name: coverage thresholds (money packages)
+        run: |
+          # Gate the two correctness-critical money packages (quota = accounting,
+          # chat = forwarding/refund). Floors sit at the spec minimums so a
+          # regression that strips tests fails the PR. Per-package `go test -cover`
+          # emits the authoritative single "coverage: X%" line.
+          set -euo pipefail
+          check() {
+            local pkg="$1" min="$2" pct
+            pct="$(go test -cover "$pkg" 2>/dev/null \
+              | sed -nE 's/.*coverage: ([0-9.]+)% of statements.*/\1/p')"
+            [ -n "$pct" ] || { echo "::error::could not read coverage for ${pkg}"; exit 1; }
+            echo "coverage ${pkg} = ${pct}% (min ${min}%)"
+            awk -v c="$pct" -v m="$min" 'BEGIN { exit (c+0 >= m+0) ? 0 : 1 }' \
+              || { echo "::error::${pkg} coverage ${pct}% below ${min}%"; exit 1; }
+          }
+          check ./internal/app/quota/... 70
+          check ./internal/app/chat/...  65
+
+  # Frontend drift-guard (B0): the dashboard SPA dist is committed under
+  # internal/infra/webassets/ui/dist and Go-embedded into the binary, so deploy
+  # ships zero Node. This job rebuilds dist from source on a clean checkout and
+  # fails if it differs from what's committed — proving the embedded bundle matches
+  # the React source (no stale/hand-edited dist).
+  frontend-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: internal/infra/webassets/ui/package-lock.json
+      - name: build dist + assert no drift
+        working-directory: internal/infra/webassets/ui
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          # Any change to the committed dist means source and embedded bundle drifted.
+          git diff --exit-code -- dist \
+            || { echo "::error::dist drifted from source — run 'npm run build' and commit"; exit 1; }

@@ -1,0 +1,13 @@
+# Vite dashboard UI — dist is INTENTIONALLY tracked (go:embed compiles it into
+# the gateway binary so a build/deploy needs no Node toolchain). Do NOT ignore dist.
+node_modules
+*.local
+.vite
+
+# tsc incremental build cache (a product, not source)
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

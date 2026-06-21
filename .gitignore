@@ -1,0 +1,25 @@
+# === 机密 / 绝不入库（私钥泄漏 = 服务器被登录 = DeepSeek key 泄漏）===
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+secrets/
+
+# === 编译产物 ===
+/anselm-gateway
+/bin/
+*.exe
+
+# === SQLite 本地库（配额/预算/ledger）===
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# === OS / 编辑器 ===
+.DS_Store
+*.swp
+.idea/
+.vscode/

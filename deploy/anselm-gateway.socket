@@ -1,0 +1,20 @@
+# Anselm Free-Tier Gateway — systemd socket (OPS-2)
+# 安装到 /etc/systemd/system/anselm-gateway.socket,`systemctl enable --now` 它。
+# systemd 持有业务端口 8080 的 listen fd 并在重启期间保留内核 backlog —— 新实例经
+# socket activation 接管同一 fd,排队连接不丢/不 RST(业务端口跨 restart 不掉连接)。
+# 注意:只有业务端口 8080 是 socket-activated;admin 9090 由进程自绑,restart 期间
+# 有短暂 gap —— 这里不声称对所有端口绝对零停机。
+
+[Unit]
+Description=Anselm Free-Tier Gateway socket
+# 业务监听必须只在回环(Caddy 在本机反代到它);绝不公网直连。
+# 与 service 的 LISTEN_ADDR=127.0.0.1:8080 对齐。
+
+[Socket]
+ListenStream=127.0.0.1:8080
+# 重启期间保持业务 fd 打开,连接排进内核 backlog(业务端口不丢连接的关键)。
+# 单实例服务,无需 Accept=yes(每连一进程)。
+Service=anselm-gateway.service
+
+[Install]
+WantedBy=sockets.target

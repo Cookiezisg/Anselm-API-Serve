@@ -1,0 +1,98 @@
+# golangci-lint v2 — CI 质量 + 安全门 + 架构分层门(独立于 deploy 的 PR 必过门)。
+# 启用:errcheck/staticcheck/gosec/govet/ineffassign/unconvert/misspell/bodyclose/depguard。
+# 本地:make lint  (= go run .../golangci-lint@v2 run ./...)
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck      # unchecked errors (intentional drops carry //nolint:errcheck)
+    - staticcheck   # SA/ST static analysis (bundles gosimple + stylecheck in v2)
+    - govet         # std vet
+    - gosec         # security smells (G-series)
+    - ineffassign   # ineffectual assignments
+    - unconvert     # redundant type conversions
+    - misspell      # comment/string typos (US locale)
+    - bodyclose     # unclosed HTTP response bodies (resource leak)
+    - depguard      # ARCHITECTURE: enforce the clean-arch dependency direction (CLAUDE §2)
+
+  settings:
+    misspell:
+      locale: US
+    # depguard mechanically enforces the layer rules from docs/concepts/architecture.md §3:
+    #   cmd → bootstrap → transport → app → domain ; infra → domain ; all → pkg ; pkg → (none internal)
+    # A layer may import only layers strictly to its right. Violations fail the gate.
+    depguard:
+      rules:
+        domain:
+          files: ["**/internal/domain/**"]
+          deny:
+            - pkg: github.com/sunweilin/anselm/gateway/internal/app
+              desc: "domain 不得依赖 app(只能 stdlib + pkg)"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/infra
+              desc: "domain 不得依赖 infra"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/transport
+              desc: "domain 不得依赖 transport"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/bootstrap
+              desc: "domain 不得依赖 bootstrap"
+            - pkg: database/sql
+              desc: "domain 是纯类型层,不碰 DB"
+            - pkg: net/http
+              desc: "domain 不碰 HTTP"
+        app:
+          files: ["**/internal/app/**"]
+          deny:
+            - pkg: github.com/sunweilin/anselm/gateway/internal/infra
+              desc: "app 通过本包声明的端口(interface)用 infra,不得直接 import infra"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/transport
+              desc: "app 不得依赖 transport"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/bootstrap
+              desc: "app 不得依赖 bootstrap"
+            - pkg: database/sql
+              desc: "app 不碰 *sql.Tx(事务边界 owned 在 infra/store,UoW)"
+        infra:
+          files: ["**/internal/infra/**"]
+          deny:
+            - pkg: github.com/sunweilin/anselm/gateway/internal/app
+              desc: "infra 结构化满足 app 端口,不得 import app 用例"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/transport
+              desc: "infra 不得依赖 transport"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/bootstrap
+              desc: "infra 不得依赖 bootstrap"
+        transport:
+          files: ["**/internal/transport/**"]
+          deny:
+            - pkg: github.com/sunweilin/anselm/gateway/internal/infra
+              desc: "transport 经 app 用例工作,不得直接依赖 infra"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/bootstrap
+              desc: "transport 不得依赖 bootstrap"
+        pkg:
+          files: ["**/internal/pkg/**"]
+          deny:
+            - pkg: github.com/sunweilin/anselm/gateway/internal/domain
+              desc: "pkg 是叶内核,不得依赖任何 internal 业务层"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/app
+              desc: "pkg 不得依赖 app"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/infra
+              desc: "pkg 不得依赖 infra"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/transport
+              desc: "pkg 不得依赖 transport"
+            - pkg: github.com/sunweilin/anselm/gateway/internal/bootstrap
+              desc: "pkg 不得依赖 bootstrap"
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests exercise error paths + fixtures liberally; relax the security +
+      # unchecked-error gate there so the production gate stays the signal.
+      # depguard stays OFF in tests too: e2e/integration tests legitimately wire
+      # across layers; the architecture is enforced on production import graphs.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - bodyclose
+          - depguard

@@ -1,0 +1,1208 @@
+//go:build integration
+
+// Package e2e is the black-box, full-stack integration harness for the clean-arch
+// gateway. It stands up the REAL :8080 business handler (router.BuildHandler =
+// Recover→DenyCORS→MaxBody→ServeMux) over httptest.NewServer, wires it to the SAME
+// app services (app/quota, app/install, app/chat, app/model) over the SAME infra
+// (sqlite in t.TempDir, the real upstream client pointed at a fake DeepSeek
+// httptest server, a configprovider seeded from a test env map) that
+// internal/bootstrap.Build assembles in production — then drives it with a real
+// http.Client over the loopback socket. Unlike the per-handler unit tests (which
+// call ServeHTTP directly and bypass the chain + the mux), this exercises the exact
+// wiring the binary uses: middleware ordering, ServeMux method routing, header
+// echo-back, the reserve→forward→settle saga, and the tools/tool_choice agentic
+// passthrough — all end to end with NO stubs.
+//
+// 真 http.Server 起栈 + 假上游 + 真 http.Client:用与 bootstrap.Build 同样的 app/infra
+// 装配(router.BuildHandler 业务 mux + 真 sqlite + 真 upstream client 指向假 DeepSeek
+// + 测试 env map 的 configprovider),覆盖被直调 ServeHTTP 绕过的中间件链与路由。
+// build tag=integration,纯 httptest 无 Docker,CI 单列一步跑。
+package e2e
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"math/bits"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
+	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
+	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
+	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/config"
+	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
+	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
+	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
+	"github.com/sunweilin/anselm/gateway/internal/infra/ratelimit"
+	"github.com/sunweilin/anselm/gateway/internal/infra/sqlite"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/installstore"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
+	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/noncecache"
+	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/router"
+)
+
+// --- the in-test composition root (mirrors internal/bootstrap.Build) ----------
+
+// stack bundles the wired handler with the few collaborators a test reaches back
+// into (the quota service + the raw quota store for budget polling).
+type stack struct {
+	handler http.Handler
+	quota   *appquota.Service
+	qstore  *quotastore.Store
+	bgWG    *sync.WaitGroup
+}
+
+// testEnv builds a getenv-style map → the env-driven half of the config. We do NOT
+// call configprovider.LoadBase (it carries production-hard fail-fasts irrelevant
+// to a single-listener httptest harness); instead we assemble the same
+// config.Config bootstrap would hold post-overlay and seed the live Provider with
+// it — exercising the REAL configprovider.Provider the request hot path reads.
+func baseConfig(t *testing.T, upstreamURL string) *config.Config {
+	t.Helper()
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &config.Config{
+		DeepSeekAPIKeys:       []string{"sk-test-key-never-leaks"},
+		DeepSeekBaseURL:       strings.TrimRight(upstreamURL, "/"),
+		ModelAllowlist:        []string{"deepseek-chat"},
+		DefaultModel:          "deepseek-chat",
+		MonthlyQuota:          100,
+		GlobalDailyBudget:     1_000_000,
+		InstallDailyTokenCap:  1_000_000,
+		MaxTokensCap:          4096,
+		InputTokenCap:         16384,
+		MaxMessages:           256,
+		MaxMessageChars:       131072,
+		NGlobalConcurrency:    8,
+		RatePerMin:            1000,
+		InstallPerIPHour:      100,
+		QueueWait:             0,
+		Location:              loc,
+		ResetTZ:               "Asia/Shanghai",
+		UpstreamHeaderTimeout: 5 * time.Second,
+		InstallPowMode:        config.PowModeOff,
+	}
+}
+
+// buildStack constructs the real components (sqlite store / quota / install / chat
+// / model + the real upstream client pointed at the fake DeepSeek) exactly as
+// bootstrap.Build does, and hands them to the SAME router.BuildHandler the binary
+// calls — so the harness exercises the production routing + middleware chain + the
+// app saga itself, with zero hand-copied twin to drift.
+func buildStack(t *testing.T, upstreamURL string) *stack {
+	return buildStackWith(t, upstreamURL, nil)
+}
+
+// buildStackWith is buildStack with an optional mutator on the assembled config
+// before the Provider is seeded — used to flip the M2 Sybil/PoW gates or shrink a
+// budget end to end without forking the whole assembly.
+func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config)) *stack {
+	t.Helper()
+	cfg := baseConfig(t, upstreamURL)
+	if mutate != nil {
+		mutate(cfg)
+	}
+
+	// Real SQLite in a temp dir (write + read pools), migrated by Open — the same
+	// store bootstrap opens. Closed LAST (after the bgWG drains) so a detached
+	// settle/rollback never races a closed DB (REL-4 / GW-INV-24).
+	db, err := sqlite.Open(sqlite.Config{
+		Path:             t.TempDir() + "/e2e.db",
+		ReadPoolMaxConns: 2,
+		ConnMaxLifetime:  30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Real hot-swappable config Provider seeded with the assembled effective config
+	// (the same type the request hot path Load()s in production).
+	cfgP := configprovider.New(*cfg)
+
+	// Stores over the real pools.
+	quotaStore := quotastore.New(db.Writer, db.Reader)
+	installStore := installstore.New(db.Writer, db.Reader)
+
+	// Metrics bundle (RED + golden signals) — real, like bootstrap; mounted nowhere
+	// here but the app services + router wrap against it as in production.
+	mx := metrics.New()
+	inflight := &atomic.Int64{}
+
+	// App services over their PORTS via the same structural adapters bootstrap uses
+	// (re-declared locally so the harness names only app + infra, never bootstrap's
+	// unexported adapter types).
+	quotaSvc := appquota.New(quotaStore, quotaCfg{p: cfgP})
+	nonces := noncecache.New(10 * time.Minute)
+	installSvc := appinstall.New(cfgP, installStore, nonces, counterStub{}, powStub{})
+	modelCat := appmodel.New(cfgP)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Real upstream client pointed (per-request via cfg.DeepSeekBaseURL) at the fake
+	// DeepSeek — the SAME concrete client bootstrap builds, wrapped in the covariance
+	// adapter so chat sees chat.UpstreamStream.
+	upClient := upstream.New(cfg.DeepSeekAPIKeys, cfg.UpstreamHeaderTimeout, logger, nil)
+
+	// Shared rate limiter (the bucket the chat RL gate reaches through).
+	rl := ratelimit.New(cfg.RatePerMin)
+
+	// REL-6 disk guard over the data disk (the DB path).
+	dg := diskguard.New(diskguard.Config{Path: cfg.DBPath, Logger: logger})
+
+	// REL-4 shutdown barrier: drain detached settle/rollback BEFORE closing the DB.
+	bgWG := &sync.WaitGroup{}
+	t.Cleanup(func() {
+		bgWG.Wait()
+		_ = db.Close()
+	})
+
+	chatSvc := appchat.New(appchat.Deps{
+		Auth:     installSvc,
+		Quota:    quotaSvc,
+		Upstream: upstreamAdapter{c: upClient},
+		RL:       rl,
+		Throttle: noThrottle{},
+		Disk:     dg,
+		Config:   cfgP,
+		Clock:    sysClock{},
+		Logger:   discardLogger{},
+		Metrics:  chatMx{m: mx, inflight: inflight},
+		BgWG:     bgWG,
+	})
+
+	// The production assembly — the SAME function main calls, so this harness tests
+	// the real routing + middleware chain (no divergent copy).
+	handler := router.BuildHandler(router.Deps{
+		Install: installSvc,
+		Chat:    chatSvc,
+		Quota:   quotaSvc,
+		Models:  modelCat,
+		Mx:      mx,
+		OnPanic: mx.Panics,
+	})
+	return &stack{handler: handler, quota: quotaSvc, qstore: quotaStore, bgWG: bgWG}
+}
+
+// --- structural port adapters (mirror internal/bootstrap/adapters.go) ---------
+
+// upstreamAdapter widens *upstream.Stream into the app's chat.UpstreamStream (Go
+// has no return-type covariance), mapping the nil-stream case so a nil *Stream
+// never becomes a non-nil interface — exactly bootstrap's adapter.
+type upstreamAdapter struct{ c upstream.Client }
+
+func (a upstreamAdapter) Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (appchat.UpstreamStream, *apierr.APIError) {
+	s, e := a.c.Do(ctx, payload, stream, cfg)
+	if e != nil {
+		return nil, e
+	}
+	return s, nil
+}
+func (a upstreamAdapter) BreakerOpen() bool { return a.c.BreakerOpen() }
+
+// quotaCfg adapts the live Provider into app/quota.ConfigSource off ONE atomic
+// Load so a hot-edit never splits a reservation's view.
+type quotaCfg struct{ p *configprovider.Provider }
+
+func (q quotaCfg) Limits() appquota.Limits {
+	c := q.p.Load()
+	return appquota.Limits{
+		MonthlyQuota:         c.MonthlyQuota,
+		InstallDailyTokenCap: c.InstallDailyTokenCap,
+		GlobalDailyBudget:    c.GlobalDailyBudget,
+		DailySublimit:        c.DailySublimit,
+	}
+}
+func (q quotaCfg) Location() *time.Location { return q.p.Load().Location }
+
+// sysClock / discardLogger / chatMx / noThrottle mirror bootstrap's chat adapters.
+type sysClock struct{}
+
+func (sysClock) Now() time.Time { return time.Now() }
+
+type discardLogger struct{}
+
+func (discardLogger) Warn(ctx context.Context, msg string, args ...any) {}
+
+type chatMx struct {
+	m        *metrics.Metrics
+	inflight *atomic.Int64
+}
+
+func (c chatMx) Inflight(n int) {
+	c.m.InflightConc.Set(float64(n))
+	c.inflight.Store(int64(n))
+}
+func (c chatMx) Upstream(outcome string) { c.m.UpstreamRequests.WithLabelValues(outcome).Inc() }
+func (c chatMx) SettleFailure()          { c.m.SettleFailures.Inc() }
+func (c chatMx) RollbackFailure()        { c.m.RollbackFailures.Inc() }
+
+// noThrottle is the dormant M2 anomaly throttle (TOKEN_ANOMALY_RPM=0): zero work,
+// never tightens, never flags.
+type noThrottle struct{}
+
+func (noThrottle) Observe(installID string) bool { return false }
+
+// counterStub / powStub satisfy the install service's optional counter ports.
+type counterStub struct{}
+
+func (counterStub) Inc() {}
+
+type powStub struct{}
+
+func (powStub) Inc(result string) {}
+
+// --- fake DeepSeek upstreams --------------------------------------------------
+
+// fakeDeepSeek is an SSE upstream that streams one delta + an include_usage final
+// frame + [DONE], recording what it received so the e2e flow can assert the gateway
+// sanitized the request (model rewrite, key injection, tools/tool_choice
+// passthrough) — and stripped the upstream Set-Cookie on the way back.
+func fakeDeepSeek(t *testing.T) (*httptest.Server, func() (auth, body string)) {
+	t.Helper()
+	var mu sync.Mutex
+	var gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		gotBody = string(b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
+		fw, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		fw.Flush()
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"total_tokens\":11}}\n\n")
+		fw.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		fw.Flush()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotAuth, gotBody
+	}
+}
+
+// fakeDeepSeekNonStream is a NON-streaming upstream (stream:false path). Modes:
+//   - "ok":       a complete OpenAI JSON body with usage.total_tokens=usageTokens
+//   - "truncate": 2xx headers + a Content-Length larger than the bytes actually
+//     written, then the conn is hijacked & closed mid-body so the gateway's bounded
+//     ReadAll of the upstream body errors AFTER output is committed (exercises
+//     nonStreamThrough's post-output error branch that must still full-settle).
+func fakeDeepSeekNonStream(t *testing.T, mode string, usageTokens int64) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mode == "truncate" {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("response writer is not a Hijacker")
+				return
+			}
+			conn, bufrw, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, _ = bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n")
+			_, _ = bufrw.WriteString(`{"choices":[{"message":{"content":"hi"`) // far short of 4096, then close
+			_ = bufrw.Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
+		w.WriteHeader(http.StatusOK)
+		body := `{"id":"cmpl-1","object":"chat.completion","choices":[{"index":0,` +
+			`"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":` +
+			strconv.FormatInt(usageTokens, 10) + `}}`
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// --- helpers ------------------------------------------------------------------
+
+// installToken posts /v1/install over the real socket and returns the issued token
+// (top-level `token` field — the gateway writes a BARE entity, not a {"data":...}
+// envelope).
+func installToken(t *testing.T, srv *httptest.Server, client *http.Client) string {
+	t.Helper()
+	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
+		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var inst struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Token == "" {
+		t.Fatal("install returned no token")
+	}
+	return inst.Token
+}
+
+// waitBudget polls the global daily budget tokens_used until it equals want or the
+// deadline elapses, since settle runs on a DETACHED background goroutine (REL-4)
+// not synchronous with the HTTP response return. The day-keyed budget row is read
+// via the real quotastore.View (install id is irrelevant to the budget column).
+func waitBudget(t *testing.T, s *stack, want int64) int64 {
+	t.Helper()
+	return pollBudget(t, s, func(used int64) bool { return used == want })
+}
+
+func pollBudget(t *testing.T, s *stack, done func(int64) bool) int64 {
+	t.Helper()
+	period := s.quota.SnapshotPeriod(time.Now())
+	deadline := time.Now().Add(3 * time.Second)
+	var used int64
+	for time.Now().Before(deadline) {
+		if u := budgetUsed(t, s, period); done(u) {
+			return u
+		} else {
+			used = u
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return used
+}
+
+// budgetUsed reads the day budget tokens_used column via the real store View (the
+// `used`/usage column is per-install and ignored here; budgetUsed is day-global).
+func budgetUsed(t *testing.T, s *stack, p domquota.Period) int64 {
+	t.Helper()
+	_, budget, err := s.qstore.View(context.Background(), "any", p)
+	if err != nil {
+		t.Fatalf("budget view: %v", err)
+	}
+	return budget
+}
+
+// --- tests --------------------------------------------------------------------
+
+// TestE2EInstallChatQuotaFlow drives the full client journey over a real socket:
+// POST /v1/install → use the issued token to POST /v1/chat/completions (streamed,
+// relayed to the fake upstream) → GET /v1/quota and see the count reflected.
+// Asserts the gateway injected the upstream key, rewrote the model, PASSED tools
+// VERBATIM (the agentic contract), and stripped the upstream Set-Cookie — through
+// the real middleware chain.
+func TestE2EInstallChatQuotaFlow(t *testing.T) {
+	up, inspect := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	// 1) Install → fresh token.
+	instResp, err := client.Post(srv.URL+"/v1/install", "application/json",
+		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instResp.Body.Close()
+	if instResp.StatusCode != http.StatusOK {
+		t.Fatalf("install want 200 got %d", instResp.StatusCode)
+	}
+	var inst struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(instResp.Body).Decode(&inst); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(inst.Token, "gwk_") {
+		t.Fatalf("bad token: %q", inst.Token)
+	}
+
+	// 2) Chat (stream) → relayed to the fake upstream, streamed back to [DONE]. The
+	// body carries tools + tool_choice; the clean-arch gateway PASSES them through.
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"garbage","messages":[{"role":"user","content":"hi"}],"stream":true,`+
+			`"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto","logit_bias":{"5":-100}}`))
+	req.Header.Set("Authorization", "Bearer "+inst.Token)
+	chatResp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(chatResp.Body)
+	chatResp.Body.Close()
+	if chatResp.StatusCode != http.StatusOK {
+		t.Fatalf("chat want 200 got %d body=%s", chatResp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "[DONE]") {
+		t.Fatalf("stream not relayed to [DONE]: %s", body)
+	}
+	// X-Request-ID echoed back by the Recover middleware (chain is in play).
+	if chatResp.Header.Get("X-Request-ID") == "" {
+		t.Fatal("X-Request-ID not echoed — Recover middleware not in the chain")
+	}
+	// Upstream Set-Cookie must NOT leak to the client (header whitelist).
+	if chatResp.Header.Get("Set-Cookie") != "" {
+		t.Fatal("upstream Set-Cookie leaked through the gateway")
+	}
+
+	// Upstream received the injected key + rewritten model + tools/tool_choice
+	// passthrough, with the danger field logit_bias stripped.
+	gotAuth, gotBody := inspect()
+	if gotAuth != "Bearer sk-test-key-never-leaks" {
+		t.Fatalf("upstream key not injected: %q", gotAuth)
+	}
+	if !strings.Contains(gotBody, `"model":"deepseek-chat"`) {
+		t.Fatalf("model not rewritten upstream: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"get_weather"`) || !strings.Contains(gotBody, `"tool_choice":"auto"`) {
+		t.Fatalf("tools/tool_choice not passed through (agentic contract): %s", gotBody)
+	}
+	if strings.Contains(gotBody, "logit_bias") {
+		t.Fatalf("danger field 'logit_bias' leaked upstream: %s", gotBody)
+	}
+
+	// 3) Quota → count reflects the one chat.
+	qreq, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/quota", nil)
+	qreq.Header.Set("Authorization", "Bearer "+inst.Token)
+	qResp, err := client.Do(qreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var qv struct {
+		Used      int64 `json:"used"`
+		Available bool  `json:"available"`
+	}
+	_ = json.NewDecoder(qResp.Body).Decode(&qv)
+	qResp.Body.Close()
+	if qResp.StatusCode != http.StatusOK {
+		t.Fatalf("quota want 200 got %d", qResp.StatusCode)
+	}
+	if qv.Used != 1 {
+		t.Fatalf("quota used=%d want 1 after one chat", qv.Used)
+	}
+}
+
+// TestE2EMultiTurnToolLoopPreserved drives a multi-turn agentic body — an assistant
+// message carrying tool_calls and a tool message carrying tool_call_id — and proves
+// the gateway forwards BOTH verbatim. Stripping either breaks the tool loop, so this
+// is the load-bearing agentic-contract assertion.
+func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
+	up, inspect := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+
+	multiTurn := `{"model":"deepseek-chat","stream":true,"messages":[` +
+		`{"role":"user","content":"weather?"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}` +
+		`],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(multiTurn))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multi-turn chat want 200 got %d", resp.StatusCode)
+	}
+
+	_, gotBody := inspect()
+	for _, want := range []string{`"tool_calls"`, `"call_1"`, `"tool_call_id":"call_1"`, `"name":"get_weather"`, `"role":"tool"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Fatalf("multi-turn agentic field %q not preserved upstream: %s", want, gotBody)
+		}
+	}
+}
+
+// TestE2EDangerFieldsStripped proves the strict whitelist drops the dangerous
+// fields end to end: logit_bias / function_call / response_format never reach the
+// upstream, while the legitimate sibling (tool_choice) does.
+func TestE2EDangerFieldsStripped(t *testing.T) {
+	up, inspect := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+
+	body := `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}],` +
+		`"tool_choice":"none",` +
+		`"logit_bias":{"50256":-100},"function_call":"auto","response_format":{"type":"json_object"}}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat want 200 got %d", resp.StatusCode)
+	}
+
+	_, gotBody := inspect()
+	for _, danger := range []string{"logit_bias", "function_call", "response_format"} {
+		if strings.Contains(gotBody, danger) {
+			t.Fatalf("danger field %q leaked upstream: %s", danger, gotBody)
+		}
+	}
+	if !strings.Contains(gotBody, `"tool_choice":"none"`) {
+		t.Fatalf("legitimate tool_choice was dropped: %s", gotBody)
+	}
+}
+
+// TestE2ENonStreamRelayAndSettle drives the stream:false path (reachable: the
+// whitelist forwards `stream`) end to end through the real stack:
+//   - (a) the 2xx JSON body is relayed verbatim to the client (upstream Set-Cookie stripped)
+//   - (b) settlement is to the ACTUAL usage.total_tokens (ParseUsageBody), NOT the
+//     pessimistic est — the global daily budget reflects exactly the actual.
+func TestE2ENonStreamRelayAndSettle(t *testing.T) {
+	const actual = 11
+	up := fakeDeepSeekNonStream(t, "ok", actual)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"garbage","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	// (a) 2xx + body relayed verbatim + upstream Set-Cookie not leaked.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("non-stream chat want 200 got %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"content":"hello there"`) {
+		t.Fatalf("non-stream body not relayed verbatim: %s", body)
+	}
+	if resp.Header.Get("Set-Cookie") != "" {
+		t.Fatal("upstream Set-Cookie leaked on non-stream path")
+	}
+	if resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("non-stream Content-Type want application/json got %q", resp.Header.Get("Content-Type"))
+	}
+
+	// (b) Settled to ACTUAL (11), not the conservative est (prompt + maxTokensCap,
+	// 4096+). A budget == actual proves settle-to-actual, not est.
+	if got := waitBudget(t, s, actual); got != actual {
+		t.Fatalf("budget settled to %d, want actual %d (settle-to-actual, not est)", got, actual)
+	}
+}
+
+// TestE2ENonStreamPostOutputErrorFullSettles: when the upstream commits 2xx headers
+// but the body read then fails (truncated mid-body), output is already committed so
+// the gateway cannot retry/rollback — it must FULL-settle the reservation (honest,
+// conservative; never under-charge / leak budget) and surface a normalized
+// UPSTREAM_ERROR. Asserts the full est lands on the budget (no double-bill, no leak).
+func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
+	up := fakeDeepSeekNonStream(t, "truncate", 0)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+
+	// est = conservative prompt estimate + clamped max_tokens. With no client
+	// max_tokens the clamp is MaxTokensCap (4096); we assert the settled budget is
+	// the FULL est (>= MaxTokensCap), i.e. NOT a partial/zero settle that leaks.
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	got := pollBudget(t, s, func(used int64) bool { return used >= 4096 })
+	if got < 4096 {
+		t.Fatalf("post-output body-read error settled %d, want full est >= MaxTokensCap 4096 (no budget leak)", got)
+	}
+}
+
+// TestE2ENonStream8MBBodyLimit: the gateway caps the upstream RESPONSE body read at
+// 8MB (io.LimitReader in nonStreamThrough). An upstream that floods a body far over
+// 8MB must be truncated by the gateway — the relayed body never exceeds the cap, so
+// a malicious/runaway upstream cannot pin gateway memory.
+func TestE2ENonStream8MBBodyLimit(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"`)
+		fw, _ := w.(http.Flusher)
+		chunk := strings.Repeat("a", 64*1024)
+		for written := 0; written < 10*1024*1024; written += len(chunk) {
+			_, _ = io.WriteString(w, chunk)
+			if fw != nil {
+				fw.Flush()
+			}
+		}
+		_, _ = io.WriteString(w, `"}}],"usage":{"total_tokens":7}}`)
+	}))
+	t.Cleanup(up.Close)
+
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if len(body) == 0 {
+		t.Fatal("expected a relayed (truncated) body, got empty")
+	}
+	if len(body) > 8*1024*1024+1024 {
+		t.Fatalf("relayed body %d bytes exceeds the 8MB upstream-body cap — LimitReader not enforced", len(body))
+	}
+}
+
+// TestE2EModelsDeclaration drives GET /v1/models over the real socket: an install
+// token → 200 + the OpenAI-compatible list reflecting MODEL_ALLOWLIST; an
+// unauthenticated call → 401. Exercises the production routing + middleware chain +
+// the shared install auth.
+func TestE2EModelsDeclaration(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.ModelAllowlist = []string{"deepseek-chat", "deepseek-reasoner"}
+		c.DefaultModel = "deepseek-chat"
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	// Unauthenticated → 401 INVALID_TOKEN (same auth exit as /chat, /quota).
+	noauth, err := client.Get(srv.URL + "/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(noauth.Body).Decode(&env)
+	noauth.Body.Close()
+	if noauth.StatusCode != http.StatusUnauthorized || env.Error.Code != "INVALID_TOKEN" {
+		t.Fatalf("no-token /v1/models want 401 INVALID_TOKEN got %d %q", noauth.StatusCode, env.Error.Code)
+	}
+
+	token := installToken(t, srv, client)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/v1/models want 200 got %d", resp.StatusCode)
+	}
+	var lr struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if lr.Object != "list" {
+		t.Fatalf("object = %q want list", lr.Object)
+	}
+	if len(lr.Data) != 2 {
+		t.Fatalf("data len = %d want 2 (allowlist-driven)", len(lr.Data))
+	}
+	if lr.Data[0].ID != "deepseek-chat" || lr.Data[1].ID != "deepseek-reasoner" {
+		t.Fatalf("data ids = [%q %q] want [deepseek-chat deepseek-reasoner]", lr.Data[0].ID, lr.Data[1].ID)
+	}
+	for i, m := range lr.Data {
+		if m.Object != "model" || m.OwnedBy != "anselm-gateway" {
+			t.Fatalf("data[%d] = %+v want object=model owned_by=anselm-gateway", i, m)
+		}
+	}
+	if resp.Header.Get("X-Request-ID") == "" {
+		t.Fatal("X-Request-ID not echoed on /v1/models — middleware chain missing")
+	}
+}
+
+// TestE2EMaxBodyRejectsHugeBody: a body over 256KB is rejected (the MaxBody
+// middleware + the handler's MaxBytesReader) before any chat logic runs (DoS guard,
+// §5.3). Over a real socket the server caps the body and the handler returns a 4xx,
+// never 200.
+func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	huge := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 300*1024) + `"}]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(huge))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("over-256KB body was accepted (status 200) — MaxBody not enforced")
+	}
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("over-limit body want 400/413 got %d", resp.StatusCode)
+	}
+}
+
+// TestE2EBadTokenUnauthorized: a syntactically-present but unknown bearer token →
+// 401 INVALID_TOKEN over the real stack (the §2 auth tree's !found exit).
+func TestE2EBadTokenUnauthorized(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer gwk_does_not_exist")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&env)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "INVALID_TOKEN" {
+		t.Fatalf("bad token want 401 INVALID_TOKEN got %d %q", resp.StatusCode, env.Error.Code)
+	}
+}
+
+// TestE2EQuotaExhaustion: with MONTHLY_QUOTA=1, the first chat succeeds (200) and
+// the second is rejected 429 QUOTA_EXHAUSTED by the reserve gate — end to end.
+func TestE2EQuotaExhaustion(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) { c.MonthlyQuota = 1 })
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	chat := func() (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(b, &env)
+		resp.Body.Close()
+		return resp.StatusCode, env.Error.Code
+	}
+
+	if code, _ := chat(); code != http.StatusOK {
+		t.Fatalf("first chat want 200 got %d", code)
+	}
+	if code, wire := chat(); code != http.StatusTooManyRequests || wire != "QUOTA_EXHAUSTED" {
+		t.Fatalf("second chat want 429 QUOTA_EXHAUSTED got %d %q", code, wire)
+	}
+}
+
+// TestE2EBudgetExhaustion: with a GLOBAL_DAILY_BUDGET smaller than a single
+// request's est (promptEst + clamped MAX_TOKENS_CAP), the reserve's budget gate
+// denies BEFORE any upstream call → 402 BUDGET_EXHAUSTED over the real stack.
+func TestE2EBudgetExhaustion(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	// Budget of 10 tokens < est (≥ MaxTokensCap 4096); InstallDailyTokenCap stays
+	// high so the budget gate (Gate 3), not the install-day gate, is the denier.
+	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalDailyBudget = 10 })
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(b, &env)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPaymentRequired || env.Error.Code != "BUDGET_EXHAUSTED" {
+		t.Fatalf("budget-exhausted chat want 402 BUDGET_EXHAUSTED got %d %q", resp.StatusCode, env.Error.Code)
+	}
+}
+
+// TestE2ECORSPreflightForbidden: a browser preflight (OPTIONS + Origin) is 403'd by
+// the DenyCORS middleware over the real stack, with no Access-Control-* header.
+func TestE2ECORSPreflightForbidden(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("preflight want 403 got %d", resp.StatusCode)
+	}
+	for k := range resp.Header {
+		if strings.HasPrefix(strings.ToLower(k), "access-control-") {
+			t.Fatalf("Access-Control header leaked on denied preflight: %s", k)
+		}
+	}
+}
+
+// TestE2EMethodAndRouteErrors: ServeMux method/route handling end to end —
+//   - GET on the POST-only chat route → 405 (mux method mismatch)
+//   - unknown path → 404
+//   - GET /healthz → 200 (liveness, the only public health surface) + X-Request-ID
+func TestE2EMethodAndRouteErrors(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	resp, err := client.Get(srv.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET on POST-only route want 405 got %d", resp.StatusCode)
+	}
+
+	resp2, err := client.Get(srv.URL + "/v1/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown route want 404 got %d", resp2.StatusCode)
+	}
+
+	resp3, err := client.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK || !strings.Contains(string(hb), "ok") {
+		t.Fatalf("healthz want 200 ok got %d body=%s", resp3.StatusCode, hb)
+	}
+	if resp3.Header.Get("X-Request-ID") == "" {
+		t.Fatal("X-Request-ID not echoed on /healthz")
+	}
+}
+
+// TestE2ERequestIDEchoed: a client-supplied X-Request-ID is sanitized + echoed back
+// over the real chain (the Recover middleware reuses a safe id rather than always
+// minting), so a sidecar can correlate its own id end to end.
+func TestE2ERequestIDEchoed(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+	const rid = "e2e-correlation-123"
+	req.Header.Set("X-Request-ID", rid)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Request-ID"); got != rid {
+		t.Fatalf("X-Request-ID echo = %q want %q (safe client id should be reused)", got, rid)
+	}
+}
+
+// TestE2EInstallGlobalCapOverSocket: with INSTALL_GLOBAL_DAILY_CAP=N, the (N+1)th
+// install over the real socket is rejected 429 + INSTALL_CAP_REACHED — the M2
+// coarse valve end to end through the real routing + middleware chain.
+func TestE2EInstallGlobalCapOverSocket(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	const capN = 3
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.InstallGlobalDailyCap = capN
+		c.InstallPerIPHour = 1000 // out of the way; only the global valve gates
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	for i := 0; i < capN; i++ {
+		resp, err := client.Post(srv.URL+"/v1/install", "application/json",
+			strings.NewReader(`{"fingerprint":"fp-`+strconv.Itoa(i)+`","client":"e2e"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("install %d want 200 got %d", i, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
+		strings.NewReader(`{"fingerprint":"fp-over","client":"e2e"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("over-cap install want 429 got %d", resp.StatusCode)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&env)
+	if env.Error.Code != "INSTALL_CAP_REACHED" {
+		t.Fatalf("over-cap wire code = %q want INSTALL_CAP_REACHED", env.Error.Code)
+	}
+}
+
+// solvePoWE2E mines a nonce satisfying difficulty leading-zero bits over the real
+// SHA256 (the client-side proof-of-work, no shortcut).
+func solvePoWE2E(t *testing.T, challenge string, difficulty int) string {
+	t.Helper()
+	for i := 0; i < 50_000_000; i++ {
+		nonce := strconv.Itoa(i)
+		h := sha256.Sum256([]byte(challenge + "." + nonce))
+		if leadingZeroBitsE2E(h[:]) >= difficulty {
+			return nonce
+		}
+	}
+	t.Fatalf("no nonce found for difficulty %d", difficulty)
+	return ""
+}
+
+func leadingZeroBitsE2E(b []byte) int {
+	n := 0
+	for _, by := range b {
+		if by == 0 {
+			n += 8
+			continue
+		}
+		n += bits.LeadingZeros8(by)
+		break
+	}
+	return n
+}
+
+// fetchChallenge GETs /v1/install/challenge over the socket and returns its fields.
+func fetchChallenge(t *testing.T, srv *httptest.Server, client *http.Client) (challenge string, difficulty int, required bool) {
+	t.Helper()
+	resp, err := client.Get(srv.URL + "/v1/install/challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("challenge want 200 got %d", resp.StatusCode)
+	}
+	var cr struct {
+		Challenge  string `json:"challenge"`
+		Difficulty int    `json:"difficulty"`
+		Required   bool   `json:"required"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		t.Fatal(err)
+	}
+	return cr.Challenge, cr.Difficulty, cr.Required
+}
+
+// TestE2EPoWEnforceOverSocket: with INSTALL_POW_MODE=enforce, /install over the real
+// socket rejects a missing PoW (403) and a replayed proof (403 nonce-once), and
+// admits a genuinely-mined one (200) — the full challenge→solve→install journey.
+func TestE2EPoWEnforceOverSocket(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.InstallPowMode = config.PowModeEnforce
+		c.InstallPowDifficulty = 8 // low so the test mines quickly
+		c.InstallPowSecret = []byte("e2e-pow-secret")
+		c.InstallPowSecretSource = "configured"
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	// Missing X-PoW → 403 INSTALL_POW_REQUIRED.
+	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
+		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&env)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || env.Error.Code != "INSTALL_POW_REQUIRED" {
+		t.Fatalf("missing PoW want 403 INSTALL_POW_REQUIRED got %d %q", resp.StatusCode, env.Error.Code)
+	}
+
+	// Fetch a challenge, mine it, install → 200.
+	ch, diff, required := fetchChallenge(t, srv, client)
+	if !required {
+		t.Fatal("enforce mode challenge must report required=true")
+	}
+	nonce := solvePoWE2E(t, ch, diff)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/install",
+		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
+	req.Header.Set("X-PoW", ch+"."+nonce)
+	resp2, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&ok)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK || !strings.HasPrefix(ok.Token, "gwk_") {
+		t.Fatalf("mined PoW install want 200 + token got %d %q", resp2.StatusCode, ok.Token)
+	}
+
+	// Replay the SAME proof → 403 INSTALL_POW_INVALID (nonce-once).
+	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/install",
+		strings.NewReader(`{"fingerprint":"fp2","client":"e2e"}`))
+	req2.Header.Set("X-PoW", ch+"."+nonce)
+	resp3, err := client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env3 struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp3.Body).Decode(&env3)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusForbidden || env3.Error.Code != "INSTALL_POW_INVALID" {
+		t.Fatalf("PoW replay want 403 INSTALL_POW_INVALID got %d %q", resp3.StatusCode, env3.Error.Code)
+	}
+}
+
+// TestE2EPoWShadowDoesNotBreakExisting: with INSTALL_POW_MODE=shadow, a client that
+// sends NO X-PoW (the existing/legacy behavior) is still admitted (200) over the
+// real socket, and the challenge endpoint reports required=false — shadow never
+// breaks an existing client.
+func TestE2EPoWShadowDoesNotBreakExisting(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.InstallPowMode = config.PowModeShadow
+		c.InstallPowDifficulty = 20
+		c.InstallPowSecret = []byte("e2e-shadow-secret")
+		c.InstallPowSecretSource = "configured"
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
+		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ok)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(ok.Token, "gwk_") {
+		t.Fatalf("shadow no-PoW want 200 + token got %d %q", resp.StatusCode, ok.Token)
+	}
+
+	if _, _, required := fetchChallenge(t, srv, client); required {
+		t.Fatal("shadow mode challenge must report required=false")
+	}
+}
+
+// compile-time interface assertions: the local adapters MUST satisfy the SAME app
+// ports bootstrap's adapters do, so this harness can never drift from the wiring
+// the binary uses (a signature change breaks the build here, not silently in prod).
+var (
+	_ appchat.Upstream                  = upstreamAdapter{}
+	_ appquota.ConfigSource             = quotaCfg{}
+	_ appchat.Clock                     = sysClock{}
+	_ appchat.Logger                    = discardLogger{}
+	_ appchat.Metrics                   = chatMx{}
+	_ appchat.Throttle                  = noThrottle{}
+	_ appinstall.InstallsCreatedCounter = counterStub{}
+	_ appinstall.PoWCounter             = powStub{}
+)
