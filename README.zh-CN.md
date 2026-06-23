@@ -14,30 +14,13 @@
 
 ## 配额记账
 
-```mermaid
-flowchart TD
-    A[chat request] --> B[snapshot period: month + day, once]
-    B --> C[reserve: one BEGIN IMMEDIATE,<br/>3 guardrails, single-writer pool]
-    C -->|all 3 pass| D[forward to upstream]
-    C -->|any guardrail fails| E[roll back all three → 429 / 402]
-    D -->|first byte = billed once| F[settle to real usage]
-    D -->|fails before first byte| G[a single defer rolls back all three]
-    F --> H[a crash leaves a settled-IS-NULL row,<br/>which a reconciler refunds]
-```
+![配额记账流程:一次 chat 请求先把计费周期快照一次,然后在单个 BEGIN IMMEDIATE 事务里对三道闸预占。三闸全过则转发上游、在首字节据真实用量结算;任一闸失败则回滚为 429/402;首字节之前的失败通过一个 defer 回滚全部三项;崩溃会留下一行 settled IS NULL,由 reconciler 退还。](docs/assets/quota-accounting.svg)
 
 三道闸 —— `月度次数 < 配额`、`install 日 token + 估算 ≤ 上限`、`全局日预算 + 估算 ≤ 预算` —— 在同一个 `BEGIN IMMEDIATE` 事务、单写连接池里判定,因此并发请求不会竞争这次读-改-写。计费只发生一次,在上游首字节。首字节之前的任何失败,都通过一个 defer 回滚全部三项预占。崩溃会留下一行 `settled IS NULL`,由 reconciler 退还,所以失败模式是多扣、不是少扣。
 
 ## 架构
 
-```mermaid
-flowchart LR
-    cmd --> bootstrap --> transport --> app --> domain
-    bootstrap --> infra --> domain
-    transport --> pkg
-    app --> pkg
-    infra --> pkg
-    domain --> pkg
-```
+![架构与依赖方向:cmd 依赖 bootstrap,bootstrap 依赖 transport 与 infra;transport 依赖 app,app 依赖 domain;infra 也依赖 domain;transport、app、infra、domain 都依赖 pkg 叶内核。依赖只指向更稳定的内层,由 depguard 强制。](docs/assets/architecture.svg)
 
 依赖只指向更稳定的内层,违反即构建失败(depguard):`domain` 无 infra import;`app` 在本包以 interface 声明所需 infra 端口;`*sql.Tx` 不漏出 `infra`;`bootstrap` 是唯一跨层 import 的包(它无人 import)。三个独立监听器:公网业务面、loopback-only 的运维/metrics/pprof 面、loopback 管理后台。
 

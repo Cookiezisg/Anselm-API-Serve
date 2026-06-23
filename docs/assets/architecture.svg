@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="440" viewBox="0 0 1000 440" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6e7781"/></marker>
+    <style>
+      .t { font-size: 14px; font-weight: 700; fill: #1f2328; }
+      .s { font-size: 11px; fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .cap { font-size: 11px; fill: #8c959f; }
+      .edge { fill: none; stroke: #6e7781; stroke-width: 1.6; marker-end: url(#ah); }
+    </style>
+  </defs>
+
+  <rect x="6" y="6" width="988" height="428" rx="14" fill="#ffffff" stroke="#d0d7de"/>
+  <text class="cap" x="30" y="400">Dependencies point inward &#8594; toward more stable layers (enforced by depguard). pkg is a leaf kernel used by all.</text>
+
+  <!-- edges -->
+  <path class="edge" d="M175,84 L223,84"/>
+  <path class="edge" d="M375,84 L423,84"/>
+  <path class="edge" d="M575,84 L623,84"/>
+  <path class="edge" d="M775,84 L823,84"/>
+
+  <!-- bootstrap -> infra -->
+  <path class="edge" d="M300,111 L300,210 L423,210"/>
+  <!-- infra -> domain -->
+  <path class="edge" d="M575,210 L885,210 L885,113"/>
+
+  <!-- drops into pkg -->
+  <path class="edge" d="M530,111 L530,150 L605,150 L605,316"/>
+  <path class="edge" d="M700,111 L700,316"/>
+  <path class="edge" d="M500,237 L500,316"/>
+  <path class="edge" d="M915,111 L915,316"/>
+
+  <!-- nodes -->
+  <g text-anchor="middle">
+    <!-- cmd -->
+    <rect x="25"  y="57"  width="150" height="54" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+    <text class="t" x="100" y="81">cmd</text>
+    <text class="s" x="100" y="98">thin shell</text>
+
+    <!-- bootstrap -->
+    <rect x="225" y="57"  width="150" height="54" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+    <text class="t" x="300" y="81">bootstrap</text>
+    <text class="s" x="300" y="98">composition root</text>
+
+    <!-- transport -->
+    <rect x="425" y="57"  width="150" height="54" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="500" y="81">transport</text>
+    <text class="s" x="500" y="98">httpapi</text>
+
+    <!-- app -->
+    <rect x="625" y="57"  width="150" height="54" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="700" y="81">app</text>
+    <text class="s" x="700" y="98">use cases &#183; ports</text>
+
+    <!-- domain -->
+    <rect x="825" y="57"  width="150" height="54" rx="8" fill="#d5e8d4" stroke="#82b366" stroke-width="1.5"/>
+    <text class="t" x="900" y="81">domain</text>
+    <text class="s" x="900" y="98">entities &#183; rules</text>
+
+    <!-- infra -->
+    <rect x="425" y="183" width="150" height="54" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="500" y="207">infra</text>
+    <text class="s" x="500" y="224">store &#183; upstream</text>
+
+    <!-- pkg foundation -->
+    <rect x="425" y="318" width="550" height="54" rx="8" fill="#fff2cc" stroke="#d6b656" stroke-width="1.5"/>
+    <text class="t" x="700" y="342">pkg</text>
+    <text class="s" x="700" y="359">leaf kernel &#8212; used by all</text>
+  </g>
+</svg>

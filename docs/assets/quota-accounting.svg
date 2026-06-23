@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="720" viewBox="0 0 800 720" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6e7781"/></marker>
+    <style>
+      .t  { font-size: 14px; font-weight: 700; fill: #1f2328; }
+      .s  { font-size: 11px; fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .lbl{ font-size: 11px; fill: #57606a; }
+      .edge { fill: none; stroke: #6e7781; stroke-width: 1.6; marker-end: url(#ah); }
+    </style>
+  </defs>
+
+  <rect x="6" y="6" width="788" height="708" rx="14" fill="#ffffff" stroke="#d0d7de"/>
+
+  <!-- edges -->
+  <path class="edge" d="M210,89 L210,134"/>
+  <path class="edge" d="M210,194 L210,254"/>
+  <path class="edge" d="M210,314 L210,379"/>
+  <path class="edge" d="M338,285 L460,285"/>
+  <path class="edge" d="M210,439 L210,504"/>
+  <path class="edge" d="M338,410 L460,410"/>
+  <path class="edge" d="M210,564 L210,629"/>
+
+  <!-- edge labels -->
+  <g text-anchor="middle">
+    <rect x="174" y="339" width="72"  height="16" fill="#ffffff"/><text class="lbl" x="210" y="351">all 3 pass</text>
+    <rect x="341" y="277" width="118" height="16" fill="#ffffff"/><text class="lbl" x="400" y="289">any guardrail fails</text>
+    <rect x="178" y="464" width="64"  height="16" fill="#ffffff"/><text class="lbl" x="210" y="476">first byte</text>
+    <rect x="357" y="402" width="86"  height="16" fill="#ffffff"/><text class="lbl" x="400" y="414">no first byte</text>
+  </g>
+
+  <!-- nodes -->
+  <g text-anchor="middle">
+    <!-- A: chat request -->
+    <rect x="82"  y="31"  width="256" height="58" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="210" y="56">chat request</text>
+    <text class="s" x="210" y="74">POST /v1/chat/completions</text>
+
+    <!-- B: snapshot period -->
+    <rect x="82"  y="136" width="256" height="58" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+    <text class="t" x="210" y="161">snapshot period</text>
+    <text class="s" x="210" y="179">month + day &#183; once</text>
+
+    <!-- C: reserve -->
+    <rect x="82"  y="256" width="256" height="58" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="210" y="281">reserve &#183; 3 guardrails</text>
+    <text class="s" x="210" y="299">one BEGIN IMMEDIATE</text>
+
+    <!-- E: roll back -->
+    <rect x="462" y="256" width="256" height="58" rx="8" fill="#f8cecc" stroke="#b85450" stroke-width="1.5"/>
+    <text class="t" x="590" y="281">roll back all three</text>
+    <text class="s" x="590" y="299">429 / 402</text>
+
+    <!-- D: forward to upstream -->
+    <rect x="82"  y="381" width="256" height="58" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text class="t" x="210" y="406">forward to upstream</text>
+    <text class="s" x="210" y="424">key injected on clone</text>
+
+    <!-- G: defer rolls back -->
+    <rect x="462" y="381" width="256" height="58" rx="8" fill="#fff2cc" stroke="#d6b656" stroke-width="1.5"/>
+    <text class="t" x="590" y="406">defer rolls back all three</text>
+    <text class="s" x="590" y="424">before first byte</text>
+
+    <!-- F: settle -->
+    <rect x="82"  y="506" width="256" height="58" rx="8" fill="#d5e8d4" stroke="#82b366" stroke-width="1.5"/>
+    <text class="t" x="210" y="531">settle to real usage</text>
+    <text class="s" x="210" y="549">billed once, at first byte</text>
+
+    <!-- H: reconciler -->
+    <rect x="82"  y="631" width="256" height="58" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+    <text class="t" x="210" y="656">settled IS NULL on crash</text>
+    <text class="s" x="210" y="674">reconciler refunds</text>
+  </g>
+</svg>

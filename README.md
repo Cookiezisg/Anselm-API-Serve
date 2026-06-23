@@ -14,30 +14,13 @@ The code uses clean architecture (domain / app / infra / transport, plus a boots
 
 ## Quota accounting
 
-```mermaid
-flowchart TD
-    A[chat request] --> B[snapshot period: month + day, once]
-    B --> C[reserve: one BEGIN IMMEDIATE,<br/>3 guardrails, single-writer pool]
-    C -->|all 3 pass| D[forward to upstream]
-    C -->|any guardrail fails| E[roll back all three → 429 / 402]
-    D -->|first byte = billed once| F[settle to real usage]
-    D -->|fails before first byte| G[a single defer rolls back all three]
-    F --> H[a crash leaves a settled-IS-NULL row,<br/>which a reconciler refunds]
-```
+![Quota accounting flow: a chat request snapshots the billing period once, then reserves against three guardrails in one BEGIN IMMEDIATE transaction. If all three pass it forwards to upstream and settles to real usage at the first byte; if any guardrail fails it rolls back to 429/402, and a failure before the first byte rolls back all three through one defer. A crash leaves a settled-IS-NULL row that a reconciler refunds.](docs/assets/quota-accounting.svg)
 
 The three guardrails — `monthly count < quota`, `install daily tokens + estimate ≤ cap`, `global daily budget + estimate ≤ budget` — are checked in one `BEGIN IMMEDIATE` transaction on a single-writer pool, so concurrent requests do not race the read-modify-write. Billing happens once, at the upstream's first byte. Anything that fails before the first byte rolls back all three reservations through one defer. A crash leaves a `settled IS NULL` row that a reconciler refunds, so the failure mode is over-charging, not under-charging.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    cmd --> bootstrap --> transport --> app --> domain
-    bootstrap --> infra --> domain
-    transport --> pkg
-    app --> pkg
-    infra --> pkg
-    domain --> pkg
-```
+![Architecture and dependency direction: cmd depends on bootstrap, which depends on transport and infra; transport depends on app, which depends on domain; infra also depends on domain; and transport, app, infra, and domain all depend on the pkg leaf kernel. Dependencies point inward toward more stable layers, enforced by depguard.](docs/assets/architecture.svg)
 
 Dependencies point inward toward more stable layers, and the build fails on a violation (depguard): `domain` has no infra imports, `app` declares the infra ports it needs as interfaces, `*sql.Tx` does not leave `infra`, and `bootstrap` is the only package that imports across layers (nothing imports it). There are three separate listeners: a public business API, a loopback-only admin/metrics/pprof surface, and a loopback dashboard.
 
