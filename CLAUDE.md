@@ -27,7 +27,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ## 3. 不可破的红线(摘要，全集见 invariants.md)
 
 - **记账**:三闸(月度 count/install 日 token/全局日预算)在单 `BEGIN IMMEDIATE` 预占;产出前失败回滚全三项;计费一次边界=上游首字节;`settled IS NULL` 幂等;period 入口快照一次贯穿;崩溃只多扣。
-- **安全**:DeepSeek key 注入在 clone 上、归一化上游错误不透传;token 只存 SHA-256;admin/metrics/pprof 仅 loopback(绑定 fail-fast);日志/指标无 key/prompt/token/ip、label 低基数;XFF 仅信回环直连对端。
+- **安全**:DeepSeek key 注入在 clone 上、归一化上游错误不透传;token 只存 SHA-256;admin/metrics/pprof + 管理后台仅 loopback(绑定 fail-fast、不上公网);日志/指标无 key/prompt/token/ip、label 低基数;XFF 仅信回环直连对端。
 - **可靠**:在飞 ≤ N_global(多 key/排队不放大);**故障分类排除 client-cancel 与 429**(ADR-011，不触进程 breaker);关停 DB 最后关(bgWG 排空)。
 - **输入**:严格白名单(model 强改写/messages/stream/temperature/max_tokens clamp **+ tools/tool_choice 透传**[免费档 agentic，messages 保 tool_calls/tool_call_id/name/reasoning_content]);拒 n>1;SEC-1 形状;256KB body;其余危险字段(logit_bias/function_call/response_format)剥离。
 

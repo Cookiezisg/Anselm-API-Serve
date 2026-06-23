@@ -97,12 +97,16 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	log := slog.Default()
 
 	// 2) Listener fail-fast: the three addrs must differ (LoadBase already checks
-	// dashboard≠business/admin; assert business≠admin too) and ADMIN_ADDR must be
-	// loopback (GW-INV-13: metrics/pprof never public).
+	// dashboard≠business/admin; assert business≠admin too), and BOTH ADMIN_ADDR and
+	// DASHBOARD_ADDR must be loopback (GW-INV-13: the metrics/pprof surface and the
+	// dashboard are off-box only; only the business listener is public, behind Caddy).
 	if base.ListenAddr == base.AdminAddr {
 		return nil, fmt.Errorf("LISTEN_ADDR %q must not equal ADMIN_ADDR %q (three listeners must be physically isolated)", base.ListenAddr, base.AdminAddr)
 	}
-	if err := requireLoopback(base.AdminAddr); err != nil {
+	if err := requireLoopback("ADMIN_ADDR", base.AdminAddr); err != nil {
+		return nil, err
+	}
+	if err := requireLoopback("DASHBOARD_ADDR", base.DashboardAddr); err != nil {
 		return nil, err
 	}
 

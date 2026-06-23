@@ -50,7 +50,11 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 
 ## 管理后台
 
-内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出),由二进制提供,在一个 loopback 端口上经会话 + CSRF 鉴权。仅当 `DASHBOARD_USER` 和 `DASHBOARD_PASSWORD` 都配置时才启动。
+内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出),由二进制提供,在一个 loopback 端口上经会话 + CSRF 鉴权。仅当 `DASHBOARD_USER` 和 `DASHBOARD_PASSWORD` 都配置时才启动,且**不对公网暴露** —— 运维经 SSH 隧道访问:
+
+```sh
+ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localhost:8081
+```
 
 <!-- 把截图放到 docs/assets/dashboard.png 后取消注释: -->
 <!-- ![Anselm Gateway dashboard](docs/assets/dashboard.png) -->

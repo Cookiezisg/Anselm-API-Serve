@@ -18,7 +18,7 @@
 #   SERVER_KNOWN_HOSTS 钉服务器 SSH 指纹,替代盲 TOFU keyscan(未配则回退 keyscan,
 #                      首连可被 MITM,仅 dev 可接受;生产应配。见 ssh setup 步与 README)
 #   GATEWAY_DOMAIN     对外域名(如 api.example.com);设为 secret 以免公开仓库与 Actions
-#                      日志暴露部署位置。后台子域 = dashboard.<根域>(去首段 + dashboard.)
+#                      日志暴露部署位置。
 #   ACME_EMAIL         Caddy ACME 账户邮箱(证书签发 / ZeroSSL EAB)
 # 其余一切运营配置(钱包预算 / caps / 并发 / 模型 / base-url / 内存·磁盘调优)均为本文件
 # 下方 heredoc 的提交式明文——可见、可审、可在 PR 里 diff,改配置即改这里。
@@ -127,8 +127,8 @@ jobs:
           # Build the gateway env file content locally (secrets only live in the
           # action runtime), then push it and run the install steps via one SSH.
           # 对外域名 + ACME 邮箱经 GitHub secret 注入(见上方 env:),不写进仓库;Caddy
-          # 反代 + 健康检查用,去首段拿根域 + dashboard. 前缀得到后台子域。改值在仓库
-          # Settings → Secrets and variables → Actions → Secrets。
+          # 反代业务 8080 + 健康检查用。改值在仓库 Settings → Secrets and variables →
+          # Actions → Secrets。
           cat > /tmp/anselm.env <<EOF
           # ── 机密(仅此三项经 GitHub secret 注入) ─────────────────────────
           DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -164,7 +164,7 @@ jobs:
           GATEWAY_DB_PATH=/var/lib/anselm-gateway/anselm-gateway.db
           # 三个物理隔离的 loopback 监听(ADR-004,三者必须互不相同):业务 8080 经 socket
           # activation、admin 9090 + dashboard 8081 由进程自绑。仅当 DASHBOARD_USER/PASSWORD
-          # 都配时进程才起 8081(Caddy 把 dashboard.<root> 反代到它)。
+          # 都配时进程才起 8081;admin 与 dashboard 都不经 Caddy / 不上公网,运维走 SSH 隧道。
           LISTEN_ADDR=127.0.0.1:8080
           DASHBOARD_ADDR=127.0.0.1:8081
           LOG_LEVEL=info
@@ -237,11 +237,7 @@ jobs:
           # a substitution failure must abort, never silently ship a broken config.
           STAGED_CADDY="$(mktemp)"
           cp /tmp/Caddyfile "${STAGED_CADDY}"
-          # dashboard 子域 = 与 api 平级的三级子域(<api 域> → dashboard.<root>,非四级
-          # dashboard.api.<root>):去掉 GATEWAY_DOMAIN 第一段拿根域 + dashboard. 前缀。
-          DASHBOARD_DOMAIN="dashboard.${GATEWAY_DOMAIN#*.}"
           sed -i "s/{\$GATEWAY_DOMAIN}/${GATEWAY_DOMAIN}/g" "${STAGED_CADDY}"
-          sed -i "s/{\$DASHBOARD_DOMAIN}/${DASHBOARD_DOMAIN}/g" "${STAGED_CADDY}"
           sed -i "s/{\$ACME_EMAIL}/${ACME_EMAIL}/g" "${STAGED_CADDY}"
           caddy validate --config "${STAGED_CADDY}" --adapter caddyfile
           sudo install -m 0644 "${STAGED_CADDY}" /etc/caddy/Caddyfile

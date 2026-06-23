@@ -26,7 +26,7 @@ Source tree: `<repo>`. Old module path: `anselm-gateway` (new target: `anselm-ga
 |---|---|---|---|---|
 | **Business** | `0.0.0.0:8080` | `internal/server/server.go` `BuildHandler` | Yes | `/v1/install`, `/v1/install/challenge`, `/v1/chat/completions`, `/v1/quota`, `/v1/models`, `/healthz` |
 | **Admin/metrics** | `127.0.0.1:9090` (loopback-only, `requireLoopback` fail-fast) | `internal/metrics/admin.go` `NewAdminServer` | No (SSH tunnel only) | `/metrics`, `/readyz`, `/debug/pprof/*`, `/debug/vars` |
-| **Dashboard** | `127.0.0.1:8081` (`DASHBOARD_ADDR`) | `internal/dashboard/dashboard.go` `routes()` | `dashboard.<domain>` only | `/healthz`, `/login`, `/logout`, `/api/*`, `/static/`, `/` (SPA) |
+| **Dashboard** | `127.0.0.1:8081` (`DASHBOARD_ADDR`) | `internal/dashboard/dashboard.go` `routes()` | No (SSH tunnel only) | `/healthz`, `/login`, `/logout`, `/api/*`, `/static/`, `/` (SPA) |
 
 Business middleware chain (outer→inner, `BuildHandler` lines 65-68): `Recover` (X-Request-ID + scoped logger + panic→`gateway_panics_total`) → `DenyCORS` → `MaxBody(256*1024)` → `ServeMux`. Each business route is additionally wrapped by `mx.Wrap("<label>", …)` for RED metrics with low-cardinality handler labels: `install`, `install_challenge`, `chat_completions`, `quota`, `models` (`/healthz` is NOT wrapped).
 

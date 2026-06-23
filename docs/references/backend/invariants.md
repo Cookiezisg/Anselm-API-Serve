@@ -34,7 +34,7 @@ audience: [human, ai]
 |---|---|---|
 | GW-INV-11 | DeepSeek key 绝不离开服务器：`Authorization` 注入在 `req.Clone()`、上游 body/header 绝不透传、`Recover` 绝不记 panic 值、key 事件仅按 `key_index` 审计 | key 经日志/panic dump/透传外泄 = 上游账户全失陷 |
 | GW-INV-12 | install token 仅存 `SHA-256(token)`：发放返一次性 `gwk_`+32B token，存 `installs.token_sha256`（UNIQUE），`/v1/install` 永不重显旧 token（每次全新行 + 全新配额池，无 get-or-create、无 fp merge） | DB 泄露出可用 token / token 回显给错 client |
-| GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars` LOOPBACK-only 绑 `ADMIN_ADDR`：`requireLoopback` 拒空 host、IP 字面判 `IsLoopback`、hostname 要求每个 `LookupIP` 均回环；`/healthz` liveness 绝不碰 DB | 公网 pprof = 远程 DoS + 内部结构泄露 |
+| GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars`(`ADMIN_ADDR`)与管理后台(`DASHBOARD_ADDR`)均 LOOPBACK-only：`requireLoopback` 对二者 fail-fast（拒空 host、IP 字面判 `IsLoopback`、hostname 要求每个 `LookupIP` 均回环）；`/healthz` liveness 绝不碰 DB | 公网 pprof = 远程 DoS + 内部结构泄露；后台裸登录页上公网 = 钓鱼黑名单/盗号面 |
 | GW-INV-14 | 机密 env-only、绝不持久化/dump：三件套只读 env、绝不写 `settings`、`Snapshot()`/`Dump()` 掩码；`INSTALL_POW_SECRET` 绝不自动生成 | 机密经 config snapshot / 导出 / settings 行泄露 |
 | GW-INV-15 | metric/audit 标签严格低基数：仅 `outcome` / `handler`（`install`/`install_challenge`/`chat_completions`/`quota`/`models`）/ `result`；绝无 `install_id`/`token`/`prompt`/`ip` 入标签 | Prometheus 基数爆炸 OOM / PII 入时序 |
 | GW-INV-16 | XFF 仅当直连对端为回环（Caddy hop）时才信：取最右 XFF 段且 `isLoopback(RemoteAddr)`，否则回退 `RemoteAddr`（绝不信左/可伪造段） | 攻击者伪造左 XFF 绕过 per-IP Sybil 限速 |

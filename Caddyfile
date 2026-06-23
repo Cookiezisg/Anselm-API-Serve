@@ -8,7 +8,6 @@
 # ACME CA 兜底:Let's Encrypt 生产端点(acme-v02)在部分地区网络出口偶发被干扰
 # (EOF / 500 / 503 + 空 body)。Caddy 默认同时启用 LE + ZeroSSL,任一抖动会自动
 # fallback;ZeroSSL 自动 EAB 需要下面的全局 email。实测 ZeroSSL 这条路稳定签发。
-
 {
 	email {$ACME_EMAIL}
 }
@@ -34,24 +33,7 @@
 	}
 }
 
-# 管理后台(dashboard):独立子域反代到进程内独立 loopback 监听 127.0.0.1:8081
-# (与业务 8080 / admin 9090 物理隔离)。{$DASHBOARD_DOMAIN} 是与业务 api 平级的三级
-# 子域 —— deploy 从 GATEWAY_DOMAIN 去掉首段拿根域再加 dashboard. 前缀(<api 域>
-# → dashboard.<root>),而非四级的 dashboard.api.<root>;用户给 dashboard.<root>
-# 加一条 DNS A 记录即可。仅当 DASHBOARD_USER/PASSWORD 都配时进程才起 8081;后台自身全
-# 路由强制鉴权(bcrypt 登录 → session cookie → CSRF → 登录限流),除 /healthz 外无免鉴权
-# 路由。Caddy 把真实 client IP append 到 XFF 末尾,后台据最右段做 per-IP 登录限流
-# (只信 loopback peer 的 XFF,与业务 clientIP 同款)。
-{$DASHBOARD_DOMAIN} {
-	reverse_proxy 127.0.0.1:8081
-
-	tls {
-		protocols tls1.2 tls1.3
-	}
-
-	header {
-		-Server
-		Strict-Transport-Security "max-age=31536000;"
-		X-Content-Type-Options "nosniff"
-	}
-}
+# 管理后台(dashboard)不经 Caddy、不上公网:进程在 127.0.0.1:8081 自绑 loopback,仅当
+# DASHBOARD_USER/PASSWORD 都配时才起。运维经 SSH 隧道访问(与 admin 9090 同款),例如:
+#   ssh -L 8081:127.0.0.1:8081 <user>@<server>   然后浏览器开 http://localhost:8081
+# 故意不暴露公网——一个裸登录页挂在新域名上易被扫描器/域名黑名单误判为钓鱼。

@@ -68,7 +68,7 @@ audience: [human, ai]
 | `MEM_BUDGET_MIB` | 2048 | >0 | 总内存预算 |
 | `MEM_SAFETY_MARGIN_MIB` | 400 | ≥0 | 为 OS/runtime 突发预留的余量下限 |
 | `ADMIN_ADDR` | `127.0.0.1:9090` | 三监听互异 | /metrics 独立 admin 端口（loopback） |
-| `DASHBOARD_ADDR` | `127.0.0.1:8081` | 三监听互异 | 管理后台独立 loopback 监听 |
+| `DASHBOARD_ADDR` | `127.0.0.1:8081` | 三监听互异 + 必须 loopback | 管理后台独立 loopback 监听（`requireLoopback` 绑定 fail-fast，不上公网；运维经 SSH 隧道） |
 | `LISTEN_ADDR` | `127.0.0.1:8080` | 三监听互异 | business 监听 |
 | `RESET_TZ` | `Asia/Shanghai` | `LoadLocation` 失败 **PANIC** | period 边界时区；绝无静默 UTC 回退（GW-INV-38） |
 | `GATEWAY_DB_PATH` | `anselm-gateway.db` | — | SQLite 落盘位置 |

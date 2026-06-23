@@ -3,9 +3,9 @@ package bootstrap
 // listeners.go owns the bind policy: the business listener prefers a systemd
 // socket-activation fd (so a restart never drops connections queued in the
 // kernel backlog on :8080, OPS-2), with a net.Listen fallback; admin + dashboard
-// self-bind. requireLoopback fail-fasts a non-loopback ADMIN_ADDR (GW-INV-13:
-// /metrics + pprof + expvar must never be reachable off-box). Ported from
-// _legacy/cmd/server/main.go + _legacy/internal/metrics/admin.go.
+// self-bind. requireLoopback fail-fasts a non-loopback ADMIN_ADDR or
+// DASHBOARD_ADDR (GW-INV-13: the metrics/pprof surface and the dashboard must
+// never be reachable off-box — only the business listener is public, behind Caddy).
 
 import (
 	"fmt"
@@ -44,32 +44,33 @@ func selfBind(addr string) (net.Listener, error) {
 	return ln, nil
 }
 
-// requireLoopback validates that addr's host resolves to a loopback IP, so the
-// admin/metrics surface is never reachable off-box. An empty host (":9090" =
-// all interfaces) is rejected; an IP literal is judged directly; a hostname is
-// resolved and EVERY resolved IP must be loopback — so a hosts/NSS entry pointing
-// it at a routable address can never expose admin.
-func requireLoopback(addr string) error {
+// requireLoopback validates that addr's host resolves to a loopback IP, so a
+// loopback-only surface (the admin metrics/pprof listener, the dashboard) is
+// never reachable off-box. name is the env var, used in error messages. An empty
+// host (":9090" = all interfaces) is rejected; an IP literal is judged directly;
+// a hostname is resolved and EVERY resolved IP must be loopback — so a hosts/NSS
+// entry pointing it at a routable address can never expose the surface.
+func requireLoopback(name, addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("ADMIN_ADDR %q: %w", addr, err)
+		return fmt.Errorf("%s %q: %w", name, addr, err)
 	}
 	if host == "" {
-		return fmt.Errorf("ADMIN_ADDR %q must bind a loopback host (e.g. 127.0.0.1), not all interfaces", addr)
+		return fmt.Errorf("%s %q must bind a loopback host (e.g. 127.0.0.1), not all interfaces", name, addr)
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !ip.IsLoopback() {
-			return fmt.Errorf("ADMIN_ADDR host %q is not loopback (metrics must never be public)", host)
+			return fmt.Errorf("%s host %q is not loopback (this surface must never be public)", name, host)
 		}
 		return nil
 	}
 	ips, lerr := net.LookupIP(host)
 	if lerr != nil || len(ips) == 0 {
-		return fmt.Errorf("ADMIN_ADDR host %q does not resolve to a loopback address: %v", host, lerr)
+		return fmt.Errorf("%s host %q does not resolve to a loopback address: %v", name, host, lerr)
 	}
 	for _, ip := range ips {
 		if !ip.IsLoopback() {
-			return fmt.Errorf("ADMIN_ADDR host %q resolves to non-loopback %s (metrics must never be public)", host, ip)
+			return fmt.Errorf("%s host %q resolves to non-loopback %s (this surface must never be public)", name, host, ip)
 		}
 	}
 	return nil

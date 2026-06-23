@@ -50,7 +50,11 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 
 ## Dashboard
 
-An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary behind session + CSRF auth on a loopback port. It starts only when `DASHBOARD_USER` and `DASHBOARD_PASSWORD` are set.
+An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary behind session + CSRF auth on a loopback port. It starts only when `DASHBOARD_USER` and `DASHBOARD_PASSWORD` are set, and it is **not exposed to the public internet** — reach it over an SSH tunnel:
+
+```sh
+ssh -L 8081:127.0.0.1:8081 <user>@<server>   # then open http://localhost:8081
+```
 
 <!-- Add a screenshot at docs/assets/dashboard.png and uncomment: -->
 <!-- ![Anselm Gateway dashboard](docs/assets/dashboard.png) -->
