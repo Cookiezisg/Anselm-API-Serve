@@ -157,6 +157,19 @@ jobs:
           N_GLOBAL_CONCURRENCY=16
           # REL-7 过载背压等待窗口(ms);N_global 仍是硬上限,等待不放大并发。
           QUEUE_WAIT_MS=1500
+          # API 风控:控制匿名领号和单 token 滥用,降低被当成开放 AI 中转的概率。
+          # 每 install 软限速 + 每日请求子限额;三闸门记账仍是钱包硬护栏。
+          RATE_PER_MIN=8
+          DAILY_SUBLIMIT=100
+          # /v1/install 领号闸:全站每日最多发 100 个新 token;同 fingerprint 每日最多
+          # 3 个,且相邻领号至少间隔 1 小时。fingerprint 为空时 per-fp 闸不生效。
+          INSTALL_GLOBAL_DAILY_CAP=100
+          INSTALL_PER_FP_DAILY=3
+          INSTALL_PER_FP_COOLDOWN_SEC=3600
+          # 单 token 异常自动降速:同一分钟内达到 8 次请求时,临时降到 2/min,持续 10 分钟。
+          TOKEN_ANOMALY_RPM=8
+          TOKEN_THROTTLE_FACTOR=4
+          TOKEN_THROTTLE_COOLDOWN_SEC=600
           # PERF-2 内存预算(2G 机最坏 RSS = GOMEMLIMIT + cache×(1+READ_POOL) + mmap < 2G;
           # 须与 config.go 代码默认对齐:768 + 32×(1+4) + 256 = 1184MiB,留 ≈464MiB 安全垫)。
           GOMEMLIMIT_MIB=768
