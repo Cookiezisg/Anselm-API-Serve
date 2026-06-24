@@ -86,7 +86,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 VPS 上的 Caddy + systemd:
 
-- Caddy 终结 TLS 并反代 `<你的域名> → 127.0.0.1:8080`(SSE 即时下发)。Go 进程只绑 `127.0.0.1`,不直面公网。
+- Caddy 终结 TLS 并把 API 域名反代到 `127.0.0.1:8080`(SSE 即时下发)。根域可从 `deploy/site/` 提供纯静态说明页。Go 进程只绑 `127.0.0.1`,不直面公网。
 - systemd socket-activation 持有 `:8080` 的 fd,连接跨重启不丢。
 - GitHub Actions(push `main`):`vet + test -race` → 静态 `linux/amd64` 编译 → 版本化二进制 + 原子 symlink → 部署 gate(本机 `readyz`/`healthz`,失败自动回滚上一版)→ 仅留最近 5 版。
 

@@ -17,8 +17,10 @@
 #   SERVER_HOST        服务器 IP / 主机名 ; SERVER_USER  SSH 登录用户(需 sudo)
 #   SERVER_KNOWN_HOSTS 钉服务器 SSH 指纹,替代盲 TOFU keyscan(未配则回退 keyscan,
 #                      首连可被 MITM,仅 dev 可接受;生产应配。见 ssh setup 步与 README)
-#   GATEWAY_DOMAIN     对外域名(如 api.example.com);设为 secret 以免公开仓库与 Actions
+#   GATEWAY_DOMAIN     API 对外域名(如 api.example.com);设为 secret 以免公开仓库与 Actions
 #                      日志暴露部署位置。
+#   SITE_DOMAIN        可选:根域官网(如 example.com);未设且 GATEWAY_DOMAIN 形如
+#                      api.example.com 时,部署脚本自动推导为 example.com。
 #   ACME_EMAIL         Caddy ACME 账户邮箱(证书签发 / ZeroSSL EAB)
 # 其余一切运营配置(钱包预算 / caps / 并发 / 模型 / base-url / 内存·磁盘调优)均为本文件
 # 下方 heredoc 的提交式明文——可见、可审、可在 PR 里 diff,改配置即改这里。
@@ -78,6 +80,7 @@ jobs:
           cp deploy/anselm-gateway.service stage/
           cp deploy/anselm-gateway.socket stage/
           cp deploy/rollback.sh stage/
+          cp -R deploy/site stage/site
 
       - name: ssh setup
         run: |
@@ -108,6 +111,7 @@ jobs:
           scp -i ~/.ssh/id_deploy stage/anselm-gateway.service "${DEST}:/tmp/anselm-gateway.service"
           scp -i ~/.ssh/id_deploy stage/anselm-gateway.socket  "${DEST}:/tmp/anselm-gateway.socket"
           scp -i ~/.ssh/id_deploy stage/rollback.sh         "${DEST}:/tmp/rollback.sh"
+          scp -i ~/.ssh/id_deploy -r stage/site              "${DEST}:/tmp/anselm-site"
 
       - name: write env + install + restart + gate (auto-rollback)
         env:
@@ -121,6 +125,7 @@ jobs:
           # 对外域名 + ACME 邮箱:公开仓库下作为 secret 注入(GitHub 在日志中自动掩码,
           # 不入代码、不在 Actions 日志暴露部署位置)。
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
+          SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
@@ -176,12 +181,18 @@ jobs:
 
           ssh -i ~/.ssh/id_deploy \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "GATEWAY_DOMAIN='${GATEWAY_DOMAIN}' ACME_EMAIL='${ACME_EMAIL}' SHA='${SHA}' bash -s" <<'REMOTE'
+            "GATEWAY_DOMAIN='${GATEWAY_DOMAIN}' SITE_DOMAIN='${SITE_DOMAIN}' ACME_EMAIL='${ACME_EMAIL}' SHA='${SHA}' bash -s" <<'REMOTE'
           set -euo pipefail
           # Fail loudly if the domain is unset: an empty value would otherwise
           # produce a syntactically invalid Caddyfile and (with `|| true`) hide
           # it, leaving Caddy serving nothing.
           [ -n "${GATEWAY_DOMAIN:-}" ] || { echo 'GATEWAY_DOMAIN unset; aborting deploy'; exit 1; }
+          if [ -z "${SITE_DOMAIN:-}" ]; then
+            case "${GATEWAY_DOMAIN}" in
+              api.*) SITE_DOMAIN="${GATEWAY_DOMAIN#api.}" ;;
+              *) echo 'SITE_DOMAIN unset and GATEWAY_DOMAIN is not api.<root>; aborting deploy'; exit 1 ;;
+            esac
+          fi
           [ -n "${ACME_EMAIL:-}" ] || { echo 'ACME_EMAIL unset; aborting deploy'; exit 1; }
           [ -n "${SHA:-}" ] || { echo 'SHA unset; aborting deploy'; exit 1; }
 
@@ -196,6 +207,7 @@ jobs:
           ADMIN_READYZ="http://127.0.0.1:9090/readyz"
           LOCAL_HEALTHZ="http://127.0.0.1:8080/healthz"
           PUBLIC_HEALTHZ="https://${GATEWAY_DOMAIN}/healthz"
+          PUBLIC_SITE="https://${SITE_DOMAIN}/"
 
           # Remember the version the live symlink currently points at, so we can
           # auto-roll-back to EXACTLY this binary if the new one fails its gate.
@@ -229,6 +241,13 @@ jobs:
           # 1) Install the version-stamped binary (does NOT touch the live link yet).
           sudo install -m 0755 "/tmp/anselm-gateway-${SHA}" "${NEW}"
 
+          # 1b) Static root site: no app server, no database, no upload surface.
+          # Owned by root and read-only to the gateway user; Caddy only serves files.
+          sudo mkdir -p /var/www/anselm-site
+          sudo install -m 0444 /tmp/anselm-site/index.html /var/www/anselm-site/index.html
+          sudo install -m 0444 /tmp/anselm-site/styles.css /var/www/anselm-site/styles.css
+          sudo chown -R root:root /var/www/anselm-site
+
           # 2) Caddy: stage + substitute domain + VALIDATE before clobbering the
           # live config. A bad Caddyfile that reaches /etc/caddy and a `reload`
           # would take the public surface down; validating the staged file first
@@ -237,6 +256,7 @@ jobs:
           # a substitution failure must abort, never silently ship a broken config.
           STAGED_CADDY="$(mktemp)"
           cp /tmp/Caddyfile "${STAGED_CADDY}"
+          sed -i "s/{\$SITE_DOMAIN}/${SITE_DOMAIN}/g" "${STAGED_CADDY}"
           sed -i "s/{\$GATEWAY_DOMAIN}/${GATEWAY_DOMAIN}/g" "${STAGED_CADDY}"
           sed -i "s/{\$ACME_EMAIL}/${ACME_EMAIL}/g" "${STAGED_CADDY}"
           caddy validate --config "${STAGED_CADDY}" --adapter caddyfile
@@ -341,6 +361,17 @@ jobs:
             echo "WARNING: public ${PUBLIC_HEALTHZ} not green within ~2min (ACME issuing / edge?) — deploy KEPT (local gate already passed)" >&2
           fi
 
+          SITE_OK=0
+          for i in $(seq 1 24); do
+            curl -fsS "${PUBLIC_SITE}" 2>/dev/null | grep -q '<title>Anselm</title>' && { SITE_OK=1; break; }
+            sleep 5
+          done
+          if [ "${SITE_OK}" = "1" ]; then
+            echo "public ${PUBLIC_SITE} green"
+          else
+            echo "WARNING: public ${PUBLIC_SITE} not green within ~2min (ACME issuing / DNS missing?) — deploy KEPT (local gate already passed)" >&2
+          fi
+
           # 7) Prune old versions: keep the newest N=5 version-stamped binaries
           # plus whatever the live symlink points at (never delete the live one).
           CURRENT="$(readlink -f "${LINK}")"
@@ -357,5 +388,6 @@ jobs:
           rm -f "/tmp/anselm-gateway-${SHA}" /tmp/Caddyfile \
                 /tmp/anselm-gateway.service /tmp/anselm-gateway.socket \
                 /tmp/rollback.sh
+          rm -rf /tmp/anselm-site
           rm -rf "${SNAP}"
           REMOTE

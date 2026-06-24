@@ -86,7 +86,7 @@ Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY
 
 Caddy + systemd on a VPS:
 
-- Caddy terminates TLS and reverse-proxies `<your-domain> → 127.0.0.1:8080` (SSE flushed). The Go process binds `127.0.0.1` only and does not face the public internet directly.
+- Caddy terminates TLS and reverse-proxies the API hostname to `127.0.0.1:8080` (SSE flushed). The root hostname can serve a static trust page from `deploy/site/`. The Go process binds `127.0.0.1` only and does not face the public internet directly.
 - systemd socket-activation holds the `:8080` fd so connections survive a restart.
 - GitHub Actions on push to `main`: `vet + test -race` → static `linux/amd64` build → versioned binary + atomic symlink → a deploy gate (loopback `readyz`/`healthz`, with auto-rollback to the previous version on failure) → keep the last 5 versions.
 

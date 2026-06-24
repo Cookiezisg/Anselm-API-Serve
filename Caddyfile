@@ -3,13 +3,30 @@
 # Caddy 自动 HTTPS(ACME)。🔴 ACME HTTP-01 强制走 80 端口,服务器必须同时
 # 开放 80 + 443(只开 443 会签证失败;或改 DNS-01 challenge 配 DNS 凭据)。
 #
-# {$GATEWAY_DOMAIN} / {$ACME_EMAIL} 由部署时注入(GitHub Actions secret,sed 替换)。
+# {$SITE_DOMAIN} / {$GATEWAY_DOMAIN} / {$ACME_EMAIL} 由部署时注入(GitHub
+# Actions secret 或从 api 子域推导,sed 替换)。
 #
 # ACME CA 兜底:Let's Encrypt 生产端点(acme-v02)在部分地区网络出口偶发被干扰
 # (EOF / 500 / 503 + 空 body)。Caddy 默认同时启用 LE + ZeroSSL,任一抖动会自动
 # fallback;ZeroSSL 自动 EAB 需要下面的全局 email。实测 ZeroSSL 这条路稳定签发。
 {
 	email {$ACME_EMAIL}
+}
+
+{$SITE_DOMAIN} {
+	root * /var/www/anselm-site
+	file_server
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000;"
+		X-Content-Type-Options "nosniff"
+		Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	}
 }
 
 {$GATEWAY_DOMAIN} {
