@@ -16,25 +16,29 @@ import (
 )
 
 type stubAuth struct {
-	id     string
-	status dominstall.Status
-	found  bool
-	err    error
+	id        string
+	status    dominstall.Status
+	found     bool
+	err       error
+	unmetered bool
 }
 
 func (s stubAuth) LookupInstall(context.Context, string) (string, dominstall.Status, bool, error) {
 	return s.id, s.status, s.found, s.err
 }
+func (s stubAuth) IsUnmetered(string) bool { return s.unmetered }
 
 type stubViewer struct {
-	view *appquota.View
-	err  error
+	view         *appquota.View
+	err          error
+	gotUnmetered bool
 }
 
 func (stubViewer) SnapshotPeriod(time.Time) domquota.Period {
 	return domquota.Period{Day: "2026-06-20"}
 }
-func (s stubViewer) View(context.Context, string, domquota.Period) (*appquota.View, error) {
+func (s *stubViewer) View(_ context.Context, _ string, _ domquota.Period, unmetered bool) (*appquota.View, error) {
+	s.gotUnmetered = unmetered
 	return s.view, s.err
 }
 
@@ -43,7 +47,7 @@ func authOK() stubAuth { return stubAuth{id: "ins_1", status: dominstall.StatusA
 func TestQuota_Success(t *testing.T) {
 	reset := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	v := &appquota.View{Limit: 1000, Used: 200, Remaining: 800, ResetAt: reset, Available: true}
-	h := New(authOK(), stubViewer{view: v})
+	h := New(authOK(), &stubViewer{view: v})
 
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	r.Header.Set("Authorization", "Bearer tok")
@@ -69,7 +73,7 @@ func TestQuota_Success(t *testing.T) {
 }
 
 func TestQuota_NoBearer401(t *testing.T) {
-	h := New(authOK(), stubViewer{})
+	h := New(authOK(), &stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -79,7 +83,7 @@ func TestQuota_NoBearer401(t *testing.T) {
 }
 
 func TestQuota_Banned403(t *testing.T) {
-	h := New(stubAuth{id: "x", status: dominstall.StatusBanned, found: true}, stubViewer{})
+	h := New(stubAuth{id: "x", status: dominstall.StatusBanned, found: true}, &stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	r.Header.Set("Authorization", "Bearer tok")
 	rec := httptest.NewRecorder()
@@ -93,7 +97,7 @@ func TestQuota_Banned403(t *testing.T) {
 }
 
 func TestQuota_NotFound401(t *testing.T) {
-	h := New(stubAuth{found: false}, stubViewer{})
+	h := New(stubAuth{found: false}, &stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	r.Header.Set("Authorization", "Bearer tok")
 	rec := httptest.NewRecorder()
@@ -104,7 +108,7 @@ func TestQuota_NotFound401(t *testing.T) {
 }
 
 func TestQuota_AuthError500(t *testing.T) {
-	h := New(stubAuth{err: errors.New("db")}, stubViewer{})
+	h := New(stubAuth{err: errors.New("db")}, &stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	r.Header.Set("Authorization", "Bearer tok")
 	rec := httptest.NewRecorder()
@@ -115,7 +119,7 @@ func TestQuota_AuthError500(t *testing.T) {
 }
 
 func TestQuota_MethodNotAllowed(t *testing.T) {
-	h := New(authOK(), stubViewer{})
+	h := New(authOK(), &stubViewer{})
 	r := httptest.NewRequest("POST", "/v1/quota", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)

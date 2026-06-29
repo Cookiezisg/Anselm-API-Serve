@@ -143,7 +143,33 @@ type Config struct {
 	// DEV-ONLY:无 Caddy/TLS 的本机 plain-HTTP 登录时关 cookie Secure 标志。
 	// 生产恒 false(关了 cookie 在明文 HTTP 上可被嗅探/注入)。
 	DashboardDevInsecureCookie bool // DASHBOARD_DEV_INSECURE_COOKIE
+
+	// 运维白名单(operator unmetered allowlist):一组 SHA-256(token) 的 hex,命中的
+	// 请求**完全绕过全部风控**(分钟限速 / 异常降速 / 月度次数 / 日 token / 日次数子
+	// 限额 / 全局每日钱包预算,以及 /v1/install 的 PoW/单IP/单指纹/全局领号闸)——给
+	// operator 自己的设备开 god-mode。空集 = dormant(默认配置下行为逐字不变)。
+	//
+	// 凭据派生值(token 哈希),按机密同款纪律处理:WHITELIST_TOKEN_SHA256 env-only、
+	// 绝不入 Specs()/settings 表/Dump/Snapshot/日志(GW-INV-14 同级)。改需重启。
+	WhitelistTokenSHA256 map[string]struct{} // WHITELIST_TOKEN_SHA256(hex 集合;空=禁用)
 }
+
+// IsUnmetered reports whether tokenSHA256 (hex SHA-256 of a bearer token) is on the
+// operator unmetered allowlist. False fast when the set is empty (dormant) or the
+// hash is empty, so the hot path pays nothing in the default configuration.
+//
+// 命中 = god-mode(全部风控绕过)。空集/空哈希恒 false,dormant 零成本。
+func (c *Config) IsUnmetered(tokenSHA256 string) bool {
+	if len(c.WhitelistTokenSHA256) == 0 || tokenSHA256 == "" {
+		return false
+	}
+	_, ok := c.WhitelistTokenSHA256[tokenSHA256]
+	return ok
+}
+
+// HasUnmetered reports whether ANY token is whitelisted — the dormant short-circuit
+// callers check before hashing a token on the hot path.
+func (c *Config) HasUnmetered() bool { return len(c.WhitelistTokenSHA256) > 0 }
 
 // BoundInt64 / BoundInt enforce an inclusive [min,max] range on a parsed value,
 // naming the offending key + the bound it crossed. Exported so the infra env-load
@@ -310,12 +336,14 @@ func (c *Config) ValidateMemoryBudget() (advisory bool, err error) {
 
 // Clone returns a deep-enough copy: scalars are value-copied by the struct copy;
 // the only reference field overrides replace is ModelAllowlist (replaced
-// wholesale, never appended). DeepSeekAPIKeys / InstallPowSecret are secret slices
-// overrides never touch (PoW secret is env-only, absent from the registry), and
-// Location is never overridden. So a shallow struct copy is race-safe once the
-// pointer is atomically swapped.
+// wholesale, never appended). DeepSeekAPIKeys / InstallPowSecret / WhitelistTokenSHA256
+// are env-only reference fields overrides never touch (the PoW secret + the unmetered
+// allowlist are env-only, absent from the registry), so the shared map/slice headers
+// are read-only after load. Location is never overridden. So a shallow struct copy is
+// race-safe once the pointer is atomically swapped.
 //
-// 浅拷贝即足够:override 只整体替换 ModelAllowlist,机密 slice / Location 从不被改。
+// 浅拷贝即足够:override 只整体替换 ModelAllowlist;机密 slice / 白名单 map /
+// Location 均 env-only、load 后只读、从不被 override 改,共享 header 安全。
 func (c *Config) Clone() *Config {
 	cp := *c
 	return &cp

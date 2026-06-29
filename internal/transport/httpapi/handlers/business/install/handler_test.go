@@ -25,17 +25,25 @@ type stub struct {
 	gotPoWHeader string
 	gotIPKey     string
 	gotReq       dominstall.Request
+	gotUnmetered bool
+
+	unmetered bool // IsUnmetered result (operator whitelist god-mode re-mint).
+	powCalls  int
 }
 
 func (s *stub) PoWGate(_ context.Context, powHeader, ipKey string) *apierr.APIError {
+	s.powCalls++
 	s.gotPoWHeader = powHeader
 	s.gotIPKey = ipKey
 	return s.powAE
 }
 
-func (s *stub) Issue(_ context.Context, req dominstall.Request, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError) {
+func (s *stub) IsUnmetered(string) bool { return s.unmetered }
+
+func (s *stub) Issue(_ context.Context, req dominstall.Request, ipKey string, unmetered bool) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError) {
 	s.gotReq = req
 	s.gotIPKey = ipKey
+	s.gotUnmetered = unmetered
 	if s.issueAE != nil {
 		return appinstall.IssueResultView{}, s.gate, s.issueAE
 	}
@@ -102,6 +110,34 @@ func TestInstall_GateReject(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "INSTALL_RATE_LIMITED") {
 		t.Fatalf("code: %s", rec.Body.String())
+	}
+}
+
+// Operator god-mode re-mint: a whitelisted bearer (IsUnmetered → true) skips the
+// PoW gate entirely AND threads unmetered=true into Issue, even when PoW would
+// otherwise reject. The brand-new token still comes back.
+func TestInstall_UnmeteredSkipsPoWAndGates(t *testing.T) {
+	reset := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	s := &stub{
+		unmetered: true,
+		powAE:     apierr.ErrInstallPoWRequired, // would reject if PoW ran
+		view:      appinstall.IssueResultView{Token: "gwk_new", MonthlyQuota: 1234, ResetAt: reset},
+	}
+	h := New(s)
+	r := httptest.NewRequest("POST", "/v1/install", strings.NewReader(`{}`))
+	r.Header.Set("Authorization", "Bearer gwk_whitelisted")
+	r.Header.Set("X-PoW", "ch.nonce")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != 200 {
+		t.Fatalf("unmetered re-mint must succeed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if s.powCalls != 0 {
+		t.Fatalf("PoW gate must be skipped on the unmetered path, got %d calls", s.powCalls)
+	}
+	if !s.gotUnmetered {
+		t.Fatal("unmetered flag must be threaded into Issue")
 	}
 }
 

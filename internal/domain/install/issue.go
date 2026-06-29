@@ -19,6 +19,13 @@ type IssueParams struct {
 	IPGate     IPGate
 	GlobalGate GlobalGate
 	FPGate     FPGate
+
+	// Unmetered, when true, makes the store SKIP every Sybil gate (per-IP / global
+	// daily / per-fp) and insert the brand-new install row directly — the operator
+	// god-mode re-mint path (the caller already verified the presented bearer is
+	// whitelisted). It changes ONLY the gate phase: a brand-new token + fresh quota
+	// pool is still minted (GW-INV-12 unchanged — never a get-or-create / fp merge).
+	Unmetered bool
 }
 
 // IPGate is the always-on per-IP hourly bucket (INSTALL_PER_IP_HOUR, min 1 —

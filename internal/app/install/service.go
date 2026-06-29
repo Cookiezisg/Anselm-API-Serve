@@ -91,7 +91,7 @@ type IssueResultView struct {
 // store, so its table is never touched — dormant zero-cost), then performs the
 // gates + INSERT atomically via the store. A gate reject maps to its distinct
 // apierr code; the transport emits the unsampled WARN audit.
-func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string) (IssueResultView, install.Gate, *apierr.APIError) {
+func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string, unmetered bool) (IssueResultView, install.Gate, *apierr.APIError) {
 	cfg := s.cfg.Load()
 	now := s.now().UTC()
 
@@ -102,15 +102,38 @@ func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string) 
 		Fingerprint: req.Fingerprint,
 		Client:      req.Client,
 		Now:         now,
-		IPGate: install.IPGate{
+		Unmetered:   unmetered,
+	}
+	// Resolve the per-gate enable/ceilings from the snapshot — but ONLY when metered.
+	// An unmetered (whitelisted) re-mint leaves every gate zero so the store runs no
+	// Sybil gate at all (operator god-mode); the brand-new token + fresh quota pool
+	// is still minted exactly as always (GW-INV-12 unchanged).
+	if !unmetered {
+		p.IPGate = install.IPGate{
 			Key:        ipKey,
 			WindowHour: now.In(cfg.Location).Format("2006-01-02T15"),
 			Max:        cfg.InstallPerIPHour,
-		},
-		GlobalGate: s.globalGate(cfg, now),
-		FPGate:     s.fpGate(cfg, req.Fingerprint, now),
+		}
+		p.GlobalGate = s.globalGate(cfg, now)
+		p.FPGate = s.fpGate(cfg, req.Fingerprint, now)
 	}
 	return s.issueWith(ctx, cfg, token, p)
+}
+
+// IsUnmetered reports whether the presented bearer token is on the operator
+// unmetered allowlist (WHITELIST_TOKEN_SHA256). It is the SINGLE whitelist decision
+// point: chat, quota, and the install handler all route their god-mode check HERE so
+// the token hashing + the lookup live in one place and can never diverge. An empty
+// token or an empty allowlist returns false WITHOUT hashing (dormant zero-cost).
+func (s *Service) IsUnmetered(token string) bool {
+	if token == "" {
+		return false
+	}
+	cfg := s.cfg.Load()
+	if !cfg.HasUnmetered() {
+		return false
+	}
+	return cfg.IsUnmetered(install.HashToken(token))
 }
 
 // issueWith runs the atomic gates+insert and maps the outcome.

@@ -93,6 +93,9 @@ func (p *Provider) Snapshot() []any {
 		"disk_min_mb", c.DiskMinMB,
 		"disk_min_percent", c.DiskMinPercent,
 		"dashboard_auth", dashboardAuthMasked(c),
+		// Unmetered allowlist: COUNT ONLY (never the hashes) — low-cardinality, secret-
+		// safe, and lets the operator confirm the whitelist loaded at startup.
+		"whitelist_unmetered", fmt.Sprintf("%d configured", len(c.WhitelistTokenSHA256)),
 	}
 }
 

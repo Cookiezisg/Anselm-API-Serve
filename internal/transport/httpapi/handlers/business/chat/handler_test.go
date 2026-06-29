@@ -92,11 +92,12 @@ type stubAuth struct{}
 func (stubAuth) LookupInstall(context.Context, string) (string, dominstall.Status, bool, error) {
 	return "inst", dominstall.StatusActive, true, nil
 }
+func (stubAuth) IsUnmetered(string) bool { return false }
 
 type stubQuota struct{}
 
 func (stubQuota) SnapshotPeriod(time.Time) domquota.Period { return domquota.Period{Day: "2026-06-20"} }
-func (stubQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period) (*domquota.Reservation, error) {
+func (stubQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period, _ bool) (*domquota.Reservation, error) {
 	return &domquota.Reservation{RequestID: "r", InstallID: id, Period: p, Reserved: est}, nil
 }
 func (stubQuota) Settle(context.Context, *domquota.Reservation, int64) error { return nil }

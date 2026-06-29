@@ -2,6 +2,8 @@ package configprovider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"sync"
@@ -9,6 +11,14 @@ import (
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 )
+
+// sha256hex mirrors domain/install.HashToken (SHA-256 hex of the token bytes) so the
+// whitelist test computes the same hash a real token would land under, without
+// pulling the install domain into this infra test.
+func sha256hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // envMap builds a getenv closure over a map — hermetic, no process env.
 func envMap(m map[string]string) func(string) string {
@@ -150,6 +160,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 			m["GOMEMLIMIT_MIB"] = "4096"
 			m["MEM_BUDGET_MIB"] = "1000"
 		}, nil, "PERF-2 memory budget exceeded"},
+		{"whitelist bad hex", func(m map[string]string) { m["WHITELIST_TOKEN_SHA256"] = "nothex" }, nil, "WHITELIST_TOKEN_SHA256"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,6 +189,29 @@ func TestLoadBaseInvalidTzPanics(t *testing.T) {
 	env := minimalEnv()
 	env["RESET_TZ"] = "Mars/Phobos"
 	_, _ = LoadBase(envMap(env))
+}
+
+func TestLoadBaseWhitelistParses(t *testing.T) {
+	// Dormant by default (unset) → nil set, IsUnmetered/HasUnmetered both false.
+	if c := mustLoad(t, minimalEnv()); c.HasUnmetered() {
+		t.Fatal("unset WHITELIST_TOKEN_SHA256 must be dormant")
+	}
+
+	h1 := sha256hex("gwk_one")
+	h2 := sha256hex("gwk_two")
+	env := minimalEnv()
+	// Mixed case + whitespace + a duplicate must normalize to a 2-element lowercase set.
+	env["WHITELIST_TOKEN_SHA256"] = "  " + strings.ToUpper(h1) + " , " + h2 + ", " + h1
+	c := mustLoad(t, env)
+	if !c.HasUnmetered() || len(c.WhitelistTokenSHA256) != 2 {
+		t.Fatalf("whitelist set = %v, want 2 entries", c.WhitelistTokenSHA256)
+	}
+	if !c.IsUnmetered(h1) || !c.IsUnmetered(h2) {
+		t.Fatal("both whitelisted hashes must match (case-insensitively)")
+	}
+	if c.IsUnmetered(sha256hex("gwk_other")) {
+		t.Fatal("a non-whitelisted hash must not match")
+	}
 }
 
 func TestLoadBasePowSecretConfigured(t *testing.T) {

@@ -282,6 +282,32 @@ func TestRateLimited_AndDiskDegrade(t *testing.T) {
 	}
 }
 
+// Operator god-mode: a whitelisted (unmetered) request bypasses the per-install
+// rate limiter EVEN when it would deny (allow:false), and threads unmetered=true
+// into Reserve so the quota gates are lifted too. Contrast with
+// TestRateLimited_AndDiskDegrade, where the same allow:false metered request 429s.
+func TestUnmetered_BypassesRateLimitAndFlagsReserve(t *testing.T) {
+	q := &fakeQuota{}
+	up := &fakeUpstream{body: `{"id":"x","usage":{"total_tokens":7}}`}
+	unmeteredAuth := fakeAuth{id: "inst1", status: dominstall.StatusActive, found: true, unmetered: true}
+	svc, wg := build(Deps{
+		Auth: unmeteredAuth, Quota: q,
+		Upstream: up,
+		RL:       &fakeRL{allow: false}, // would reject every metered request
+		Throttle: fakeThrottle{observe: true},
+	})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 200 {
+		t.Fatalf("unmetered request must bypass the rate limiter, got status %d", sink.statusCode())
+	}
+	if !q.reserveUnmtered {
+		t.Fatal("unmetered flag must be threaded into Reserve (god-mode lifts the quota gates)")
+	}
+}
+
 func TestReserveDenial_Surfaces(t *testing.T) {
 	q := &fakeQuota{reserveErr: apierr.ErrBudgetExhausted}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})

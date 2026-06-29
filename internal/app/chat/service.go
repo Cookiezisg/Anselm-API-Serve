@@ -125,16 +125,26 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
+	// Operator god-mode: a whitelisted token bypasses EVERY risk control below — the
+	// anomaly throttle + per-install minute gate here, and (via the unmetered flag
+	// threaded into Reserve) all quota gates incl. the global wallet. Banned still
+	// wins above (a banned token never gets god-mode). Dormant zero-cost: false
+	// without hashing unless something is whitelisted (HasUnmetered short-circuit).
+	unmetered := s.auth.IsUnmetered(in.Token)
+
 	// 2) Anomaly observe (sets audit flag, NEVER rejects — the tightened bucket
 	// bites on the Allow below / next request), then the per-install minute gate.
-	throttled := s.throttle.Observe(installID)
-	if !s.rl.Allow(installID) {
-		if throttled {
-			s.log.Warn(ctx, "security_event", "event", "token_throttle",
-				"install_id", installID, "outcome", "rate_limited")
+	// Both skipped for an unmetered (whitelisted) request.
+	if !unmetered {
+		throttled := s.throttle.Observe(installID)
+		if !s.rl.Allow(installID) {
+			if throttled {
+				s.log.Warn(ctx, "security_event", "event", "token_throttle",
+					"install_id", installID, "outcome", "rate_limited")
+			}
+			writeErr(sink, apierr.ErrRateLimited)
+			return
 		}
-		writeErr(sink, apierr.ErrRateLimited)
-		return
 	}
 
 	// 2b) REL-6 disk-degrade: shed BEFORE any reservation (a DB write).
@@ -191,7 +201,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	// 6) Reserve atomically (count / install-day-tokens / global-day-budget). The
 	// period is snapshotted ONCE and threaded unchanged through settle/rollback.
 	period := s.quota.SnapshotPeriod(s.clock.Now())
-	resv, rerr := s.quota.Reserve(ctx, installID, est, period)
+	resv, rerr := s.quota.Reserve(ctx, installID, est, period, unmetered)
 	if rerr != nil {
 		// app/quota maps denials to apierr sentinels (returned as error); any other
 		// error normalizes to INTERNAL — never leak an internal detail.

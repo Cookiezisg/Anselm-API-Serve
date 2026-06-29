@@ -82,6 +82,7 @@ audience: [human, ai]
 | `DEEPSEEK_API_KEY` | **必填**；逗号分隔多 key，首个为主；缺失 → `ErrDeepSeekKeyRequired` |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 两者**同设或同空**（半配 fail-fast）；设了即启 dashboard |
 | `INSTALL_POW_SECRET` | env-only；present→`configured`/absent→`disabled`，**绝不自动生成**；生效 mode≠off 时必须非空 |
+| `WHITELIST_TOKEN_SHA256` | **运维白名单**（凭据派生，非机密但同纪律）：逗号分隔 64-hex `SHA-256(token)`；命中 = **god-mode 全风控绕过**（见 §7）；空=dormant；任一非 64-hex → fail-fast；`Snapshot` 只报 `N configured`，绝不出哈希，**不在** `Specs()`/`Dump`，改需重启 |
 
 ## 4. 跨字段语义（SEC-2，`ValidateSemantics`，env-load + overlay + 每次热改都跑）
 
@@ -98,3 +99,20 @@ audience: [human, ai]
 ## 6. 热改路径（`ApplyOverrides`）
 
 纯函数、全有或全无：克隆 base → 按 key 排序逐项 `applyOne`（未知/机密/startup-hard 指名拒绝）→ 重跑 `ValidateSemantics`；任一失败返 `(Config{}, err)`，**绝不返回半生效配置**。infra `Provider` 在写锁下：domain 校验 → `settings` 表全或无持久化 → 原子 swap（持久化失败不 swap）。读路径 `Load()` 无锁取当前 atomic 快照（每请求快照一次，热更新永不在单请求内半旧半新）。
+
+## 7. 运维白名单（`WHITELIST_TOKEN_SHA256`，god-mode 全风控绕过）
+
+operator 把自己设备 token 的 `SHA-256` 填进 `WHITELIST_TOKEN_SHA256`（`printf %s '<token>' | shasum -a 256`），命中的请求**完全绕过全部风控**——空集时默认配置行为逐字不变（dormant 零成本，不命中不哈希）。
+
+单一判定点 `app/install.Service.IsUnmetered(token)`（token 哈希 + 集合查；chat / quota / install handler 三处共用）。命中后：
+
+- **聊天 `/v1/chat/completions`**：跳过分钟限速 + 异常降速；`Reserve` 收到 `unmetered=true` → `unmeteredLimits()` 把**月度次数 / 日 token / 全局每日钱包预算**三闸抬到 registry 上限（`config.Max*`）→ 永不被拒；**日次数子限额（`DailySublimit`）置 0 → 直接禁用 gate 2b**（不再 +1 日计数，`SublimitApplied` 恒 false，Rollback 一致）。`reserve→settle→rollback` saga + ledger **代码逐字不变**（unmetered 路径只是少跑 gate 2b 这一条 UPDATE），用量照常**记账**（GW-INV-01..06 完好，只是不再 DENY）。`banned` 仍先于 god-mode 生效。
+- **配额 `/v1/quota`**：`available` 强制 `true`（client 预检不挡设备），`limit/used/remaining` 仍报真值。
+- **领号 `/v1/install`**：可带现有白名单 token 作 bearer 复领；命中 → 跳过 PoW + 单IP/全局/单指纹全部 Sybil 闸（`IssueParams.Unmetered`）。仍是全新行 + 全新配额池（GW-INV-12 不变）。
+
+🔴 代价（operator 显式选定）：
+
+1. **god-mode 设备用量无任何上限**——死循环会真烧钱；务必保护好这个 token 别外泄。
+2. **会拖垮他人**：god-mode 设备的花费**仍计入共享 `budget` 日预算表**（gate 3 的自增照跑，只是不再对它设限——saga 对称所需）。故一旦该设备失控把共享 `budget.tokens_used` 顶到 `GLOBAL_DAILY_BUDGET_TOKENS`，**当天所有普通用户都会 `BUDGET_EXHAUSTED` 被挡**（普通请求仍按真实预算闸）。即:god-mode 只让命中设备不被挡,**不等于他人风控不受影响**。
+
+守 GW-INV-41。
