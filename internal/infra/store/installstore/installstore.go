@@ -43,43 +43,37 @@ func New(writer, reader *orm.DB) *Store {
 func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.IssueResult, error) {
 	var result dinstall.IssueResult
 	err := s.w.Transaction(ctx, func(tx *orm.DB) error {
-		// Operator god-mode (p.Unmetered): skip EVERY Sybil gate — the caller already
-		// verified the presented bearer is whitelisted, so no per-IP/global/per-fp
-		// bucket is touched and the issuance always admits. Only the gate phase is
-		// skipped; the INSERT below still mints a brand-new row + fresh quota pool.
-		if !p.Unmetered {
-			// gate 1: per-IP hourly (always on, min 1). Prunes stale windows (B8).
-			ok, err := bumpIPRate(ctx, tx, p.IPGate)
+		// gate 1: per-IP hourly (always on, min 1). Prunes stale windows (B8).
+		ok, err := bumpIPRate(ctx, tx, p.IPGate)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateIP}
+			return errGateReject
+		}
+
+		// gate 2: global daily coarse valve (skipped when disabled).
+		if p.GlobalGate.Enabled {
+			ok, err := bumpGlobalRate(ctx, tx, p.GlobalGate)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateIP}
+				result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateGlobal}
 				return errGateReject
 			}
+		}
 
-			// gate 2: global daily coarse valve (skipped when disabled).
-			if p.GlobalGate.Enabled {
-				ok, err := bumpGlobalRate(ctx, tx, p.GlobalGate)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateGlobal}
-					return errGateReject
-				}
+		// gate 3: per-fp daily + cooldown (skipped when disabled / empty fp).
+		if p.FPGate.Enabled {
+			ok, err := bumpFPRate(ctx, tx, p.FPGate)
+			if err != nil {
+				return err
 			}
-
-			// gate 3: per-fp daily + cooldown (skipped when disabled / empty fp).
-			if p.FPGate.Enabled {
-				ok, err := bumpFPRate(ctx, tx, p.FPGate)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateFP}
-					return errGateReject
-				}
+			if !ok {
+				result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateFP}
+				return errGateReject
 			}
 		}
 

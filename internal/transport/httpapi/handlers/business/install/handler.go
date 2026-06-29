@@ -24,11 +24,7 @@ import (
 // stub; the concrete service satisfies it structurally.
 type Service interface {
 	PoWGate(ctx context.Context, powHeader, ipKey string) *apierr.APIError
-	Issue(ctx context.Context, req dominstall.Request, ipKey string, unmetered bool) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError)
-	// IsUnmetered reports whether an optional bearer (the device's existing
-	// whitelisted token) puts this re-mint on the operator god-mode path: PoW + all
-	// Sybil gates skipped. Empty/non-whitelisted bearer → false (normal gates).
-	IsUnmetered(token string) bool
+	Issue(ctx context.Context, req dominstall.Request, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError)
 }
 
 // Handler serves POST /v1/install over a Service.
@@ -65,20 +61,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ipKey := clientip.Key(clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For")))
 
-	// Operator god-mode: a device that already holds a whitelisted token may present
-	// it as a bearer to re-mint freely. When unmetered we skip the PoW gate AND every
-	// Sybil gate (passed into Issue). Empty/non-whitelisted bearer → false → the full
-	// normal path runs unchanged (dormant zero-cost when no token is whitelisted).
-	unmetered := h.svc.IsUnmetered(response.Bearer(r))
-
 	// PoW gate first — cheapest flood defense, before any body read (§3). Dormant
 	// modes admit with no header read inside the app, so this is zero-cost off.
-	if !unmetered {
-		if ae := h.svc.PoWGate(ctx, r.Header.Get("X-PoW"), ipKey); ae != nil {
-			appinstall.AuditReject(ctx, ipKey, "pow", ae.Code)
-			response.WriteError(w, ae)
-			return
-		}
+	if ae := h.svc.PoWGate(ctx, r.Header.Get("X-PoW"), ipKey); ae != nil {
+		appinstall.AuditReject(ctx, ipKey, "pow", ae.Code)
+		response.WriteError(w, ae)
+		return
 	}
 
 	var req request
@@ -89,7 +77,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// NewRequest trims+truncates so the Sybil bucket key and the stored row derive
 	// from the identical post-truncate string (domain owns the normalization).
-	res, gate, ae := h.svc.Issue(ctx, dominstall.NewRequest(req.Fingerprint, req.Client), ipKey, unmetered)
+	res, gate, ae := h.svc.Issue(ctx, dominstall.NewRequest(req.Fingerprint, req.Client), ipKey)
 	if ae != nil {
 		// A tripped gate is an audited security event; an internal fault (GateNone)
 		// renders INTERNAL without an audit line.

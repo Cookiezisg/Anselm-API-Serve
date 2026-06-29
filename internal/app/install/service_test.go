@@ -113,11 +113,11 @@ func TestIssueFreshTokenEachCall(t *testing.T) {
 	s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, mxNew, nil)
 
 	req := install.NewRequest("fp-aaa", "anselm/0.1")
-	v1, gate, ae := s.Issue(context.Background(), req, "ipk1", false)
+	v1, gate, ae := s.Issue(context.Background(), req, "ipk1")
 	if ae != nil || gate != install.GateNone {
 		t.Fatalf("issue 1: gate=%q ae=%v", gate, ae)
 	}
-	v2, _, ae2 := s.Issue(context.Background(), req, "ipk1", false)
+	v2, _, ae2 := s.Issue(context.Background(), req, "ipk1")
 	if ae2 != nil {
 		t.Fatal(ae2)
 	}
@@ -154,7 +154,7 @@ func TestIssueGateRejectMapsDistinctCodes(t *testing.T) {
 	for _, tc := range cases {
 		store := &fakeStore{issueResult: install.IssueResult{Admitted: false, Gate: tc.gate}}
 		s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, nil, nil)
-		_, gate, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk", false)
+		_, gate, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk")
 		if ae == nil || ae.Code != tc.code {
 			t.Fatalf("gate %q: code=%v want %s", tc.gate, ae, tc.code)
 		}
@@ -170,7 +170,7 @@ func TestIssueGateRejectMapsDistinctCodes(t *testing.T) {
 func TestIssueGatesDefaultDisabledParams(t *testing.T) {
 	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
 	s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, nil, nil)
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp-aaa", ""), "ipk", false); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp-aaa", ""), "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	if store.lastParams.GlobalGate.Enabled {
@@ -188,7 +188,7 @@ func TestIssueEmptyFPDisablesFPGate(t *testing.T) {
 	cfg.InstallPerFPDaily = 1
 	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
 	s := New(fakeCfg{cfg}, store, fakeNonces{}, nil, nil)
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("", ""), "ipk", false); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("", ""), "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	if store.lastParams.FPGate.Enabled {
@@ -205,7 +205,7 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 	s := New(fakeCfg{cfg}, store, fakeNonces{}, nil, nil)
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	s.SetClock(func() time.Time { return now })
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk", false); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	g := store.lastParams.FPGate
@@ -218,7 +218,7 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 
 	cfg.InstallPerFPDaily = 0
 	cfg.InstallPerFPCooldownSec = 60 // cap off, cooldown on
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk", false); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	g = store.lastParams.FPGate
@@ -227,59 +227,6 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 	}
 	if !g.Cutoff.Equal(now.Add(-60 * time.Second)) {
 		t.Fatalf("cooldown cutoff = %v want %v", g.Cutoff, now.Add(-60*time.Second))
-	}
-}
-
-// TestIssueUnmeteredSkipsGates: with ALL Sybil gates configured, an unmetered
-// (whitelisted) re-mint sets IssueParams.Unmetered and leaves every gate struct
-// zero (the store then runs no gate at all) — a fresh token is still minted.
-func TestIssueUnmeteredSkipsGates(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.InstallPerIPHour = 1 // would normally bite immediately
-	cfg.InstallGlobalDailyCap = 1
-	cfg.InstallPerFPDaily = 1
-	cfg.InstallPerFPCooldownSec = 3600
-	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
-	s := New(fakeCfg{cfg}, store, fakeNonces{}, nil, nil)
-
-	v, gate, ae := s.Issue(context.Background(), install.NewRequest("fp", "anselm"), "ipk", true)
-	if ae != nil || gate != install.GateNone {
-		t.Fatalf("unmetered issue: gate=%q ae=%v", gate, ae)
-	}
-	if v.Token == "" {
-		t.Fatal("unmetered issue must still mint a fresh token")
-	}
-	p := store.lastParams
-	if !p.Unmetered {
-		t.Fatal("IssueParams.Unmetered must be true on the unmetered path")
-	}
-	if p.IPGate.Max != 0 || p.GlobalGate.Enabled || p.FPGate.Enabled {
-		t.Fatalf("unmetered path must leave all gates zero, got %+v", p)
-	}
-}
-
-// TestIsUnmetered: only a whitelisted token-hash matches; empty token / dormant
-// (empty allowlist) / non-whitelisted all return false.
-func TestIsUnmetered(t *testing.T) {
-	const tok = "gwk_operator_device_token"
-	cfg := testConfig(t)
-
-	// Dormant (no allowlist): always false, even for any token.
-	dormant := New(fakeCfg{cfg}, &fakeStore{}, fakeNonces{}, nil, nil)
-	if dormant.IsUnmetered(tok) {
-		t.Fatal("dormant allowlist must never report unmetered")
-	}
-
-	cfg.WhitelistTokenSHA256 = map[string]struct{}{install.HashToken(tok): {}}
-	s := New(fakeCfg{cfg}, &fakeStore{}, fakeNonces{}, nil, nil)
-	if !s.IsUnmetered(tok) {
-		t.Fatal("whitelisted token must be unmetered")
-	}
-	if s.IsUnmetered("gwk_some_other_token") {
-		t.Fatal("non-whitelisted token must not be unmetered")
-	}
-	if s.IsUnmetered("") {
-		t.Fatal("empty token must not be unmetered")
 	}
 }
 

@@ -66,51 +66,6 @@ func TestIssueFreshTokenAndRow(t *testing.T) {
 	}
 }
 
-// TestIssueUnmeteredSkipsAllGates: with EVERY gate configured to reject (IP max 0,
-// global cap 0, fp cap 0), p.Unmetered must admit anyway AND touch no rate-bucket
-// table — only the brand-new installs row is written (operator god-mode re-mint).
-func TestIssueUnmeteredSkipsAllGates(t *testing.T) {
-	st, db := newStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
-	day := now.Format("2006-01-02")
-
-	p := dinstall.IssueParams{
-		InstallID:   "ins_god",
-		TokenSHA256: dinstall.HashToken("gwk_god"),
-		Fingerprint: "fp-god",
-		Now:         now,
-		Unmetered:   true,
-		// Every gate set to a configuration that would otherwise reject immediately.
-		IPGate:     dinstall.IPGate{Key: "ipk-god", WindowHour: now.Format("2006-01-02T15"), Max: 0},
-		GlobalGate: dinstall.GlobalGate{Enabled: true, WindowDay: day, Cap: 0},
-		FPGate:     dinstall.FPGate{Enabled: true, FPSHA256: dinstall.HashFingerprint("fp-god"), WindowDay: day, Cap: 0, Cutoff: now},
-	}
-	res, err := st.Issue(ctx, p)
-	if err != nil || !res.Admitted {
-		t.Fatalf("unmetered issue must admit despite rejecting gates: admitted=%v err=%v", res.Admitted, err)
-	}
-
-	// The installs row exists; NO Sybil bucket table was touched.
-	for _, tc := range []struct {
-		table string
-		want  int
-	}{
-		{"installs", 1},
-		{"install_ip_rate", 0},
-		{"install_global_rate", 0},
-		{"install_fp_rate", 0},
-	} {
-		var n int
-		if err := db.Reader.QueryRow(ctx, "SELECT COUNT(*) FROM "+tc.table).Scan(&n); err != nil {
-			t.Fatalf("count %s: %v", tc.table, err)
-		}
-		if n != tc.want {
-			t.Fatalf("%s rows=%d want %d (unmetered must skip gate tables)", tc.table, n, tc.want)
-		}
-	}
-}
-
 func TestIssueStoresTokenAndFPAsHash(t *testing.T) {
 	st, db := newStore(t)
 	ctx := context.Background()

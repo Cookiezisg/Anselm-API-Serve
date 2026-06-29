@@ -55,37 +55,30 @@ func (s *fakeSink) header(k string) string     { s.mu.Lock(); defer s.mu.Unlock(
 // --- ports ---
 
 type fakeAuth struct {
-	id        string
-	status    dominstall.Status
-	found     bool
-	err       error
-	unmetered bool // IsUnmetered result (operator whitelist god-mode).
+	id     string
+	status dominstall.Status
+	found  bool
+	err    error
 }
 
 func (a fakeAuth) LookupInstall(context.Context, string) (string, dominstall.Status, bool, error) {
 	return a.id, a.status, a.found, a.err
 }
 
-func (a fakeAuth) IsUnmetered(string) bool { return a.unmetered }
-
 type fakeQuota struct {
-	mu              sync.Mutex
-	reserveErr      error
-	reserved        int64
-	reserveUnmtered bool // records the unmetered flag the use case threaded into Reserve.
-	settleCalls     []int64
-	settleErr       error
-	rollbackN       int
-	rollbackErr     error
+	mu          sync.Mutex
+	reserveErr  error
+	reserved    int64
+	settleCalls []int64
+	settleErr   error
+	rollbackN   int
+	rollbackErr error
 }
 
 func (q *fakeQuota) SnapshotPeriod(time.Time) domquota.Period {
 	return domquota.Period{Month: "2026-06", Day: "2026-06-20"}
 }
-func (q *fakeQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period, unmetered bool) (*domquota.Reservation, error) {
-	q.mu.Lock()
-	q.reserveUnmtered = unmetered
-	q.mu.Unlock()
+func (q *fakeQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period) (*domquota.Reservation, error) {
 	if q.reserveErr != nil {
 		return nil, q.reserveErr
 	}

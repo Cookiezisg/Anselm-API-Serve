@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 )
 
@@ -66,38 +65,13 @@ func (s *Service) SnapshotPeriod(now time.Time) quota.Period {
 
 // Reserve pre-debits the guardrails atomically, mapping a typed denial to its
 // wire sentinel. The Limits snapshot is taken ONCE here and passed into the
-// store so the whole reserve sees a single consistent config view. When unmetered
-// (the caller verified a whitelisted token), the snapshot's caps are lifted so NO
-// gate ever binds — the saga/ledger are otherwise unchanged, so usage is still
-// recorded, just never denied (operator god-mode).
-func (s *Service) Reserve(ctx context.Context, installID string, est int64, p quota.Period, unmetered bool) (*quota.Reservation, error) {
-	lim := s.cfg.Limits()
-	if unmetered {
-		lim = unmeteredLimits()
-	}
-	r, err := s.repo.Reserve(ctx, installID, est, p, lim)
+// store so the whole reserve sees a single consistent config view.
+func (s *Service) Reserve(ctx context.Context, installID string, est int64, p quota.Period) (*quota.Reservation, error) {
+	r, err := s.repo.Reserve(ctx, installID, est, p, s.cfg.Limits())
 	if err != nil {
 		return nil, mapReserveErr(err)
 	}
 	return r, nil
-}
-
-// unmeteredLimits is the per-request guardrail snapshot for a whitelisted device:
-// every cap lifted to its registry maximum so NO conditional-UPDATE gate in Reserve
-// can ever bind — month count, install-day tokens, the global daily wallet (full
-// god-mode, the operator's explicit choice), and DailySublimit=0 which skips gate 2b
-// entirely (no day-count +1; SublimitApplied stays false → Rollback consistent). The
-// reserve→settle→rollback saga, the ledger row, and the gate structure are byte-for-
-// byte unchanged (GW-INV-01..06 intact): usage is still RECORDED (the increments
-// still fire), it is just never DENIED. Only THIS request's snapshot is lifted — the
-// persisted config is never touched, so SEC-2 (GW-INV-10) holds for everyone else.
-func unmeteredLimits() quota.Limits {
-	return quota.Limits{
-		MonthlyQuota:         config.MaxMonthlyQuota,
-		InstallDailyTokenCap: config.MaxInstallDailyTokenCap,
-		GlobalDailyBudget:    config.MaxGlobalDailyBudget,
-		DailySublimit:        0,
-	}
 }
 
 // mapReserveErr maps the four typed denials to apierr sentinels in spec order;
@@ -143,11 +117,7 @@ type View struct {
 }
 
 // View builds the read model from the authoritative monthly count + day budget.
-// When unmetered (a whitelisted device), Available is forced true so a client that
-// pre-checks /v1/quota before chatting never blocks the operator's own device — the
-// server never gates it either. Limit/Used/Remaining stay the real figures (honest
-// display); only availability is overridden.
-func (s *Service) View(ctx context.Context, installID string, p quota.Period, unmetered bool) (*View, error) {
+func (s *Service) View(ctx context.Context, installID string, p quota.Period) (*View, error) {
 	used, budgetUsed, err := s.repo.View(ctx, installID, p)
 	if err != nil {
 		return nil, err
@@ -157,16 +127,12 @@ func (s *Service) View(ctx context.Context, installID string, p quota.Period, un
 	if remaining < 0 {
 		remaining = 0
 	}
-	available := remaining > 0 && budgetUsed < lim.GlobalDailyBudget
-	if unmetered {
-		available = true
-	}
 	return &View{
 		Limit:     lim.MonthlyQuota,
 		Used:      used,
 		Remaining: remaining,
 		ResetAt:   quota.MonthResetAt(p, s.cfg.Location()),
-		Available: available,
+		Available: remaining > 0 && budgetUsed < lim.GlobalDailyBudget,
 	}, nil
 }
 

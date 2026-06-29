@@ -24,16 +24,13 @@ import (
 // never a second validator.
 type Authenticator interface {
 	LookupInstall(ctx context.Context, token string) (id string, status dominstall.Status, found bool, err error)
-	// IsUnmetered reports whether the bearer is whitelisted (operator god-mode), so
-	// /v1/quota reports available=true and a quota-gating client never blocks it.
-	IsUnmetered(token string) bool
 }
 
 // Viewer is the app/quota read-model surface. An interface so the handler unit-
 // tests against a stub; *app/quota.Service satisfies it structurally.
 type Viewer interface {
 	SnapshotPeriod(now time.Time) domquota.Period
-	View(ctx context.Context, installID string, p domquota.Period, unmetered bool) (*appquota.View, error)
+	View(ctx context.Context, installID string, p domquota.Period) (*appquota.View, error)
 }
 
 // Handler serves GET /v1/quota.
@@ -63,15 +60,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.WriteErrorWith(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "method not allowed")
 		return
 	}
-	token := response.Bearer(r)
-	installID, ae := authInstall(r.Context(), h.auth, token)
+	installID, ae := authInstall(r.Context(), h.auth, response.Bearer(r))
 	if ae != nil {
 		response.WriteError(w, ae)
 		return
 	}
 
 	p := h.view.SnapshotPeriod(time.Now())
-	v, err := h.view.View(r.Context(), installID, p, h.auth.IsUnmetered(token))
+	v, err := h.view.View(r.Context(), installID, p)
 	if err != nil {
 		response.WriteErrorWith(w, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return

@@ -127,9 +127,6 @@ jobs:
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
-          # 运维白名单(god-mode):operator 自己设备 token 的 SHA-256 集合,命中即免一切风控。
-          # 凭据派生值 → 经 secret 注入(不入公开仓库/不入 Actions 日志);未配则空=dormant。
-          WHITELIST_TOKEN_SHA256: ${{ secrets.WHITELIST_TOKEN_SHA256 }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
           # Build the gateway env file content locally (secrets only live in the
@@ -173,12 +170,6 @@ jobs:
           TOKEN_ANOMALY_RPM=8
           TOKEN_THROTTLE_FACTOR=4
           TOKEN_THROTTLE_COOLDOWN_SEC=600
-          # 运维白名单 / god-mode:命中的设备(其 token 的 SHA-256)免一切风控。经上方 secret
-          # 注入(WHITELIST_TOKEN_SHA256);未配 secret → 空 → dormant(零行为变化)。
-          # 要启用:仓库 Settings → Secrets → 新建 WHITELIST_TOKEN_SHA256 = 你的 token 哈希
-          #   (printf %s '<token>' | shasum -a 256;多个逗号分隔)。⚠️ god-mode 设备失控会
-          #   烧钱并耗尽共享日预算致他人 BUDGET_EXHAUSTED(详见 docs/references/backend/config.md §7)。
-          WHITELIST_TOKEN_SHA256=${WHITELIST_TOKEN_SHA256}
           # PERF-2 内存预算(2G 机最坏 RSS = GOMEMLIMIT + cache×(1+READ_POOL) + mmap < 2G;
           # 须与 config.go 代码默认对齐:768 + 32×(1+4) + 256 = 1184MiB,留 ≈464MiB 安全垫)。
           GOMEMLIMIT_MIB=768

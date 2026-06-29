@@ -20,7 +20,7 @@ audience: [human, ai]
 
 | 方法 + 路径 | RED label | handler | 鉴权 | 说明 |
 |---|---|---|---|---|
-| `POST /v1/install` | `install` | `business/install` | 无（可选白名单 bearer） | 领号：每次全新 install 行 + 全新配额池，返回**一次性**新 token；防 Sybil 闸 + PoW（默认 dormant）。带 `WHITELIST_TOKEN_SHA256` 命中的 bearer 复领时跳过 PoW + 全部 Sybil 闸（god-mode，GW-INV-41） |
+| `POST /v1/install` | `install` | `business/install` | 无 | 领号：每次全新 install 行 + 全新配额池，返回**一次性**新 token；防 Sybil 闸 + PoW（默认 dormant） |
 | `GET /v1/install/challenge` | `install_challenge` | `business/challenge` | 无 | 取 PoW challenge（无状态 `base64(rand‖ts‖HMAC[:16])`，120s TTL） |
 | `POST /v1/chat/completions` | `chat_completions` | `business/chat` | bearer | 代理 DeepSeek；悲观三闸门 reserve→settle/rollback；流式透传 |
 | `GET /v1/quota` | `quota` | `business/quota` | bearer | 查当前 install 配额用量 |

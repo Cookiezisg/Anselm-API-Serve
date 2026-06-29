@@ -211,61 +211,10 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	}
 	c.DashboardDevInsecureCookie = g.boolean("DASHBOARD_DEV_INSECURE_COOKIE", false)
 
-	// Operator unmetered allowlist (env-only, GW-INV-14 discipline): comma-separated
-	// hex SHA-256(token). Whitelisted tokens bypass ALL risk controls (god-mode).
-	// Empty = dormant. A malformed entry fails fast — a typo must not silently leave
-	// the operator's device un-whitelisted (and still risk-controlled).
-	c.WhitelistTokenSHA256 = loadWhitelist(getenv, g)
-
 	if g.err != nil {
 		return config.Config{}, g.err
 	}
 	return c, nil
-}
-
-// loadWhitelist parses WHITELIST_TOKEN_SHA256 into a hex-hash set. Each entry is
-// trimmed, lower-cased, and validated as a 64-char hex SHA-256; a malformed entry
-// records a fail-fast error via g (never silently dropped). Empty/unset → nil (the
-// dormant zero-value; IsUnmetered/HasUnmetered both read it as disabled).
-func loadWhitelist(getenv func(string) string, g *envReader) map[string]struct{} {
-	raw := strings.TrimSpace(getenv("WHITELIST_TOKEN_SHA256"))
-	if raw == "" {
-		return nil
-	}
-	set := make(map[string]struct{})
-	for idx, h := range strings.Split(raw, ",") {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h == "" {
-			continue
-		}
-		if !isHex64(h) {
-			// NEVER echo the raw entry: the most likely operator mistake is pasting the
-			// TOKEN itself instead of its SHA-256, and that plaintext token would
-			// otherwise land in stderr/journald in the clear. Report only the position
-			// + length (low-cardinality, non-secret) — enough to fix the typo.
-			g.fail(fmt.Sprintf("WHITELIST_TOKEN_SHA256: entry #%d is not a 64-char hex SHA-256 (got %d chars); set SHA-256(token), not the token itself", idx+1, len(h)))
-			return nil
-		}
-		set[h] = struct{}{}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return set
-}
-
-// isHex64 reports whether s is exactly 64 lowercase hex digits (a SHA-256 hex).
-func isHex64(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // loadPowSecret resolves the env-only INSTALL_POW_SECRET into the in-memory key +

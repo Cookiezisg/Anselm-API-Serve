@@ -39,14 +39,10 @@ type Sink interface {
 }
 
 // Authenticator resolves a bearer token to its install. Satisfied by
-// *app/install.Service. Status is the typed domain enum so the use case branches on
-// StatusBanned without a stringly-typed compare. IsUnmetered is the SINGLE operator-
-// whitelist decision point (token hashing + lookup live in app/install): a true
-// result means this request bypasses ALL risk controls (rate limit, anomaly
-// throttle, and every quota gate incl. the global wallet) — god-mode.
+// *app/install.Service.LookupInstall. Status is the typed domain enum so the use
+// case branches on StatusBanned without a stringly-typed compare.
 type Authenticator interface {
 	LookupInstall(ctx context.Context, token string) (id string, status dominstall.Status, found bool, err error)
-	IsUnmetered(token string) bool
 }
 
 // Quota is the accounting port. Satisfied by *app/quota.Service. The use case
@@ -55,7 +51,7 @@ type Authenticator interface {
 // (not swallowed) so the use case can count + WARN them (B2).
 type Quota interface {
 	SnapshotPeriod(now time.Time) domquota.Period
-	Reserve(ctx context.Context, installID string, est int64, p domquota.Period, unmetered bool) (*domquota.Reservation, error)
+	Reserve(ctx context.Context, installID string, est int64, p domquota.Period) (*domquota.Reservation, error)
 	Settle(ctx context.Context, r *domquota.Reservation, actual int64) error
 	Rollback(ctx context.Context, r *domquota.Reservation) error
 }

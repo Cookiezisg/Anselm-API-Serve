@@ -75,7 +75,7 @@ func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := newService(&fakeRepo{reserveErr: c.in}, Limits{})
-			_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}, false)
+			_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
 			if !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
 			}
@@ -85,7 +85,7 @@ func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 
 func TestReserveBudgetIs402(t *testing.T) {
 	s := newService(&fakeRepo{reserveErr: dquota.ErrBudgetExceeded}, Limits{})
-	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}, false)
+	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
 	var ae *apierr.APIError
 	if !errors.As(err, &ae) || ae.Status != 402 {
 		t.Fatalf("budget deny should be 402, got %v", err)
@@ -95,7 +95,7 @@ func TestReserveBudgetIs402(t *testing.T) {
 func TestReserveInternalErrorPassesThrough(t *testing.T) {
 	boom := errors.New("disk on fire")
 	s := newService(&fakeRepo{reserveErr: boom}, Limits{})
-	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}, false)
+	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
 	if !errors.Is(err, boom) {
 		t.Fatalf("non-deny error should pass through, got %v", err)
 	}
@@ -105,31 +105,11 @@ func TestReservePassesLiveLimitsSnapshot(t *testing.T) {
 	repo := &fakeRepo{reserveOut: &dquota.Reservation{RequestID: "req_x"}}
 	want := Limits{MonthlyQuota: 100, InstallDailyTokenCap: 50, GlobalDailyBudget: 1000, DailySublimit: 7}
 	s := newService(repo, want)
-	if _, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}, false); err != nil {
+	if _, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 	if repo.gotLimits != want {
 		t.Fatalf("store got limits %+v, want %+v", repo.gotLimits, want)
-	}
-}
-
-// Unmetered (operator whitelist): Reserve must pass a fully-lifted Limits snapshot
-// so NO gate can bind — every cap at its registry max and DailySublimit 0. The
-// persisted/live config is NOT what reaches the store on this path (god-mode).
-func TestReserveUnmeteredLiftsAllCaps(t *testing.T) {
-	repo := &fakeRepo{reserveOut: &dquota.Reservation{RequestID: "req_x"}}
-	// A tight live config that would normally deny almost everything.
-	tight := Limits{MonthlyQuota: 1, InstallDailyTokenCap: 1, GlobalDailyBudget: 1, DailySublimit: 1}
-	s := newService(repo, tight)
-	if _, err := s.Reserve(context.Background(), "ins_1", 999_999, dquota.Period{}, true); err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	want := unmeteredLimits()
-	if repo.gotLimits != want {
-		t.Fatalf("unmetered reserve passed limits %+v, want lifted %+v", repo.gotLimits, want)
-	}
-	if repo.gotLimits.DailySublimit != 0 {
-		t.Fatalf("unmetered DailySublimit must be 0 (gate 2b skipped), got %d", repo.gotLimits.DailySublimit)
 	}
 }
 
@@ -164,7 +144,7 @@ func TestViewAvailabilityRule(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			repo := &fakeRepo{used: c.used, budgetUsed: c.budgetUsed}
-			v, err := newService(repo, lim).View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"}, false)
+			v, err := newService(repo, lim).View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"})
 			if err != nil {
 				t.Fatalf("view: %v", err)
 			}
@@ -181,28 +161,9 @@ func TestViewAvailabilityRule(t *testing.T) {
 	}
 }
 
-// Unmetered (operator whitelist): View must report available=true even when the
-// month count is exhausted AND the day budget is over, so a client that pre-checks
-// /v1/quota before chatting never blocks the operator's own device.
-func TestViewUnmeteredForcesAvailable(t *testing.T) {
-	lim := Limits{MonthlyQuota: 100, GlobalDailyBudget: 1000}
-	repo := &fakeRepo{used: 100, budgetUsed: 2000} // month-exhausted + budget-over.
-	v, err := newService(repo, lim).View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"}, true)
-	if err != nil {
-		t.Fatalf("view: %v", err)
-	}
-	if !v.Available {
-		t.Fatal("unmetered view must report available=true")
-	}
-	// Display figures stay honest (real limit/used), only availability is forced.
-	if v.Limit != lim.MonthlyQuota || v.Used != 100 {
-		t.Fatalf("unmetered view should keep real figures, got limit=%d used=%d", v.Limit, v.Used)
-	}
-}
-
 func TestViewResetAt(t *testing.T) {
 	v, err := newService(&fakeRepo{}, Limits{MonthlyQuota: 1}).
-		View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"}, false)
+		View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"})
 	if err != nil {
 		t.Fatalf("view: %v", err)
 	}
