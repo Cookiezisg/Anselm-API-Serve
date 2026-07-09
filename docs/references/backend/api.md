@@ -16,7 +16,7 @@ audience: [human, ai]
 
 ## 1. business mux（`LISTEN_ADDR`，默认 `127.0.0.1:8080`）
 
-中间件链外→内：`Recover`（X-Request-ID + scoped logger + panic→counter）→ `DenyCORS` → `MaxBody(256 KiB)` → mux。每条业务路由（**非 `/healthz`**）经 `Mx.Wrap(label,…)` 包 HTTP RED，label 低基数固定。`maxBodyBytes = 256 * 1024`（GW-INV-34）。
+中间件链外→内：`Recover`（X-Request-ID + scoped logger + panic→counter）→ `DenyCORS` → `MaxBody(MAX_BODY_BYTES)` → mux。每条业务路由（**非 `/healthz`**）经 `Mx.Wrap(label,…)` 包 HTTP RED，label 低基数固定。body 上限来自配置 `MAX_BODY_BYTES`（默认 256KiB，重启生效，GW-INV-34）；`/v1/install` 在 handler 内另有独立 8KiB 小上限（未鉴权面）。
 
 | 方法 + 路径 | RED label | handler | 鉴权 | 说明 |
 |---|---|---|---|---|

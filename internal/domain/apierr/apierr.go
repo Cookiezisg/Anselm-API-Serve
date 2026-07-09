@@ -106,6 +106,32 @@ var (
 	ErrDiskLow = NewError(statusServiceUnavailable, "DISK_LOW", "service temporarily read-only: low disk space")
 )
 
+// CodeUpstreamRejected is the wire code for an upstream-originated request
+// rejection; exported as a const so callers branch without a magic string.
+const CodeUpstreamRejected = "UPSTREAM_REJECTED"
+
+// Coarse machine reasons an UPSTREAM_REJECTED carries in details.reason — a
+// CLOSED enum derived by the upstream layer from the provider's 4xx error shape.
+// Upstream TEXT never passes through (GW-INV-11); only one of these values does.
+const (
+	// RejectedContextLength — input (+ max_tokens) exceeds the model's context window.
+	RejectedContextLength = "context_length"
+	// RejectedMaxTokens — max_tokens outside the model's accepted range.
+	RejectedMaxTokens = "max_tokens"
+	// RejectedInvalid — any other request-shaped upstream rejection.
+	RejectedInvalid = "invalid_request"
+)
+
+// UpstreamRejected — the upstream model provider rejected the request as invalid
+// (e.g. context length exceeded). 400: the CLIENT must change the request, so it
+// is neither retried nor a breaker fault (ADR-011). The message is fixed and the
+// details carry only the coarse reason enum — never the upstream body (GW-INV-11).
+func UpstreamRejected(reason string) *APIError {
+	return NewErrorWithDetails(statusBadRequest, CodeUpstreamRejected,
+		"upstream rejected the request: reduce input size or max_tokens, or fix request parameters",
+		map[string]any{"reason": reason})
+}
+
 // Internal is the normalization target for any non-*APIError reaching the
 // transport renderer — never leak internal detail/upstream body/key (§4.3).
 // The renderer constructs this; defined here so the contract has one home.

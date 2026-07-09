@@ -37,13 +37,18 @@ func errMsg(msg string) error { return errors.New(msg) }
 // 每个运行时可改数值项都设合理上界(不止下界):防 OOM 与「天文数字=护栏形同虚设」。
 // env 与 overlay 两路共用同一套天花板,绝不分歧。
 const (
-	MaxMonthlyQuota             int64 = 1_000_000_000
-	MaxGlobalDailyBudget        int64 = 1_000_000_000_000
-	MaxInstallDailyTokenCap     int64 = 1_000_000_000_000
-	MaxTokensCap                int64 = 1_000_000
-	MaxInputTokenCap            int64 = 10_000_000
-	MaxMessages                 int   = 100_000
-	MaxMessageChars             int   = 16 * 1024 * 1024
+	MaxMonthlyQuota         int64 = 1_000_000_000
+	MaxGlobalDailyBudget    int64 = 1_000_000_000_000
+	MaxInstallDailyTokenCap int64 = 1_000_000_000_000
+	MaxTokensCap            int64 = 1_000_000
+	MaxInputTokenCap        int64 = 10_000_000
+	MaxMessages             int   = 100_000
+	MaxMessageChars         int   = 16 * 1024 * 1024
+	// MaxBodyBytesCeiling bounds MAX_BODY_BYTES: bodies are fully buffered (~3.5×
+	// peak per in-flight request incl. decode + upstream re-marshal), so the
+	// ceiling is what the reference 2G box tolerates at N_GLOBAL — never higher.
+	MaxBodyBytesCeiling         int64 = 8 * 1024 * 1024
+	MinBodyBytes                int64 = 4 * 1024
 	MaxNGlobalConcurrency       int   = 100_000
 	MaxRatePerMin               int   = 10_000_000
 	MaxDailySublimit            int64 = 1_000_000_000
@@ -84,10 +89,11 @@ type Config struct {
 	MonthlyQuota         int64 // MONTHLY_QUOTA(次数,用户可见额度)
 	GlobalDailyBudget    int64 // GLOBAL_DAILY_BUDGET_TOKENS(每日全局预算)
 	InstallDailyTokenCap int64 // INSTALL_DAILY_TOKEN_CAP(单 install 日 token 子配额)
-	MaxTokensCap         int64 // MAX_TOKENS_CAP(单请求输出上限,clamp)
-	InputTokenCap        int64 // INPUT_TOKEN_CAP(单请求输入估算上限)
+	MaxTokensCap         int64 // MAX_TOKENS_CAP(单请求输出上限,clamp;兼预留额输出分量)
+	InputTokenCap        int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
 	MaxMessages          int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
 	MaxMessageChars      int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)
+	MaxBodyBytes         int64 // MAX_BODY_BYTES(请求体字节上限;内存保护,重启生效)
 	NGlobalConcurrency   int   // N_GLOBAL_CONCURRENCY(全局在飞并发)
 	RatePerMin           int   // RATE_PER_MIN(每 install 分钟令牌桶)
 	DailySublimit        int64 // DAILY_SUBLIMIT(每 install 日次数子限额;0=禁用)
@@ -217,7 +223,9 @@ func validatePowSecretPresent(mode string, secret []byte) error {
 // assembly, AND every hot override batch — the single source of cross-field truth.
 //
 // 跨字段语义:① 单 install 日 token cap ≤ 全局日预算;② INPUT+MAX_TOKENS ≤
-// INSTALL_DAILY_TOKEN_CAP;③ 生效 PoW mode≠off 必须有 secret。
+// INSTALL_DAILY_TOKEN_CAP(INPUT_TOKEN_CAP=0 禁用输入闸时退化为 MAX_TOKENS ≤
+// INSTALL_DAILY_TOKEN_CAP,逐请求上界由 app/chat 的运行时预检兜底);③ 生效 PoW
+// mode≠off 必须有 secret。
 func (c *Config) ValidateSemantics() error {
 	if c.InstallDailyTokenCap > c.GlobalDailyBudget {
 		return fmt.Errorf(
@@ -228,11 +236,21 @@ func (c *Config) ValidateSemantics() error {
 	// Worst-case per-request reservation = promptEst + clampedMaxTokens ≤
 	// INPUT_TOKEN_CAP + MAX_TOKENS_CAP; if that exceeds the daily sub-cap even the
 	// day's FIRST request always trips RATE_LIMITED and no call can ever succeed.
-	if maxPerReq := c.InputTokenCap + c.MaxTokensCap; maxPerReq > c.InstallDailyTokenCap {
+	// INPUT_TOKEN_CAP=0 disables the input gate (the upstream model is the judge),
+	// so the static bound degrades to the output component alone; the per-request
+	// est is then bounded at runtime by app/chat's pre-reserve check.
+	if c.InputTokenCap > 0 {
+		if maxPerReq := c.InputTokenCap + c.MaxTokensCap; maxPerReq > c.InstallDailyTokenCap {
+			return fmt.Errorf(
+				"SEC-2 config: INPUT_TOKEN_CAP %d + MAX_TOKENS_CAP %d = %d must be <= INSTALL_DAILY_TOKEN_CAP %d "+
+					"(else a single request's worst-case reservation always exceeds the install daily sub-cap and no call can ever succeed)",
+				c.InputTokenCap, c.MaxTokensCap, maxPerReq, c.InstallDailyTokenCap)
+		}
+	} else if c.MaxTokensCap > c.InstallDailyTokenCap {
 		return fmt.Errorf(
-			"SEC-2 config: INPUT_TOKEN_CAP %d + MAX_TOKENS_CAP %d = %d must be <= INSTALL_DAILY_TOKEN_CAP %d "+
-				"(else a single request's worst-case reservation always exceeds the install daily sub-cap and no call can ever succeed)",
-			c.InputTokenCap, c.MaxTokensCap, maxPerReq, c.InstallDailyTokenCap)
+			"SEC-2 config: MAX_TOKENS_CAP %d must be <= INSTALL_DAILY_TOKEN_CAP %d when INPUT_TOKEN_CAP=0 "+
+				"(else even an empty-prompt request's reservation always exceeds the install daily sub-cap)",
+			c.MaxTokensCap, c.InstallDailyTokenCap)
 	}
 	if err := validatePowSecretPresent(c.InstallPowMode, c.InstallPowSecret); err != nil {
 		return err

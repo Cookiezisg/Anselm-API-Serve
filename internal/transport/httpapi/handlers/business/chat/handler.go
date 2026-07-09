@@ -10,23 +10,29 @@ import (
 	"net/http"
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
+	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/clientip"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
 
-// bodyLimit defensively re-caps the body even when MaxBody middleware already
-// wrapped it (the handler may be mounted standalone). The bound is the domain's
-// single contract constant (§5.3).
-const bodyLimit = domchat.BodyDecodeLimit
-
-// Handler serves POST /v1/chat/completions over an app/chat.Service.
+// Handler serves POST /v1/chat/completions over an app/chat.Service. bodyLimit
+// defensively re-caps the body even when MaxBody middleware already wrapped it
+// (the handler may be mounted standalone); the router passes the same config
+// MAX_BODY_BYTES bound it gives the chain, so the two can never disagree.
 type Handler struct {
-	svc *appchat.Service
+	svc       *appchat.Service
+	bodyLimit int64
 }
 
-// New wires the handler to the use case.
-func New(svc *appchat.Service) *Handler { return &Handler{svc: svc} }
+// New wires the handler to the use case. bodyLimit <= 0 falls back to the
+// domain contract default (domchat.BodyDecodeLimit, 256KiB, §5.3).
+func New(svc *appchat.Service, bodyLimit int64) *Handler {
+	if bodyLimit <= 0 {
+		bodyLimit = domchat.BodyDecodeLimit
+	}
+	return &Handler{svc: svc, bodyLimit: bodyLimit}
+}
 
 // ServeHTTP guards the method, extracts the bearer + IP key, reads the (capped)
 // body, adapts the writer into a Sink, and delegates to the use case. The use
@@ -37,13 +43,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cheapest-first, pre-buffer: a request with NO bearer at all is 401 before
+	// we buffer a single body byte — otherwise an unauthenticated flood forces
+	// up to bodyLimit of memory per connection before the use case's auth gate
+	// runs (the buffering happens here, ahead of svc.Handle). Same wire result
+	// as the use case's own empty-token gate (401 INVALID_TOKEN), just earlier.
+	token := response.Bearer(r)
+	if token == "" {
+		response.WriteError(w, apierr.ErrInvalidToken)
+		return
+	}
+
 	// Read the body here (not in the use case) so app/chat stays net/http-free.
 	// A read error (incl. MaxBytesReader over-cap) is surfaced as BodyError; the
 	// use case turns it into 400 at the body gate, in cheapest-first order.
-	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
+	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.bodyLimit))
 
 	in := appchat.HandleInput{
-		Token:     response.Bearer(r),
+		Token:     token,
 		Body:      body,
 		BodyError: bodyErr,
 		IPKey:     clientip.Key(clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"))),

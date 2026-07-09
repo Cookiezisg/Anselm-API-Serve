@@ -30,6 +30,12 @@
 }
 
 {$GATEWAY_DOMAIN} {
+	# 边缘请求体上限:与网关 MAX_BODY_BYTES(deploy.yml,4MiB)对齐,超限在边缘
+	# 即拒(413),不进网关缓冲。改 MAX_BODY_BYTES 时同步改这里。
+	request_body {
+		max_size 4MiB
+	}
+
 	# 流式 SSE:关闭缓冲,逐帧即时下发(否则 Caddy 会缓冲住流式 token)。
 	reverse_proxy 127.0.0.1:8080 {
 		flush_interval -1

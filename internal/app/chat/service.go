@@ -169,8 +169,11 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 4) Input-token cap: conservative prompt estimate (incl tools) ≤ cap.
+	// INPUT_TOKEN_CAP=0 disables this gate — the upstream model's own context
+	// limit judges instead (its 4xx comes back as 400 UPSTREAM_REJECTED); the
+	// estimate below still feeds the reservation either way.
 	promptEst := req.PromptEstimate()
-	if promptEst > cfg.InputTokenCap {
+	if cfg.InputTokenCap > 0 && promptEst > cfg.InputTokenCap {
 		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large"))
 		return
 	}
@@ -181,6 +184,18 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	maxTok := domchat.ClampMaxTokens(maxTokensOf(req), cfg.MaxTokensCap)
 	out := domchat.SanitizeUpstream(req, model, maxTok)
 	est := promptEst + maxTok
+
+	// 4b) A request whose worst-case reservation exceeds the install-day sub-cap
+	// can NEVER succeed — today or any other day — so it is a 400, not a
+	// misleading RATE_LIMITED from the reserve gate. This is the runtime
+	// replacement for the SEC-2 static INPUT+MAX_TOKENS bound once
+	// INPUT_TOKEN_CAP=0 leaves promptEst statically unbounded. The >0 guard only
+	// shields zero-value configs (production validates the cap >0 at load).
+	if cfg.InstallDailyTokenCap > 0 && est > cfg.InstallDailyTokenCap {
+		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST",
+			"request exceeds the per-install daily token capacity"))
+		return
+	}
 
 	payload, err := json.Marshal(out)
 	if err != nil {

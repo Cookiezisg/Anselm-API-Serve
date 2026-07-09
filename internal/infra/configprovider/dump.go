@@ -69,6 +69,7 @@ func (p *Provider) Snapshot() []any {
 		"input_token_cap", c.InputTokenCap,
 		"max_messages", c.MaxMessages,
 		"max_message_chars", c.MaxMessageChars,
+		"max_body_bytes", c.MaxBodyBytes,
 		"n_global_concurrency", c.NGlobalConcurrency,
 		"rate_per_min", c.RatePerMin,
 		"daily_sublimit", c.DailySublimit,

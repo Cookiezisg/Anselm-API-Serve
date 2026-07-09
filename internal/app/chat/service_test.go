@@ -303,6 +303,94 @@ func TestBodyError_400(t *testing.T) {
 	}
 }
 
+func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
+	// INPUT_TOKEN_CAP=0 disables the input gate: a prompt whose estimate far
+	// exceeds any plausible nonzero cap must pass through to Reserve (the model's
+	// own context limit judges instead). InstallDailyTokenCap stays 0 in testCfg
+	// so the 4b pre-reserve gate is disabled too.
+	cfg := testCfg()
+	cfg.InputTokenCap = 0
+	q := &fakeQuota{}
+	up := &fakeUpstream{body: `{"usage":{"total_tokens":7}}`}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+
+	// ~60k chars → promptEst ≈ 72k (runes ×1.2), far above e.g. a 16384 cap.
+	body := `{"model":"x","messages":[{"role":"user","content":"` + strings.Repeat("a", 60_000) + `"}]}`
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 200 {
+		t.Fatalf("cap=0 must disable the input gate, got status %d body=%q", sink.statusCode(), sink.bodyString())
+	}
+	// Reserve WAS reached, with est = promptEst + maxTok (the estimate still
+	// feeds the reservation even when the gate is off).
+	if q.reserved <= 60_000 {
+		t.Fatalf("Reserve not reached with the full estimate: reserved=%d", q.reserved)
+	}
+	if got := q.settles(); len(got) != 1 {
+		t.Fatalf("success path must settle once, got %v", got)
+	}
+}
+
+func TestEstOverInstallDailyTokenCap_400BeforeReserve(t *testing.T) {
+	// est = promptEst + clamped max_tokens. With MaxTokensCap=1000 the clamp
+	// yields 1000 even for a tiny prompt, so est > InstallDailyTokenCap=500 —
+	// such a request can NEVER succeed and must 400 BEFORE any reservation.
+	cfg := testCfg()
+	cfg.InstallDailyTokenCap = 500 // < MaxTokensCap (1000) ⇒ est always over.
+	q := &fakeQuota{}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 400 {
+		t.Fatalf("est over install-day cap must 400, got %d", sink.statusCode())
+	}
+	if !strings.Contains(sink.bodyString(), "request exceeds the per-install daily token capacity") {
+		t.Fatalf("wrong 4b message: %q", sink.bodyString())
+	}
+	if q.reserved != 0 || len(q.settles()) != 0 || q.rollbacks() != 0 {
+		t.Fatalf("4b gate must reject BEFORE Reserve: reserved=%d settles=%v rollbacks=%d",
+			q.reserved, q.settles(), q.rollbacks())
+	}
+}
+
+func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
+	// A normalized upstream rejection (ADR-011 amendment) surfaces as 400
+	// UPSTREAM_REJECTED with the coarse details.reason, rolls the reservation
+	// back (pre-output failure), and is metered under the "rejected" label —
+	// never "error" (an oversized-prompt burst must not read as an outage).
+	q := &fakeQuota{}
+	mx := newFakeMetrics()
+	up := &fakeUpstream{aerr: apierr.UpstreamRejected(apierr.RejectedContextLength)}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 400 {
+		t.Fatalf("upstream rejection must surface 400, got %d", sink.statusCode())
+	}
+	body := sink.bodyString()
+	if !strings.Contains(body, apierr.CodeUpstreamRejected) || !strings.Contains(body, apierr.RejectedContextLength) {
+		t.Fatalf("envelope must carry UPSTREAM_REJECTED + reason enum, got %q", body)
+	}
+	if q.rollbacks() != 1 {
+		t.Fatalf("pre-output rejection must roll back the reservation, got %d rollbacks", q.rollbacks())
+	}
+	if len(q.settles()) != 0 {
+		t.Fatalf("no settle on a rejection, got %v", q.settles())
+	}
+	if got := mx.upstreamCount("rejected"); got != 1 {
+		t.Fatalf("metric label: upstream{rejected}=%d want 1", got)
+	}
+	if got := mx.upstreamCount("error"); got != 0 {
+		t.Fatalf("a rejection must not count as upstream{error}, got %d", got)
+	}
+}
+
 // --- helpers ---
 
 // waitForSlot spins until n slots are occupied (the held request acquired one).

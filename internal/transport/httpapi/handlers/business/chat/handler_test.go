@@ -11,6 +11,7 @@ import (
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
@@ -22,7 +23,7 @@ import (
 
 func TestHandler_NonStreamRoundTrip(t *testing.T) {
 	svc := newService(t, stubUpstream{body: `{"usage":{"total_tokens":9}}`})
-	h := New(svc)
+	h := New(svc, 0)
 
 	body := `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -42,7 +43,7 @@ func TestHandler_NonStreamRoundTrip(t *testing.T) {
 }
 
 func TestHandler_MethodNotAllowed(t *testing.T) {
-	h := New(newService(t, stubUpstream{}))
+	h := New(newService(t, stubUpstream{}), 0)
 	r := httptest.NewRequest("GET", "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -52,12 +53,52 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_NoBearer401(t *testing.T) {
-	h := New(newService(t, stubUpstream{}))
+	h := New(newService(t, stubUpstream{}), 0)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"u","content":"x"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != apierr.ErrInvalidToken.Status {
 		t.Fatalf("missing bearer status: %d", rec.Code)
+	}
+}
+
+func TestHandler_InjectedBodyLimitEnforced(t *testing.T) {
+	// The handler caps the body at the INJECTED bodyLimit (the router passes
+	// config MAX_BODY_BYTES): a body over the limit is a BodyError → 400
+	// BAD_REQUEST at the use case's body gate, while the SAME body under an
+	// exactly-fitting limit round-trips 200 — the injected bound is what governs.
+	body := `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
+
+	over := New(newService(t, stubUpstream{body: `{"usage":{"total_tokens":1}}`}), 16)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer tok")
+	rec := httptest.NewRecorder()
+	over.ServeHTTP(rec, r)
+	if rec.Code != 400 {
+		t.Fatalf("body over injected limit want 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "BAD_REQUEST") {
+		t.Fatalf("over-cap envelope want BAD_REQUEST, got %s", rec.Body.String())
+	}
+
+	fits := New(newService(t, stubUpstream{body: `{"usage":{"total_tokens":1}}`}), int64(len(body)))
+	r2 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	r2.Header.Set("Authorization", "Bearer tok")
+	rec2 := httptest.NewRecorder()
+	fits.ServeHTTP(rec2, r2)
+	if rec2.Code != 200 {
+		t.Fatalf("body at exactly the injected limit want 200, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestHandler_NonPositiveBodyLimitFallsBackToDefault(t *testing.T) {
+	// bodyLimit <= 0 falls back to the domain contract default (256KiB, §5.3) so
+	// a zero-value wiring can never mean "unbounded".
+	for _, lim := range []int64{0, -1} {
+		h := New(newService(t, stubUpstream{}), lim)
+		if h.bodyLimit != domchat.BodyDecodeLimit {
+			t.Fatalf("New(svc, %d) bodyLimit = %d, want default %d", lim, h.bodyLimit, domchat.BodyDecodeLimit)
+		}
 	}
 }
 

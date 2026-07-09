@@ -96,7 +96,7 @@ func New() *Metrics {
 		}),
 		UpstreamRequests: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_upstream_requests_total",
-			Help: "Upstream attempt outcomes (success|rollback|busy|timeout|error).",
+			Help: "Upstream attempt outcomes (success|rollback|busy|timeout|rejected|error).",
 		}, []string{"outcome"}),
 		UpstreamLatency: f.NewHistogram(prometheus.HistogramOpts{
 			Name:    "gateway_upstream_latency_seconds",

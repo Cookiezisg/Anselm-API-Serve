@@ -7,17 +7,22 @@
 // The Client interface is the port app/chat (slice 7) consumes: Do runs one
 // request end to connect→first-byte and returns a *Stream whose Body the caller
 // relays (SSE frames + usage parsing). Non-2xx upstream responses are normalized
-// to *apierr.APIError — the upstream body/headers/key NEVER pass through.
+// to *apierr.APIError — the upstream body/headers/key NEVER pass through. The
+// one nuance: a request rejection (400/413/422) parses the bounded error body
+// solely to derive the coarse details.reason enum for 400 UPSTREAM_REJECTED
+// (non-fault, non-retry per ADR-011); the upstream text itself is still discarded.
 package upstream
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
@@ -273,12 +278,21 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 	}
 
 	// Non-2xx BEFORE any output: classify + normalize. Never pass the upstream
-	// body/headers through (GW-INV-11).
+	// body/headers through (GW-INV-11). A request rejection (400/413/422) is the
+	// one class that PARSES the (bounded) error body — only to derive the coarse
+	// reason enum for UPSTREAM_REJECTED; the text itself is discarded.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := parseRetryAfter(resp.Header.Get("Retry-After"), c.now())
+		cls := classifyStatus(resp.StatusCode)
+		if cls == classUpstreamRejected {
+			reason := rejectionReason(resp.Body)
+			_ = resp.Body.Close()
+			cleanup()
+			return nil, resolveRejected(reason), ra
+		}
 		_ = drainAndClose(resp.Body)
 		cleanup()
-		return nil, resolve(classifyStatus(resp.StatusCode)), ra
+		return nil, resolve(cls), ra
 	}
 
 	if !stream {
@@ -323,4 +337,29 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 func drainAndClose(rc io.ReadCloser) error {
 	_, _ = io.Copy(io.Discard, io.LimitReader(rc, 4*1024))
 	return rc.Close()
+}
+
+// rejectionReason maps a BOUNDED slice of an upstream 4xx rejection body onto
+// the closed apierr.Rejected* reason enum. It reads at most 4KiB, tolerates any
+// malformed body, and never returns upstream text (GW-INV-11) — only the enum.
+// The provider's OpenAI-style shape is {"error":{"message":...}}; the context-
+// overflow message reads "This model's maximum context length is N tokens..."
+// and the max_tokens range error names "max_tokens" — matched case-insensitively.
+func rejectionReason(body io.Reader) string {
+	raw, _ := io.ReadAll(io.LimitReader(body, 4*1024))
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &env)
+	msg := strings.ToLower(env.Error.Message)
+	switch {
+	case strings.Contains(msg, "context length"):
+		return apierr.RejectedContextLength
+	case strings.Contains(msg, "max_tokens"):
+		return apierr.RejectedMaxTokens
+	default:
+		return apierr.RejectedInvalid
+	}
 }

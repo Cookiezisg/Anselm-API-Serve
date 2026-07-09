@@ -144,15 +144,26 @@ jobs:
           MODEL_ALLOWLIST=deepseek-v4-flash
           # 钱包闸:5000万 token/日(明文配置,改这里即改;不再是 secret)。
           GLOBAL_DAILY_BUDGET_TOKENS=50000000
-          # 单 install 日 token 子配额:agentic 一轮对话可几十万 token,放宽到 5M。
-          INSTALL_DAILY_TOKEN_CAP=5000000
-          # 请求侧上限:v4-flash 有 1M context、很便宜,放开以容纳 agentic 全工具集 JSON
-          # schema + 系统提示 + 长历史 + 长回复。约束 INPUT+MAX_TOKENS ≤ INSTALL 日配额
-          # (131072 + 16384 = 147456 ≤ 5,000,000 ✓)。日预算仍封顶总成本。
-          INPUT_TOKEN_CAP=131072
-          MAX_TOKENS_CAP=16384
-          MAX_MESSAGES=1024
-          MAX_MESSAGE_CHARS=262144
+          # 单 install 日 token 子配额:长上下文 agentic 一轮可上百万 token,放宽到 20M
+          # (仍 ≤ 全局 50M/日——真实花费上限没变,只是单号不用频繁换)。
+          INSTALL_DAILY_TOKEN_CAP=20000000
+          # ⚙️ 请求侧上限:开发期"网关不当裁判"姿态——由 DeepSeek 自己的模型限制判定,
+          # 超了会以 400 UPSTREAM_REJECTED(details.reason=context_length 等)打回:
+          #   INPUT_TOKEN_CAP=0     输入估算闸禁用(0=禁用;估算仍用于记账预留)。
+          #   MAX_TOKENS_CAP=384000 = v4-flash 官方最大输出(等效不限;兼预留额输出分量,
+          #                           不能设 0——记账"预留 ≥ 实际"不变式要求显式值)。
+          #   MAX_MESSAGES / MAX_MESSAGE_CHARS 拉到配置上限,形同虚设(body 上限兜底)。
+          # 🔴 公开上线前建议收紧回:INPUT_TOKEN_CAP=131072 / MAX_TOKENS_CAP=16384 /
+          #   MAX_MESSAGES=1024 / MAX_MESSAGE_CHARS=262144 / MAX_BODY_BYTES=262144。
+          INPUT_TOKEN_CAP=0
+          MAX_TOKENS_CAP=384000
+          MAX_MESSAGES=100000
+          MAX_MESSAGE_CHARS=16777216
+          # 请求体上限(内存保护,不能禁用;重启生效):4MiB ≈ 英文近整个 1M 上下文。
+          # 与 Caddyfile 的 request_body max_size 4MiB 对齐,改则两处同步。
+          # 已知取舍(开发期接受):4MiB body + 384k 输出预留 → 单请求最坏预留 ≈5.4M,
+          # ~10 路并发极限请求可短暂占满 50M 日预算(其他人 402,流结束即退还,自愈)。
+          MAX_BODY_BYTES=4194304
           # 账号级并发硬上限(改后需重启;1C2G + DeepSeek 账号并发的较小者)。
           N_GLOBAL_CONCURRENCY=16
           # REL-7 过载背压等待窗口(ms);N_global 仍是硬上限,等待不放大并发。

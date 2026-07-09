@@ -16,6 +16,7 @@ import (
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/challenge"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/chat"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/healthz"
@@ -25,9 +26,10 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware"
 )
 
-// maxBodyBytes caps every business request body (amplification/DoS defense, §5.3),
-// applied once at the chain so a handler never reads more than this.
-const maxBodyBytes int64 = 256 * 1024
+// The body cap (amplification/DoS defense, §5.3) is applied once at the chain so
+// a handler never reads more than it. The bound comes from config MAX_BODY_BYTES
+// via Deps (snapshotted at boot — restart-effective); an unset Deps value falls
+// back to the domain contract default (domchat.BodyDecodeLimit, 256KiB).
 
 // Wrapper is the metrics RED port: it wraps one route handler with the HTTP RED
 // instrumentation under a fixed low-cardinality label. *infra/metrics.Metrics
@@ -59,11 +61,15 @@ type Deps struct {
 	Mx Wrapper
 	// OnPanic counts a recovered panic; nil → recover still renders 500, no count.
 	OnPanic PanicCounter
+
+	// MaxBodyBytes is the chain-wide request-body cap (config MAX_BODY_BYTES,
+	// snapshotted at boot). <=0 → domchat.BodyDecodeLimit (the 256KiB default).
+	MaxBodyBytes int64
 }
 
 // BuildHandler assembles the business mux + the middleware chain exactly as main
 // serves it. The middleware order is outer→inner: Recover (X-Request-ID + scoped
-// logger + panic→counter) → DenyCORS → MaxBody(256KiB) → mux. Each business route
+// logger + panic→counter) → DenyCORS → MaxBody(MAX_BODY_BYTES) → mux. Each business route
 // is wrapped by Mx.Wrap(label, …) with a low-cardinality label; /healthz is NOT
 // wrapped and never touches the DB (§8, GW-INV-13). It is a pure assembly function
 // (no listeners, no DB open) so the e2e harness stands up the SAME stack via
@@ -72,15 +78,19 @@ type Deps struct {
 // The install service doubles as the shared Authenticator for quota/models (one
 // bearer→install lookup, never a second validator, §2).
 func BuildHandler(d Deps) http.Handler {
+	limit := d.MaxBodyBytes
+	if limit <= 0 {
+		limit = domchat.BodyDecodeLimit
+	}
 	// The install service doubles as the shared Authenticator for quota/models.
 	return assemble(routes{
 		install:   install.New(d.Install),
 		challenge: challenge.New(d.Install),
-		chat:      chat.New(d.Chat),
+		chat:      chat.New(d.Chat, limit),
 		quota:     quota.New(d.Install, d.Quota),
 		models:    models.New(d.Install, d.Models),
 		healthz:   healthz.New(),
-	}, d.Mx, d.OnPanic)
+	}, d.Mx, d.OnPanic, limit)
 }
 
 // routes is the pre-built per-route handler set. Splitting it from assemble lets
@@ -99,7 +109,10 @@ type routes struct {
 // assemble mounts the route table and wraps it in the middleware chain — the ONE
 // place the chain order and the RED labels live. Each business route is wrapped by
 // mx.Wrap(label,…); /healthz is intentionally un-wrapped (§8).
-func assemble(rt routes, mx Wrapper, onPanic PanicCounter) http.Handler {
+func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) http.Handler {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = domchat.BodyDecodeLimit
+	}
 	mux := http.NewServeMux()
 
 	wrap := func(label string, h http.Handler) http.Handler {

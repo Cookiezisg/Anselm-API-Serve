@@ -25,6 +25,17 @@ audience: [human, ai]
 4. **仅真实故障计 breaker**：`breakerFault=true` 仅限 5xx/timeout/connect（经 `errUpstreamFault`），每 attempt-set 恰记一次失败；跳闸条件 `ConsecutiveFailures >= 5` 或（`Requests >= 10` 且失败率 `> 0.5`）（GW-INV-22）。
 5. **标签严格低基数互斥**：唯一标签 `outcome`（`gateway_upstream_requests_total`）、`handler`（RED `mx.Wrap`）、`result`（`gateway_install_pow_total`：verified/failed/missing/shadow_pass）；绝无 `install_id`/`token`/`prompt`/`ip` 入标签（GW-INV-15）。
 
+## 修订 / Amendment（2026-07-09）
+
+**排除集扩为 {client-cancel, 429, 上游 4xx 请求拒绝}。** 网关侧输入预检（INPUT_TOKEN_CAP 等）可禁用、由上游模型自身限制判定后，上游 400/413/422（如超上下文）成为**客户端造成的确定性拒绝**——与上游健康无关。若仍按旧默认归入 `classUpstreamFinal`（fault），连发 5 个超长 prompt 即可跳闸全站断流（自残式 DoS 放大，与 B5/B3 同构）。故新增 `classUpstreamRejected`：
+
+- 上游 400/413/422（输出前）→ `400 UPSTREAM_REJECTED`，不重试、**不计 breaker**、不计 per-key 故障，预留经 REL-5 回滚；
+- 仅从上游错误 body（≤4KiB）解析**闭集** `details.reason ∈ {context_length, max_tokens, invalid_request}`；上游原文绝不透传（GW-INV-11 不破）；
+- metrics 标签新增互斥 `outcome="rejected"`（与 error/busy/timeout 区分，避免把客户端输入错误误读为上游故障）。
+- 其余非重试 non-2xx（如 402 余额不足）仍为 `classUpstreamFinal`（fault, 502）。
+
+见 GW-INV-41。
+
 ## 理由 / Rationale
 
 - breaker 的语义是「上游是否健康」——client-cancel 与 429 与上游健康无关，记入即语义错配、自残式熔断。

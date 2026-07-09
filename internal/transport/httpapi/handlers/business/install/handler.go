@@ -19,6 +19,12 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
 
+// installBodyLimit caps the UNAUTHENTICATED /v1/install body independently of
+// the chain-wide MAX_BODY_BYTES (which is sized for chat payloads): a legit
+// install body is <1KiB (fingerprint ≤256 chars + client ≤128 post-truncate),
+// so 8KiB is generous while denying an anonymous flood the chat-sized buffer.
+const installBodyLimit int64 = 8 * 1024
+
 // Service is the app/install surface the handler drives. Declared as an interface
 // (not the concrete *appinstall.Service) so the handler is unit-testable with a
 // stub; the concrete service satisfies it structurally.
@@ -70,7 +76,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, installBodyLimit)).Decode(&req); err != nil {
 		response.WriteError(w, apierr.ErrBadRequest)
 		return
 	}

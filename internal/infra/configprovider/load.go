@@ -88,9 +88,12 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	g.bound64("INSTALL_DAILY_TOKEN_CAP", c.InstallDailyTokenCap, 1, config.MaxInstallDailyTokenCap)
 
 	c.MaxTokensCap = g.boundedInt64("MAX_TOKENS_CAP", 4096, 1, config.MaxTokensCap)
-	c.InputTokenCap = g.boundedInt64("INPUT_TOKEN_CAP", 16384, 1, config.MaxInputTokenCap)
+	// INPUT_TOKEN_CAP=0 disables the input estimate gate (upstream model judges).
+	c.InputTokenCap = g.boundedInt64("INPUT_TOKEN_CAP", 16384, 0, config.MaxInputTokenCap)
 	c.MaxMessages = g.boundedInt("MAX_MESSAGES", 256, 1, config.MaxMessages)
 	c.MaxMessageChars = g.boundedInt("MAX_MESSAGE_CHARS", 131072, 1, config.MaxMessageChars)
+	// Default mirrors domain/chat.BodyDecodeLimit (the historical 256KiB contract).
+	c.MaxBodyBytes = g.boundedInt64("MAX_BODY_BYTES", 256*1024, config.MinBodyBytes, config.MaxBodyBytesCeiling)
 	c.NGlobalConcurrency = g.boundedInt("N_GLOBAL_CONCURRENCY", 8, 1, config.MaxNGlobalConcurrency)
 	c.RatePerMin = g.boundedInt("RATE_PER_MIN", 20, 0, config.MaxRatePerMin)
 	c.DailySublimit = g.boundedInt64("DAILY_SUBLIMIT", 0, 0, config.MaxDailySublimit)

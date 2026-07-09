@@ -34,9 +34,10 @@ audience: [human, ai]
 | `INSTALL_DAILY_TOKEN_CAP` | （**必填 >0**） | 1 | 1_000_000_000_000 | 是 | 否 | 单 install 日 token 子配额 |
 | `MONTHLY_QUOTA` | 5000 | 1 | 1_000_000_000 | 是 | 否 | 月度次数 |
 | `MAX_TOKENS_CAP` | 4096 | 1 | 1_000_000 | 是 | 否 | 单请求输出 clamp 上限（GW-INV-37） |
-| `INPUT_TOKEN_CAP` | 16384 | 1 | 10_000_000 | 是 | 否 | 单请求输入估算上限 |
+| `INPUT_TOKEN_CAP` | 16384 | 0 | 10_000_000 | 是 | 否 | 单请求输入估算上限；**0=禁用**（交上游模型判定，估算仍入预留） |
 | `MAX_MESSAGES` | 256 | 1 | 100_000 | 是 | 否 | messages 元素数上限（OWASP API4，GW-INV-33） |
 | `MAX_MESSAGE_CHARS` | 131072 | 1 | 16_777_216 | 是 | 否 | 单条 content 字符数上限 |
+| `MAX_BODY_BYTES` | 262144 | 4096 | 8_388_608 | 是 | **是** | 请求体字节上限（内存保护，GW-INV-34）；链装配一次，重启生效；与 Caddy `request_body max_size` 对齐 |
 | `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100_000 | 是 | **是** | 全局在飞并发；信号量容量重启才换（GW-INV-21） |
 | `RATE_PER_MIN` | 20 | 0 | 10_000_000 | 是 | 否 | per-install 分钟令牌桶 |
 | `DAILY_SUBLIMIT` | 0 | 0 | 1_000_000_000 | 是 | 否 | per-install 日次数子限额；0=禁用 |
@@ -86,7 +87,7 @@ audience: [human, ai]
 ## 4. 跨字段语义（SEC-2，`ValidateSemantics`，env-load + overlay + 每次热改都跑）
 
 1. `INSTALL_DAILY_TOKEN_CAP` ≤ `GLOBAL_DAILY_BUDGET_TOKENS`（否则单 install 能抽干全天钱包，子配额无意义）。
-2. `INPUT_TOKEN_CAP` + `MAX_TOKENS_CAP` ≤ `INSTALL_DAILY_TOKEN_CAP`（否则单请求最坏预留恒超日子配额，当天首个请求即被拒，无调用能成功）。
+2. `INPUT_TOKEN_CAP` + `MAX_TOKENS_CAP` ≤ `INSTALL_DAILY_TOKEN_CAP`（否则单请求最坏预留恒超日子配额，当天首个请求即被拒，无调用能成功）；`INPUT_TOKEN_CAP=0`（输入闸禁用）时退化为 `MAX_TOKENS_CAP` ≤ `INSTALL_DAILY_TOKEN_CAP`，逐请求上界由 app/chat 运行时预检 `est>InstallDailyTokenCap → 400` 兜底（GW-INV-10）。
 3. 生效 `INSTALL_POW_MODE` ∈ {shadow, enforce} 必须有非空 `INSTALL_POW_SECRET`（`CONFIG_POW_SECRET_REQUIRED` fail-fast；env + 热改两路对齐）。
 
 以上违反由 GW-INV-10 / GW-INV-39 守。

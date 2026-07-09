@@ -22,14 +22,15 @@ import (
 type faultClass int
 
 const (
-	classOK            faultClass = iota // success — output started
-	classClientCancel                    // parent ctx canceled — 499, non-fault, non-retry
-	classBusy                            // 429 / key-open — UPSTREAM_BUSY, non-fault, non-retry
-	classKeyAuth                         // 401/403 per-key signal — retry (failover), non-fault
-	classKeyOpen                         // a key's breaker open — retry (failover), non-fault
-	classTimeout                         // connect→first-byte timeout — 504, fault, retry
-	classUpstream                        // 5xx/connect/transport — 502, fault, retry
-	classUpstreamFinal                   // non-retryable upstream non-2xx (e.g. 400) — 502, fault
+	classOK               faultClass = iota // success — output started
+	classClientCancel                       // parent ctx canceled — 499, non-fault, non-retry
+	classBusy                               // 429 / key-open — UPSTREAM_BUSY, non-fault, non-retry
+	classKeyAuth                            // 401/403 per-key signal — retry (failover), non-fault
+	classKeyOpen                            // a key's breaker open — retry (failover), non-fault
+	classTimeout                            // connect→first-byte timeout — 504, fault, retry
+	classUpstream                           // 5xx/connect/transport — 502, fault, retry
+	classUpstreamFinal                      // other non-retryable upstream non-2xx (e.g. 402) — 502, fault
+	classUpstreamRejected                   // 400/413/422 request rejection — 400, NON-fault, non-retry
 )
 
 // outcome is the resolved decision triple for a classified attempt.
@@ -64,9 +65,23 @@ func resolve(c faultClass) outcome {
 		return outcome{class: c, apiErr: apierr.ErrUpstreamError, retryable: true, breakerFlt: true}
 	case classUpstreamFinal:
 		return outcome{class: c, apiErr: apierr.ErrUpstreamError, retryable: false, breakerFlt: true}
+	case classUpstreamRejected:
+		// Reached only via a caller that lost the reason (defensive); the real
+		// path is resolveRejected, which attaches the parsed coarse reason.
+		return resolveRejected(apierr.RejectedInvalid)
 	default:
 		return outcome{class: classOK}
 	}
+}
+
+// resolveRejected builds the outcome for an upstream request-rejection (HTTP
+// 400/413/422 before any output): the CLIENT must change the request, so it is
+// terminal (no retry) and — the ADR-011 amendment — NOT a process-breaker fault:
+// a stream of oversized prompts must never open the breaker and black-hole every
+// other user. Normalized to 400 UPSTREAM_REJECTED carrying only the coarse
+// machine reason; the upstream body/text never passes through (GW-INV-11).
+func resolveRejected(reason string) outcome {
+	return outcome{class: classUpstreamRejected, apiErr: apierr.UpstreamRejected(reason), retryable: false, breakerFlt: false}
 }
 
 // classifyConnectErr maps a transport-level error from client.Do into a class.
@@ -91,13 +106,17 @@ func classifyConnectErr(err error, parentCtx context.Context, timedOut bool) fau
 
 // classifyStatus maps an upstream non-2xx status (received before any output)
 // into a class. 429 is its own non-fault class; 401/403 is a per-key signal;
-// 502/503/504 are retryable faults; anything else is a terminal upstream fault.
+// 400/413/422 is a request rejection (client-caused — non-fault, relayed as 400
+// UPSTREAM_REJECTED); 502/503/504 are retryable faults; anything else (e.g. 402
+// insufficient balance) is a terminal upstream fault.
 func classifyStatus(code int) faultClass {
 	switch code {
 	case 429:
 		return classBusy
 	case 401, 403:
 		return classKeyAuth
+	case 400, 413, 422:
+		return classUpstreamRejected
 	case 504:
 		return classTimeout
 	case 502, 503:

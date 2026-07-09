@@ -102,9 +102,12 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.MaxTokensCap, 10) }},
-		{Key: "INPUT_TOKEN_CAP", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxInputTokenCap,
+		// INPUT_TOKEN_CAP=0 disables the gateway-side input estimate gate entirely
+		// (the upstream model's own context limit is the judge; its 4xx rejection is
+		// relayed as 400 UPSTREAM_REJECTED). The reservation still uses the estimate.
+		{Key: "INPUT_TOKEN_CAP", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxInputTokenCap,
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("INPUT_TOKEN_CAP", raw, 1, MaxInputTokenCap)
+				n, err := reqInt64("INPUT_TOKEN_CAP", raw, 0, MaxInputTokenCap)
 				if err == nil {
 					c.InputTokenCap = n
 				}
@@ -129,6 +132,20 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.Itoa(c.MaxMessageChars) }},
+		// MAX_BODY_BYTES is the request-body byte cap (memory protection, §5.3): the
+		// business middleware chain's MaxBytesReader bound. Like N_GLOBAL_CONCURRENCY
+		// it is persisted/validated hot but the chain is assembled once at boot, so
+		// it is flagged RestartRequired. Floor 4KiB (install/dashboard bodies must
+		// fit); ceiling 8MiB (bodies buffer ~3.5× each — the PERF-2 box bound).
+		{Key: "MAX_BODY_BYTES", Tier: TierRuntimeHot, RestartRequired: true, Bounded: true, Min: MinBodyBytes, Max: MaxBodyBytesCeiling,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("MAX_BODY_BYTES", raw, MinBodyBytes, MaxBodyBytesCeiling)
+				if err == nil {
+					c.MaxBodyBytes = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.MaxBodyBytes, 10) }},
 		// N_GLOBAL_CONCURRENCY is runtime-hot (editable/persisted/validated) yet the
 		// semaphore capacity is fixed at construction — the override only takes effect
 		// for new requests after a restart, so it is flagged RestartRequired.

@@ -167,6 +167,11 @@ func (m *fakeMetrics) Upstream(o string)   { m.mu.Lock(); m.upstream[o]++; m.mu.
 func (m *fakeMetrics) SettleFailure()      { m.mu.Lock(); m.settleFails++; m.mu.Unlock() }
 func (m *fakeMetrics) RollbackFailure()    { m.mu.Lock(); m.rollFails++; m.mu.Unlock() }
 func (m *fakeMetrics) settleFailures() int { m.mu.Lock(); defer m.mu.Unlock(); return m.settleFails }
+func (m *fakeMetrics) upstreamCount(o string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.upstream[o]
+}
 
 // testCfg is a permissive config that passes every shape/cap gate.
 func testCfg() *config.Config {

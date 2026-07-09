@@ -214,6 +214,9 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Models:  modelCat,
 		Mx:      mx,
 		OnPanic: mx.Panics,
+		// Boot snapshot: MAX_BODY_BYTES is RestartRequired (the chain is assembled
+		// once), same contract as the N_global semaphore capacity.
+		MaxBodyBytes: effective.MaxBodyBytes,
 	})
 	adminHandler := router.BuildAdminHandler(router.AdminDeps{
 		Metrics: mx.Handler(),

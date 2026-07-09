@@ -108,6 +108,34 @@ func TestLoadBaseDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadBaseMaxBodyBytesDefault(t *testing.T) {
+	// Unset MAX_BODY_BYTES keeps the historical 256KiB body contract.
+	c := mustLoad(t, minimalEnv())
+	if c.MaxBodyBytes != 262144 {
+		t.Fatalf("MaxBodyBytes default = %d, want 262144", c.MaxBodyBytes)
+	}
+}
+
+func TestLoadBaseMaxBodyBytesExplicit(t *testing.T) {
+	env := minimalEnv()
+	env["MAX_BODY_BYTES"] = "4194304"
+	c := mustLoad(t, env)
+	if c.MaxBodyBytes != 4194304 {
+		t.Fatalf("MaxBodyBytes = %d, want 4194304", c.MaxBodyBytes)
+	}
+}
+
+func TestLoadBaseInputTokenCapZeroDisables(t *testing.T) {
+	// INPUT_TOKEN_CAP=0 disables the input estimate gate — must load without error
+	// (SEC-2 rule ② degrades to MAX_TOKENS_CAP <= INSTALL_DAILY_TOKEN_CAP) and land 0.
+	env := minimalEnv()
+	env["INPUT_TOKEN_CAP"] = "0"
+	c := mustLoad(t, env)
+	if c.InputTokenCap != 0 {
+		t.Fatalf("InputTokenCap = %d, want 0", c.InputTokenCap)
+	}
+}
+
 func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	env := minimalEnv()
 	env["DEEPSEEK_BASE_URL"] = "https://x.example/"
@@ -135,6 +163,8 @@ func TestLoadBaseFailFast(t *testing.T) {
 		{"cap zero", func(m map[string]string) { m["INSTALL_DAILY_TOKEN_CAP"] = "0" }, nil, "INSTALL_DAILY_TOKEN_CAP must be > 0"},
 		{"bad int", func(m map[string]string) { m["MONTHLY_QUOTA"] = "abc" }, nil, "invalid int"},
 		{"over ceiling", func(m map[string]string) { m["MAX_TOKENS_CAP"] = "9999999" }, nil, "MAX_TOKENS_CAP must be <="},
+		{"body cap under floor", func(m map[string]string) { m["MAX_BODY_BYTES"] = "4095" }, nil, "MAX_BODY_BYTES must be >= 4096"},
+		{"body cap over ceiling", func(m map[string]string) { m["MAX_BODY_BYTES"] = "8388609" }, nil, "MAX_BODY_BYTES must be <= 8388608"},
 		{"pow mode typo", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enabled" }, nil, "INSTALL_POW_MODE"},
 		{"pow secret required", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enforce" }, nil, "CONFIG_POW_SECRET_REQUIRED"},
 		{"cap exceeds budget", func(m map[string]string) {

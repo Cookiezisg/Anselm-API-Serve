@@ -135,12 +135,16 @@ func (s *Service) writeStreamHeaders(sink Sink, resv *domquota.Reservation) {
 }
 
 // markUpstreamForErr maps a normalized upstream apierr to its metric label.
+// "rejected" (client-caused upstream 4xx) is split from "error" so a burst of
+// oversized prompts is never misread as an upstream outage on the dashboard.
 func (s *Service) markUpstreamForErr(ae *apierr.APIError) {
 	switch ae.Code {
 	case apierr.ErrUpstreamBusy.Code:
 		s.mx.Upstream("busy")
 	case apierr.ErrUpstreamTimeout.Code:
 		s.mx.Upstream("timeout")
+	case apierr.CodeUpstreamRejected:
+		s.mx.Upstream("rejected")
 	default:
 		s.mx.Upstream("error")
 	}

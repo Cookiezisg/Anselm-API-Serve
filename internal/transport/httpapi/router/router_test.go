@@ -37,7 +37,7 @@ func testRoutes() routes {
 
 func TestRouter_DispatchAndLabels(t *testing.T) {
 	mx := &stubWrapper{}
-	h := assemble(testRoutes(), mx, nil)
+	h := assemble(testRoutes(), mx, nil, 0)
 
 	cases := []struct {
 		method, path, want string
@@ -66,7 +66,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 }
 
 func TestRouter_RequestIDEchoed(t *testing.T) {
-	h := assemble(testRoutes(), nil, nil)
+	h := assemble(testRoutes(), nil, nil, 0)
 	r := httptest.NewRequest("GET", "/healthz", nil)
 	r.Header.Set("X-Request-ID", "abc-123")
 	rec := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestRouter_RequestIDEchoed(t *testing.T) {
 }
 
 func TestRouter_CORSDenied(t *testing.T) {
-	h := assemble(testRoutes(), nil, nil)
+	h := assemble(testRoutes(), nil, nil, 0)
 	r := httptest.NewRequest("GET", "/healthz", nil)
 	r.Header.Set("Origin", "https://evil.example")
 	rec := httptest.NewRecorder()
@@ -88,7 +88,7 @@ func TestRouter_CORSDenied(t *testing.T) {
 }
 
 func TestRouter_NotFound(t *testing.T) {
-	h := assemble(testRoutes(), nil, nil)
+	h := assemble(testRoutes(), nil, nil, 0)
 	r := httptest.NewRequest("GET", "/v1/nope", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -99,7 +99,7 @@ func TestRouter_NotFound(t *testing.T) {
 
 func TestRouter_MethodNotAllowed(t *testing.T) {
 	// The Go 1.22 mux returns 405 for a known path with a wrong method.
-	h := assemble(testRoutes(), nil, nil)
+	h := assemble(testRoutes(), nil, nil, 0)
 	r := httptest.NewRequest("GET", "/v1/install", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -113,7 +113,7 @@ func TestRouter_PanicRecovered(t *testing.T) {
 	rt.quota = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
 
 	var panics int
-	h := assemble(rt, nil, counterFunc(func() { panics++ }))
+	h := assemble(rt, nil, counterFunc(func() { panics++ }), 0)
 
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	rec := httptest.NewRecorder()

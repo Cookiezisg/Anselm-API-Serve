@@ -28,8 +28,8 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 
 - **记账**:三闸(月度 count/install 日 token/全局日预算)在单 `BEGIN IMMEDIATE` 预占;产出前失败回滚全三项;计费一次边界=上游首字节;`settled IS NULL` 幂等;period 入口快照一次贯穿;崩溃只多扣。
 - **安全**:DeepSeek key 注入在 clone 上、归一化上游错误不透传;token 只存 SHA-256;admin/metrics/pprof + 管理后台仅 loopback(绑定 fail-fast、不上公网);日志/指标无 key/prompt/token/ip、label 低基数;XFF 仅信回环直连对端。
-- **可靠**:在飞 ≤ N_global(多 key/排队不放大);**故障分类排除 client-cancel 与 429**(ADR-011，不触进程 breaker);关停 DB 最后关(bgWG 排空)。
-- **输入**:严格白名单(model 强改写/messages/stream/temperature/max_tokens clamp **+ tools/tool_choice 透传**[免费档 agentic，messages 保 tool_calls/tool_call_id/name/reasoning_content]);拒 n>1;SEC-1 形状;256KB body;其余危险字段(logit_bias/function_call/response_format)剥离。
+- **可靠**:在飞 ≤ N_global(多 key/排队不放大);**故障分类排除 client-cancel、429 与上游 4xx 请求拒绝**(ADR-011 及其修订，不触进程 breaker);关停 DB 最后关(bgWG 排空)。
+- **输入**:严格白名单(model 强改写/messages/stream/temperature/max_tokens clamp **+ tools/tool_choice 透传**[免费档 agentic，messages 保 tool_calls/tool_call_id/name/reasoning_content]);拒 n>1;SEC-1 形状;`MAX_BODY_BYTES` body 上限(默认 256KB,重启生效);其余危险字段(logit_bias/function_call/response_format)剥离。输入估算闸 `INPUT_TOKEN_CAP=0` 可禁用——由上游模型判定,其 400/413/422 归一化为 `400 UPSTREAM_REJECTED`(闭集 reason,原文不透传;非故障非重试,ADR-011 修订,GW-INV-41)。
 
 ## 4. 工作流(切片纪律)
 

@@ -88,14 +88,14 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 | 1b | token 查找：err→500；未找到→401；status=banned→拒 | 401 / 403 ACCOUNT_BANNED / 500 |
 | 2 | anomaly observe（置 `rec.throttled`）→ 每 install 分钟桶 `rl.Allow` | 429 RATE_LIMITED |
 | 2b | 磁盘降级 `!degraded()`——**在任何 reserve 之前**（REL-6） | 503 DISK_LOW |
-| 3 | body 读（256KiB 上限）+ `decodeInbound`（n>1 探测 + 白名单严解）+ messages 非空 | 400 BAD_REQUEST |
+| 3 | body 读（`MAX_BODY_BYTES` 上限，默认 256KiB）+ `decodeInbound`（n>1 探测 + 白名单严解）+ messages 非空 | 400 BAD_REQUEST |
 | 3b | SEC-1 形状：`len ≤ MaxMessages`、每条 runes ≤ MaxMessageChars | 400 BAD_REQUEST |
-| 4 | 输入 token 上限：`estimatePromptTokens ≤ InputTokenCap`（保守：max(bytes/3,runes)+8/msg ×1.2 ceil） | 400 BAD_REQUEST |
-| 5 | 构上游体：`resolveModel`（强制白名单，默认 `DefaultModel`）+ `clampMaxTokens` + `sanitizeUpstream`（注入 `stream_options.include_usage`）；`est = promptEst + maxTok` | — 纯变换 |
+| 4 | 输入 token 上限：`estimatePromptTokens ≤ InputTokenCap`（保守：max(bytes/3,runes)+8/msg ×1.2 ceil）；`INPUT_TOKEN_CAP=0` ⇒ 跳过（上游模型判定） | 400 BAD_REQUEST |
+| 5 | 构上游体：`resolveModel`（强制白名单，默认 `DefaultModel`）+ `clampMaxTokens` + `sanitizeUpstream`（注入 `stream_options.include_usage`）；`est = promptEst + maxTok`；预检 `est ≤ InstallDailyTokenCap`（恒不可能成功的请求直接 400，GW-INV-10） | 400 BAD_REQUEST |
 | 6 | **额度 reserve**：3-guardrail 单事务（§5） | 429 QUOTA_EXHAUSTED / 429 RATE_LIMITED / 402 BUDGET_EXHAUSTED / 500 |
 | 6b | 进程 breaker 快路：State≠Open；Open⇒回滚 resv，**不占 N_global slot** | 429 UPSTREAM_BUSY |
 | 7 | N_global 信号量（REL-7）：取 slot 或等 `QueueWait`；失败回滚 resv；ctx 取消⇒499，否则429。cap 恒 `N_global`（队列不放大并发） | 429 UPSTREAM_BUSY / 499 CLIENT_CANCELED |
-| 8 | forward：connect→首字节，有界重试（maxAttempts=3、base 200ms、cap 3s、full jitter、**仅 pre-output、仅 502/503/504/connect、非 429**）；首字节首字节计时器=`UpstreamHeaderTimeout`；首字节(Peek)/2xx⇒`outputStarted=true` | 归一化 429/502/504；REL-5 deferred rollback if `!outputStarted` |
+| 8 | forward：connect→首字节，有界重试（maxAttempts=3、base 200ms、cap 3s、full jitter、**仅 pre-output、仅 502/503/504/connect、非 429**）；首字节首字节计时器=`UpstreamHeaderTimeout`；首字节(Peek)/2xx⇒`outputStarted=true` | 归一化 429/502/504；上游 400/413/422 ⇒ 400 UPSTREAM_REJECTED（非故障非重试，ADR-011 修订）；REL-5 deferred rollback if `!outputStarted` |
 | 9 | relay + settle：流式按 SSE 到 `[DONE]` 解析 `usage.total_tokens`；非流读 `LimitReader 8MiB` 解析 usage；按实际 settle（无 usage/断连则按全 est）。**出字节后 count 永保留** | — |
 
 **saga 三段**（reserve→forward→settle）：
@@ -142,7 +142,7 @@ Settle/Rollback 跑在 `context.WithoutCancel(parent)` 的 goroutine、由共享
 | [ADR-008](../decisions/0008-doc-governance-adoption.md) | 采用 Foryx `docs/GOVERNANCE.md` 模型（6 类型、frontmatter、doc-code parity、`make docs` 门禁、ADR 不可变），本地化到 gateway |
 | [ADR-009](../decisions/0009-react-dashboard-clean-architecture.md) | React/Vite/AntD dashboard 分层（api-client / types-mirror / auth-context / pages），`go:embed` 进 `infra/webassets`，session+CSRF 后服务，fresh-clone 构建门禁 |
 | [ADR-010](../decisions/0010-systemd-socket-activation.md) | business `:8080` 优先 systemd socket-activation fd（重启不丢 backlog），无 systemd 自绑回退；admin/dashboard 自绑 |
-| [ADR-011](../decisions/0011-fault-classification-excludes-cancel-429.md) | 故障分类**排除** client-cancel 与 429：单一 `faultClass` 一处计算，client-cancel→499（非故障非重试），429→UPSTREAM_BUSY（非故障非重试）；仅 {5xx,timeout,connect} 计入进程 breaker；metrics 标签严格低基数互斥 |
+| [ADR-011](../decisions/0011-fault-classification-excludes-cancel-429.md) | 故障分类**排除** client-cancel、429 与上游 4xx 请求拒绝：单一 `faultClass` 一处计算，client-cancel→499（非故障非重试），429→UPSTREAM_BUSY（非故障非重试），400/413/422→UPSTREAM_REJECTED(400)（非故障非重试，2026-07 修订）；仅 {5xx,timeout,connect} 计入进程 breaker；metrics 标签严格低基数互斥 |
 
 **结构如何换来 bug 免疫**：故障分类单点排除 client-cancel ⇒ 客户端断连不再触发进程 breaker（B5/B3 DoS 放大消失）；`Reservation.SublimitApplied` 显式记录 ⇒ rollback 反转恰好所占、不重读热配置（B1）；Settle/Rollback 错误捕获进低基数计数器 + 非采样 WARN ⇒ 失败 settle 可见、不被孤儿扫描静默全额退（B2）；16B install id + regenerate-on-conflict ⇒ 碰撞可恢复非 500（B13）。完整 14 bug→规则映射见 [`references/`](../references/) 行为契约。
 

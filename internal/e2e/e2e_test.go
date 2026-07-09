@@ -194,6 +194,9 @@ func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config
 		Models:  modelCat,
 		Mx:      mx,
 		OnPanic: mx.Panics,
+		// Mirror bootstrap: the configured body cap flows into the chain (a zero
+		// value falls back to the 256KiB contract default, same as production).
+		MaxBodyBytes: cfg.MaxBodyBytes,
 	})
 	return &stack{handler: handler, quota: quotaSvc, qstore: quotaStore, bgWG: bgWG}
 }
@@ -798,6 +801,45 @@ func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
 	}
 }
 
+// TestE2EConfiguredMaxBodyBytes: a NON-default MAX_BODY_BYTES flows through the
+// full assembly (config → router.Deps → MaxBody middleware + handler re-cap):
+// with the cap at its 4KiB floor, a ~5KiB body is rejected while a small body
+// still reaches the normal pipeline.
+func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.MaxBodyBytes = 4096 // spec floor — far below the 256KiB default
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	over := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 5*1024) + `"}]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(over))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("body over the configured 4KiB cap: want 400/413 got %d", resp.StatusCode)
+	}
+
+	small := `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(small))
+	req2.Header.Set("Authorization", "Bearer "+token)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("small body under the configured cap must pass: got %d", resp2.StatusCode)
+	}
+}
+
 // TestE2EBadTokenUnauthorized: a syntactically-present but unknown bearer token →
 // 401 INVALID_TOKEN over the real stack (the §2 auth tree's !found exit).
 func TestE2EBadTokenUnauthorized(t *testing.T) {
@@ -893,6 +935,109 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusPaymentRequired || env.Error.Code != "BUDGET_EXHAUSTED" {
 		t.Fatalf("budget-exhausted chat want 402 BUDGET_EXHAUSTED got %d %q", resp.StatusCode, env.Error.Code)
+	}
+}
+
+// TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed: a DeepSeek-style 400
+// (context overflow) end to end through the real stack —
+//   - (a) the client receives 400 UPSTREAM_REJECTED with details.reason ==
+//     "context_length" (the coarse enum; the upstream text never passes through)
+//   - (b) the reservation is rolled back: the global daily budget returns to 0
+//     (reserve committed BEFORE the upstream call, so 0 proves the rollback landed)
+//   - (c) rejections are NON-fault (ADR-011): even past the breaker's
+//     5-consecutive-failure threshold, a follow-up request still reaches upstream
+//     and succeeds, settling to its ACTUAL usage only.
+func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
+	const rejectN = 6 // past the breaker's 5-consecutive threshold
+	const deepseekBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. ` +
+		`However, you requested 200069 tokens (198021 in the messages, 2048 in the completion). ` +
+		`Please reduce the length of the messages or completion.","type":"invalid_request_error",` +
+		`"param":null,"code":"invalid_request_error"}}`
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= rejectN {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, deepseekBody)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fw, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		fw.Flush()
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"total_tokens\":11}}\n\n")
+		fw.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		fw.Flush()
+	}))
+	t.Cleanup(up.Close)
+
+	s := buildStack(t, up.URL)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+
+	token := installToken(t, srv, client)
+	chat := func() (*http.Response, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, b
+	}
+
+	// (a) Every rejected request → 400 UPSTREAM_REJECTED, reason=context_length,
+	// and no upstream text leaked into the envelope.
+	for i := 0; i < rejectN; i++ {
+		resp, body := chat()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("rejected chat %d want 400 got %d body=%s", i, resp.StatusCode, body)
+		}
+		var env struct {
+			Error struct {
+				Code    string         `json:"code"`
+				Message string         `json:"message"`
+				Details map[string]any `json:"details"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &env); err != nil {
+			t.Fatalf("rejected chat %d: bad envelope %s: %v", i, body, err)
+		}
+		if env.Error.Code != apierr.CodeUpstreamRejected {
+			t.Fatalf("rejected chat %d code = %q want %q", i, env.Error.Code, apierr.CodeUpstreamRejected)
+		}
+		if got := env.Error.Details["reason"]; got != apierr.RejectedContextLength {
+			t.Fatalf("rejected chat %d details.reason = %v want %q", i, got, apierr.RejectedContextLength)
+		}
+		if strings.Contains(string(body), "131072") {
+			t.Fatalf("upstream error text leaked to the client (GW-INV-11): %s", body)
+		}
+	}
+
+	// (b) Rollback landed: the reserve committed BEFORE each upstream call, so a
+	// budget back at 0 proves every rejected reservation was rolled back.
+	if got := waitBudget(t, s, 0); got != 0 {
+		t.Fatalf("rejected reservations not rolled back: budget=%d want 0", got)
+	}
+
+	// (c) Breaker never opened (rejections are non-fault, ADR-011): the next
+	// request reaches upstream and streams to [DONE]...
+	resp, body := chat()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "[DONE]") {
+		t.Fatalf("follow-up chat after %d rejections want 200+[DONE] (breaker closed) got %d body=%s",
+			rejectN, resp.StatusCode, body)
+	}
+	if got := calls.Load(); got != rejectN+1 {
+		t.Fatalf("upstream calls = %d want %d (rejections never retried, follow-up not shed)", got, rejectN+1)
+	}
+	// ...and settles to its ACTUAL usage (11) only — the sole budget spend.
+	if got := waitBudget(t, s, 11); got != 11 {
+		t.Fatalf("budget after success = %d want 11 (rollbacks kept, success settled to actual)", got)
 	}
 }
 

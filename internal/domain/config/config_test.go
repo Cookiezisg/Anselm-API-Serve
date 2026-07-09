@@ -90,6 +90,46 @@ func TestSemanticsInputPlusMaxVsInstallCap(t *testing.T) {
 	}
 }
 
+func TestSemanticsInputPlusMaxAtBoundPasses(t *testing.T) {
+	c := validBase()
+	// Exactly at the bound: INPUT + MAX == INSTALL_DAILY_TOKEN_CAP is allowed
+	// (the rule is <=, not <) — the day's first request can just fit.
+	c.InstallDailyTokenCap = c.InputTokenCap + c.MaxTokensCap
+	if err := c.ValidateSemantics(); err != nil {
+		t.Fatalf("input+max == install-cap should pass, got %v", err)
+	}
+}
+
+func TestSemanticsInputCapZeroDegradesToMaxTokensRule(t *testing.T) {
+	// INPUT_TOKEN_CAP=0 disables the input gate: rule ② degrades to
+	// MAX_TOKENS_CAP <= INSTALL_DAILY_TOKEN_CAP(输入闸禁用时只约束输出分量).
+	c := validBase()
+	c.InputTokenCap = 0
+	c.MaxTokensCap = 4096
+	c.InstallDailyTokenCap = 4096 // == is allowed
+	if err := c.ValidateSemantics(); err != nil {
+		t.Fatalf("input-cap=0 with max<=daily should pass, got %v", err)
+	}
+	c.InstallDailyTokenCap = 4095 // max > daily → reject, naming MAX_TOKENS_CAP
+	err := c.ValidateSemantics()
+	if err == nil || !strings.Contains(err.Error(), "MAX_TOKENS_CAP") ||
+		!strings.Contains(err.Error(), "when INPUT_TOKEN_CAP=0") {
+		t.Fatalf("want degraded-rule error naming MAX_TOKENS_CAP, got %v", err)
+	}
+}
+
+func TestSemanticsInputCapZeroSkipsCombinedRule(t *testing.T) {
+	// With the input gate disabled the combined INPUT+MAX bound must NOT apply: a
+	// daily cap that would fail the old combined rule (16384+4096) still passes.
+	c := validBase()
+	c.InputTokenCap = 0
+	c.MaxTokensCap = 4096
+	c.InstallDailyTokenCap = 5000
+	if err := c.ValidateSemantics(); err != nil {
+		t.Fatalf("combined rule must be skipped at input-cap=0, got %v", err)
+	}
+}
+
 func TestSemanticsPowSecretRequired(t *testing.T) {
 	for _, mode := range []string{PowModeShadow, PowModeEnforce} {
 		c := validBase()
@@ -218,6 +258,43 @@ func TestApplyOverrideInvalidIntFormat(t *testing.T) {
 	_, err := ApplyOverrides(validBase(), map[string]string{"MONTHLY_QUOTA": "abc"})
 	if err == nil || !strings.Contains(err.Error(), "invalid int") {
 		t.Fatalf("want invalid-int error, got %v", err)
+	}
+}
+
+func TestApplyOverrideInputTokenCapZeroAccepted(t *testing.T) {
+	// 0 = disable the input estimate gate (spec floor is 0, not 1) — must be
+	// accepted and land as 0; semantics degrade to the output-only rule.
+	got, err := ApplyOverrides(validBase(), map[string]string{"INPUT_TOKEN_CAP": "0"})
+	if err != nil {
+		t.Fatalf("INPUT_TOKEN_CAP=0 should be accepted, got %v", err)
+	}
+	if got.InputTokenCap != 0 {
+		t.Fatalf("InputTokenCap = %d, want 0", got.InputTokenCap)
+	}
+}
+
+func TestApplyOverrideMaxBodyBytesValid(t *testing.T) {
+	got, err := ApplyOverrides(validBase(), map[string]string{"MAX_BODY_BYTES": "4194304"})
+	if err != nil {
+		t.Fatalf("MAX_BODY_BYTES=4194304 should be accepted, got %v", err)
+	}
+	if got.MaxBodyBytes != 4194304 {
+		t.Fatalf("MaxBodyBytes = %d, want 4194304", got.MaxBodyBytes)
+	}
+}
+
+func TestApplyOverrideMaxBodyBytesBoundsRejected(t *testing.T) {
+	// Floor 4KiB (install/dashboard bodies must fit); ceiling 8MiB (PERF-2 box
+	// bound) — one byte past either side is rejected by name.
+	cases := []struct{ val, want string }{
+		{"4095", "MAX_BODY_BYTES must be >= 4096"},
+		{"8388609", "MAX_BODY_BYTES must be <= 8388608"},
+	}
+	for _, tc := range cases {
+		_, err := ApplyOverrides(validBase(), map[string]string{"MAX_BODY_BYTES": tc.val})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("MAX_BODY_BYTES=%s: want %q, got %v", tc.val, tc.want, err)
+		}
 	}
 }
 
@@ -404,6 +481,38 @@ func TestDumpBoundedHintsMatchApply(t *testing.T) {
 	if byKey["MODEL_ALLOWLIST"].Bounded {
 		t.Fatalf("MODEL_ALLOWLIST should not be bounded")
 	}
+}
+
+func TestSpecMaxBodyBytesFlags(t *testing.T) {
+	// MAX_BODY_BYTES: runtime-hot (editable/persisted/validated hot) yet
+	// RestartRequired — like N_GLOBAL_CONCURRENCY the middleware chain's
+	// MaxBytesReader bound is assembled once at boot. Bounds = [4KiB, 8MiB].
+	s, ok := specByKey()["MAX_BODY_BYTES"]
+	if !ok {
+		t.Fatal("MAX_BODY_BYTES missing from Specs")
+	}
+	if s.Tier != TierRuntimeHot || !s.RestartRequired || !s.Bounded {
+		t.Fatalf("MAX_BODY_BYTES spec flags wrong: tier=%v restart=%v bounded=%v", s.Tier, s.RestartRequired, s.Bounded)
+	}
+	if s.Min != MinBodyBytes || s.Max != MaxBodyBytesCeiling {
+		t.Fatalf("MAX_BODY_BYTES bounds = [%d,%d], want [%d,%d]", s.Min, s.Max, MinBodyBytes, MaxBodyBytesCeiling)
+	}
+	// Dump surfaces the same hints (editable + restart + bounds) and the live value.
+	c := validBase()
+	c.MaxBodyBytes = 262144
+	for _, it := range c.Dump() {
+		if it.Key != "MAX_BODY_BYTES" {
+			continue
+		}
+		if !it.Editable || !it.RestartRequired || !it.Bounded || it.Min != MinBodyBytes || it.Max != MaxBodyBytesCeiling {
+			t.Fatalf("MAX_BODY_BYTES Dump hints wrong: %+v", it)
+		}
+		if it.Value != "262144" {
+			t.Fatalf("MAX_BODY_BYTES Dump value = %q, want 262144", it.Value)
+		}
+		return
+	}
+	t.Fatal("MAX_BODY_BYTES missing from Dump")
 }
 
 func TestDumpReflectsLiveValue(t *testing.T) {
