@@ -3,10 +3,12 @@ package quota
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	dquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 )
 
@@ -20,8 +22,8 @@ type fakeRepo struct {
 	settleErr error
 	rbErr     error
 
-	used, budgetUsed int64
-	viewErr          error
+	used, installSpend, globalSpend int64
+	viewErr                         error
 
 	gotCutoff      time.Time
 	reconcileN     int
@@ -29,7 +31,7 @@ type fakeRepo struct {
 	reconcileCalls int
 }
 
-func (f *fakeRepo) Reserve(_ context.Context, _ string, _ int64, _ dquota.Period, lim Limits) (*dquota.Reservation, error) {
+func (f *fakeRepo) Reserve(_ context.Context, _ string, _ billing.Plan, _ dquota.Period, lim Limits) (*dquota.Reservation, error) {
 	f.gotLimits = lim
 	if f.reserveErr != nil {
 		return nil, f.reserveErr
@@ -45,8 +47,8 @@ func (f *fakeRepo) ReconcileOrphans(_ context.Context, olderThan time.Time) (int
 	f.gotCutoff = olderThan
 	return f.reconcileN, f.reconcileErr
 }
-func (f *fakeRepo) View(_ context.Context, _ string, _ dquota.Period) (int64, int64, error) {
-	return f.used, f.budgetUsed, f.viewErr
+func (f *fakeRepo) View(_ context.Context, _ string, _ dquota.Period) (int64, int64, int64, error) {
+	return f.used, f.installSpend, f.globalSpend, f.viewErr
 }
 
 type fakeCfg struct {
@@ -61,6 +63,15 @@ func newService(repo *fakeRepo, lim Limits) *Service {
 	return New(repo, fakeCfg{lim: lim, loc: time.UTC})
 }
 
+func testPlan(t *testing.T) billing.Plan {
+	t.Helper()
+	p, err := billing.NewPlan(billing.ProviderDeepSeek, billing.DeepSeekV4Flash, billing.InputStandard, 10, 10)
+	if err != nil {
+		t.Fatalf("new plan: %v", err)
+	}
+	return p
+}
+
 func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 	cases := []struct {
 		name string
@@ -68,14 +79,15 @@ func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 		want *apierr.APIError
 	}{
 		{"monthly", dquota.ErrMonthlyExhausted, apierr.ErrQuotaExhausted},
-		{"daytokens", dquota.ErrDayTokensExceeded, apierr.ErrRateLimited},
+		{"install-spend", dquota.ErrInstallSpendExceeded, apierr.ErrRateLimited},
 		{"sublimit", dquota.ErrSublimitExceeded, apierr.ErrRateLimited},
+		{"provider-spend", dquota.ErrProviderSpendExceeded, apierr.ErrBudgetExhausted},
 		{"budget", dquota.ErrBudgetExceeded, apierr.ErrBudgetExhausted},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := newService(&fakeRepo{reserveErr: c.in}, Limits{})
-			_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
+			_, err := s.Reserve(context.Background(), "ins_1", testPlan(t), dquota.Period{})
 			if !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
 			}
@@ -85,7 +97,7 @@ func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 
 func TestReserveBudgetIs402(t *testing.T) {
 	s := newService(&fakeRepo{reserveErr: dquota.ErrBudgetExceeded}, Limits{})
-	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
+	_, err := s.Reserve(context.Background(), "ins_1", testPlan(t), dquota.Period{})
 	var ae *apierr.APIError
 	if !errors.As(err, &ae) || ae.Status != 402 {
 		t.Fatalf("budget deny should be 402, got %v", err)
@@ -95,7 +107,7 @@ func TestReserveBudgetIs402(t *testing.T) {
 func TestReserveInternalErrorPassesThrough(t *testing.T) {
 	boom := errors.New("disk on fire")
 	s := newService(&fakeRepo{reserveErr: boom}, Limits{})
-	_, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{})
+	_, err := s.Reserve(context.Background(), "ins_1", testPlan(t), dquota.Period{})
 	if !errors.Is(err, boom) {
 		t.Fatalf("non-deny error should pass through, got %v", err)
 	}
@@ -103,12 +115,15 @@ func TestReserveInternalErrorPassesThrough(t *testing.T) {
 
 func TestReservePassesLiveLimitsSnapshot(t *testing.T) {
 	repo := &fakeRepo{reserveOut: &dquota.Reservation{RequestID: "req_x"}}
-	want := Limits{MonthlyQuota: 100, InstallDailyTokenCap: 50, GlobalDailyBudget: 1000, DailySublimit: 7}
+	want := Limits{
+		MonthlyQuota: 100, InstallDailySpendPUSD: 50, GlobalDailySpendPUSD: 1000, DailySublimit: 7,
+		ProviderDailySpendPUSD: map[billing.Provider]int64{billing.ProviderDeepSeek: 500},
+	}
 	s := newService(repo, want)
-	if _, err := s.Reserve(context.Background(), "ins_1", 10, dquota.Period{}); err != nil {
+	if _, err := s.Reserve(context.Background(), "ins_1", testPlan(t), dquota.Period{}); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if repo.gotLimits != want {
+	if !reflect.DeepEqual(repo.gotLimits, want) {
 		t.Fatalf("store got limits %+v, want %+v", repo.gotLimits, want)
 	}
 }
@@ -128,22 +143,24 @@ func TestSettleRollbackErrorsAreReturned(t *testing.T) {
 }
 
 func TestViewAvailabilityRule(t *testing.T) {
-	lim := Limits{MonthlyQuota: 100, GlobalDailyBudget: 1000}
+	lim := Limits{MonthlyQuota: 100, InstallDailySpendPUSD: 500, GlobalDailySpendPUSD: 1000}
 	cases := []struct {
-		name             string
-		used, budgetUsed int64
-		wantRemaining    int64
-		wantAvail        bool
+		name                            string
+		used, installSpend, globalSpend int64
+		wantRemaining                   int64
+		wantAvail                       bool
 	}{
-		{"plenty", 10, 100, 90, true},
-		{"month-exhausted", 100, 0, 0, false},
-		{"over-month-clamps", 150, 0, 0, false},
-		{"budget-exhausted", 10, 1000, 90, false},
-		{"budget-over", 10, 2000, 90, false},
+		{"plenty", 10, 100, 100, 90, true},
+		{"month-exhausted", 100, 0, 0, 0, false},
+		{"over-month-clamps", 150, 0, 0, 0, false},
+		{"install-exhausted", 10, 500, 0, 90, false},
+		{"install-over", 10, 600, 0, 90, false},
+		{"global-exhausted", 10, 0, 1000, 90, false},
+		{"global-over", 10, 0, 2000, 90, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			repo := &fakeRepo{used: c.used, budgetUsed: c.budgetUsed}
+			repo := &fakeRepo{used: c.used, installSpend: c.installSpend, globalSpend: c.globalSpend}
 			v, err := newService(repo, lim).View(context.Background(), "ins_1", dquota.Period{Month: "2026-06"})
 			if err != nil {
 				t.Fatalf("view: %v", err)

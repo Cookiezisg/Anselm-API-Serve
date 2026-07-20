@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/install"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 )
@@ -33,6 +35,19 @@ func (f fakeReservations) OpenReservations(context.Context) (int64, error) { ret
 type fakeInflight struct{ n int64 }
 
 func (f fakeInflight) InflightConcurrency() int64 { return f.n }
+
+type fakeProviders struct {
+	configured map[billing.Provider]bool
+	open       map[billing.Provider]bool
+}
+
+func (f fakeProviders) Available(provider billing.Provider) bool {
+	return f.configured[provider]
+}
+
+func (f fakeProviders) BreakerOpen(provider billing.Provider) bool {
+	return f.open[provider]
+}
 
 type fakeRate struct{ s ratesample.Snapshot }
 
@@ -118,19 +133,35 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 		Budget:       fakeBudget{day: "2026-06-20", limit: 1000, used: 250},
 		Reservations: fakeReservations{n: 7},
 		Inflight:     fakeInflight{n: 3},
-		Rate:         fakeRate{s: ratesample.Snapshot{QPS: 1.5}},
-		Installs:     fakeInstallsToday{n: 42},
-		Config:       &fakeConfig{cap: 200},
+		Providers: fakeProviders{
+			configured: map[billing.Provider]bool{
+				billing.ProviderDeepSeek: true,
+				billing.ProviderGemini:   true,
+			},
+			open: map[billing.Provider]bool{billing.ProviderGemini: true},
+		},
+		Rate:     fakeRate{s: ratesample.Snapshot{QPS: 1.5}},
+		Installs: fakeInstallsToday{n: 42},
+		Config:   &fakeConfig{cap: 200},
 	})
-	o := svc.Overview(context.Background(), true, true)
-	if o.Budget.Used != 250 || o.Budget.Remaining != 750 {
+	o := svc.Overview(context.Background(), true)
+	if o.Budget.UsedMicroUSD != 250 || o.Budget.RemainingMicroUSD != 750 || o.Budget.LimitMicroUSD != 1000 {
 		t.Fatalf("budget: %+v", o.Budget)
+	}
+	if o.Budget.Unit != "micro_usd" {
+		t.Fatalf("budget unit = %q, want micro_usd", o.Budget.Unit)
 	}
 	if o.OpenReservations != 7 || o.InflightConcurrency != 3 || o.InstallsToday != 42 {
 		t.Fatalf("gauges: %+v", o)
 	}
 	if !o.UpstreamBreakerOpen || !o.DiskDegraded {
 		t.Fatalf("flags not threaded: %+v", o)
+	}
+	if !o.Providers.DeepSeek.Configured || o.Providers.DeepSeek.BreakerOpen {
+		t.Fatalf("deepseek state = %+v, want configured/closed", o.Providers.DeepSeek)
+	}
+	if !o.Providers.Gemini.Configured || !o.Providers.Gemini.BreakerOpen {
+		t.Fatalf("gemini state = %+v, want configured/open", o.Providers.Gemini)
 	}
 	if o.Recent.QPS != 1.5 || o.InstallGlobalCap != 200 {
 		t.Fatalf("rate/cap: %+v", o)
@@ -142,9 +173,78 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 
 func TestOverviewBudgetErrorLeavesZero(t *testing.T) {
 	svc := New(Deps{Budget: fakeBudget{err: errors.New("db down")}})
-	o := svc.Overview(context.Background(), false, false)
-	if o.Budget.Used != 0 || o.Budget.Limit != 0 {
+	o := svc.Overview(context.Background(), false)
+	if o.Budget.UsedMicroUSD != 0 || o.Budget.LimitMicroUSD != 0 || o.Budget.Unit != "micro_usd" {
 		t.Fatalf("a failed budget read must not poison the snapshot: %+v", o.Budget)
+	}
+}
+
+func TestOverviewBudgetWireNamesItsMicroUSDUnit(t *testing.T) {
+	svc := New(Deps{Budget: fakeBudget{day: "2026-06-20", limit: 1000, used: 250}})
+	raw, err := json.Marshal(svc.Overview(context.Background(), false))
+	if err != nil {
+		t.Fatalf("marshal overview: %v", err)
+	}
+	var wire struct {
+		Budget map[string]any `json:"budget"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal overview: %v", err)
+	}
+	want := map[string]bool{
+		"day": true, "usedMicroUsd": true, "limitMicroUsd": true,
+		"remainingMicroUsd": true, "unit": true,
+	}
+	if len(wire.Budget) != len(want) {
+		t.Fatalf("budget wire keys = %v, want exactly %v", wire.Budget, want)
+	}
+	for key := range wire.Budget {
+		if !want[key] {
+			t.Fatalf("budget wire exposed ambiguous or unknown field %q", key)
+		}
+	}
+	if got := wire.Budget["unit"]; got != "micro_usd" {
+		t.Fatalf("budget unit = %v, want micro_usd", got)
+	}
+}
+
+func TestOverviewProviderWireIsClosedAndAlwaysPresent(t *testing.T) {
+	svc := New(Deps{Providers: fakeProviders{
+		configured: map[billing.Provider]bool{billing.ProviderDeepSeek: true},
+		// A source reporting an impossible open breaker for an unavailable
+		// provider is normalized to unavailable/closed at the dashboard boundary.
+		open: map[billing.Provider]bool{billing.ProviderGemini: true},
+	}})
+	raw, err := json.Marshal(svc.Overview(context.Background(), false))
+	if err != nil {
+		t.Fatalf("marshal overview: %v", err)
+	}
+	var wire struct {
+		Providers map[string]struct {
+			Configured  bool `json:"configured"`
+			BreakerOpen bool `json:"breakerOpen"`
+		} `json:"providers"`
+		Aggregate bool `json:"upstreamBreakerOpen"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal overview: %v", err)
+	}
+	if len(wire.Providers) != 2 {
+		t.Fatalf("provider keys = %v, want exactly deepseek/gemini", wire.Providers)
+	}
+	deepseek, deepseekOK := wire.Providers["deepseek"]
+	gemini, geminiOK := wire.Providers["gemini"]
+	if !deepseekOK || !geminiOK {
+		t.Fatalf("provider keys = %v, want stable deepseek/gemini", wire.Providers)
+	}
+	if !deepseek.Configured || deepseek.BreakerOpen {
+		t.Fatalf("deepseek = %+v, want configured/closed", deepseek)
+	}
+	if gemini.Configured || gemini.BreakerOpen {
+		t.Fatalf("gemini = %+v, want unconfigured/closed", gemini)
+	}
+	if wire.Aggregate {
+		t.Fatal("compatibility aggregate must derive only from configured provider breakers")
 	}
 }
 
@@ -207,13 +307,13 @@ func TestInstallsListPagination(t *testing.T) {
 func TestInstallRowCarriesNoSecrets(t *testing.T) {
 	// Struct-level guard: only the safe JSON keys are allowed, so a future field
 	// addition that leaks a token/fingerprint/ip fails this test.
-	allowed := map[string]bool{"id": true, "status": true, "createdAt": true, "lastSeenAt": true, "todayTokens": true}
+	allowed := map[string]bool{"id": true, "status": true, "createdAt": true, "lastSeenAt": true, "todaySpendMicroUsd": true}
 	rt := reflect.TypeOf(InstallRow{})
 	for i := 0; i < rt.NumField(); i++ {
 		tag := rt.Field(i).Tag.Get("json")
 		key := strings.Split(tag, ",")[0]
 		// Allowlist is the guard: anything not explicitly safe (a token/fingerprint/ip
-		// added later) fails. todayTokens is a usage COUNT, not a secret token.
+		// added later) fails. Spend is a coarse operator-facing cost aggregate.
 		if !allowed[key] {
 			t.Fatalf("InstallRow exposes a non-whitelisted JSON field %q (possible PII leak)", key)
 		}

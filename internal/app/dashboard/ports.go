@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/install"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/alert"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
@@ -16,18 +17,19 @@ import (
 // (configprovider, quotastore, installstore, metrics, alerter, ratesample) that
 // satisfy these structurally, so app/dashboard stays unit-testable with fakes.
 
-// BudgetSource reads the GLOBAL daily budget usage for the overview. The new
-// quota layer's per-install View is not the global figure, so the dashboard
-// declares its own narrow port (satisfied by an infra/store/quotastore adapter):
-// today's window day, the limit, and tokens used today. Reserves/bills nothing.
+// BudgetSource reads the GLOBAL daily spend budget for the overview. The quota
+// layer's per-install View is not the global figure, so the dashboard declares
+// its own narrow port: today's window day, limit and used spend, all expressed
+// as integer micro-USD at this display boundary. Reserves/bills nothing.
 type BudgetSource interface {
-	// GlobalBudget returns today's RESET_TZ window day, the GLOBAL_DAILY_BUDGET
-	// limit, and tokens used so far today. A missing budget row reads used=0.
-	GlobalBudget(ctx context.Context) (day string, limit, used int64, err error)
+	// GlobalBudget returns today's RESET_TZ window day and the global limit/used
+	// amounts in micro-USD. A missing spend row reads usedMicroUSD=0.
+	GlobalBudget(ctx context.Context) (day string, limitMicroUSD, usedMicroUSD int64, err error)
 }
 
-// ReservationsSource counts ledger rows still settled IS NULL — the missed-settle
-// backlog gauge on the overview. Satisfied by *infra/store/quotastore.Store.
+// ReservationsSource counts spend-ledger rows still in the open state — the
+// missed-settle backlog gauge on the overview. Satisfied by
+// *infra/store/quotastore.Store.
 type ReservationsSource interface {
 	OpenReservations(ctx context.Context) (int64, error)
 }
@@ -36,6 +38,15 @@ type ReservationsSource interface {
 // Satisfied by an infra/metrics adapter over the InflightConc gauge.
 type InflightSource interface {
 	InflightConcurrency() int64
+}
+
+// ProviderSource exposes only safe construction/health facts for the two fixed
+// upstreams. It deliberately has no key-count or credential accessor: the
+// dashboard may say whether a provider is configured, never how or with what.
+// Satisfied by *infra/chatprovider.Registry at the composition root.
+type ProviderSource interface {
+	Available(provider billing.Provider) bool
+	BreakerOpen(provider billing.Provider) bool
 }
 
 // RateSource is the B16 server-side recent-window QPS/error-rate. Concurrent
@@ -81,8 +92,8 @@ type DumpItem struct {
 
 // InstallLister lists installs newest-first with offset-cursor pagination for the
 // admin table. It returns ONLY safe, low-cardinality facts — opaque id, status,
-// lifecycle timestamps, today's tokens — never a token/fingerprint/IP. Satisfied
-// by an installstore adapter (the dashboard never opens its own DB).
+// lifecycle timestamps and today's spend — never a token/fingerprint/IP.
+// Satisfied by an installstore adapter (the dashboard never opens its own DB).
 type InstallLister interface {
 	ListInstalls(ctx context.Context, cursor, limit int) ([]InstallRow, error)
 }
@@ -90,11 +101,11 @@ type InstallLister interface {
 // InstallRow is one admin-table row. It deliberately carries NO token, NO
 // fingerprint, NO IP — id is the opaque ins_<hex> handle (safe to surface).
 type InstallRow struct {
-	ID          string `json:"id"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"createdAt"`
-	LastSeenAt  string `json:"lastSeenAt,omitempty"`
-	TodayTokens int64  `json:"todayTokens"`
+	ID                 string `json:"id"`
+	Status             string `json:"status"`
+	CreatedAt          string `json:"createdAt"`
+	LastSeenAt         string `json:"lastSeenAt,omitempty"`
+	TodaySpendMicroUSD int64  `json:"todaySpendMicroUsd"`
 }
 
 // StatusMutator flips an install's lifecycle status (ban/unban). A no-match id

@@ -2,10 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sunweilin/anselm/gateway/internal/pkg/orm"
 )
 
 func testConfig(t *testing.T) Config {
@@ -25,7 +28,7 @@ func openT(t *testing.T) *DB {
 	return db
 }
 
-// TestOpenCreatesSchema: Open runs migrations so all 8 tables exist and are
+// TestOpenCreatesSchema: Open runs migrations so the legacy and v2 tables exist
 // queryable on both pools, and a write on the writer is visible on the reader
 // (same file).
 func TestOpenCreatesSchema(t *testing.T) {
@@ -35,6 +38,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 	tables := []string{
 		"installs", "usage", "budget", "ledger",
 		"install_ip_rate", "install_global_rate", "install_fp_rate", "settings",
+		"quota_monthly", "install_spend_daily", "provider_spend_daily",
+		"global_spend_daily", "spend_ledger",
 	}
 	for _, table := range tables {
 		var name string
@@ -45,21 +50,25 @@ func TestOpenCreatesSchema(t *testing.T) {
 		}
 	}
 
-	// idx_ledger_open must exist (open-reservation/orphan scan index).
+	// Both the read-only legacy ledger and active v2 ledger retain their indexes.
 	var idx string
 	if err := db.Reader.QueryRow(ctx,
 		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_ledger_open'`).Scan(&idx); err != nil {
 		t.Fatalf("idx_ledger_open not created: %v", err)
 	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_spend_ledger_open'`).Scan(&idx); err != nil {
+		t.Fatalf("idx_spend_ledger_open not created: %v", err)
+	}
 
 	// Writer → Reader visibility on the same file.
 	if _, err := db.Writer.Exec(ctx,
-		`INSERT INTO budget(period, tokens_used, requests) VALUES ('2026-01-01', 5, 1)`); err != nil {
+		`INSERT INTO global_spend_daily(period_day, spend_pusd, requests) VALUES ('2026-01-01', 5, 1)`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	var used int64
 	if err := db.Reader.QueryRow(ctx,
-		`SELECT tokens_used FROM budget WHERE period='2026-01-01'`).Scan(&used); err != nil {
+		`SELECT spend_pusd FROM global_spend_daily WHERE period_day='2026-01-01'`).Scan(&used); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if used != 5 {
@@ -255,6 +264,369 @@ func TestChecksumDriftFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "checksum drift") {
 		t.Fatalf("error = %v, want checksum drift", err)
+	}
+}
+
+func TestProviderSpendMigrationBackfillsV1AndSettings(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+
+	raw, err := sql.Open("sqlite", dsn(cfg, true))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	raw.SetMaxOpenConns(1)
+	w := orm.Open(raw)
+	if err := ensureMigrationsTable(ctx, w); err != nil {
+		t.Fatalf("ensure migrations: %v", err)
+	}
+	migs, err := loadMigrations()
+	if err != nil || len(migs) < 2 {
+		t.Fatalf("load migrations: len=%d err=%v", len(migs), err)
+	}
+	if err := applyOne(ctx, w, migs[0]); err != nil {
+		t.Fatalf("apply v1: %v", err)
+	}
+	created := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	seed := []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT INTO usage(install_id, period, count, tokens) VALUES ('ins_1','2026-06',3,0)`, nil},
+		{`INSERT INTO usage(install_id, period, count, tokens) VALUES ('ins_1','2026-06-20',2,10)`, nil},
+		{`INSERT INTO budget(period, tokens_used, requests) VALUES ('2026-06-20',20,4)`, nil},
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at) VALUES ('req_open','ins_1','2026-06-20',5,NULL,?)`, []any{created}},
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at) VALUES ('req_done','ins_1','2026-06-20',5,2,?)`, []any{created}},
+		{`INSERT INTO settings(key,value,updated_at) VALUES ('GLOBAL_DAILY_BUDGET_TOKENS','101',?)`, []any{created}},
+		{`INSERT INTO settings(key,value,updated_at) VALUES ('INSTALL_DAILY_TOKEN_CAP','1',?)`, []any{created}},
+		{`INSERT INTO settings(key,value,updated_at) VALUES ('MODEL_ALLOWLIST','deepseek-v4-flash',?)`, []any{created}},
+		{`INSERT INTO settings(key,value,updated_at) VALUES ('RATE_PER_MIN','20',?)`, []any{created}},
+	}
+	for _, item := range seed {
+		if _, err := w.Exec(ctx, item.q, item.args...); err != nil {
+			_ = raw.Close()
+			t.Fatalf("seed %q: %v", item.q, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("open migrated: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var requests, spend int64
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT requests FROM quota_monthly WHERE install_id='ins_1' AND period_month='2026-06'`).Scan(&requests); err != nil || requests != 3 {
+		t.Fatalf("monthly requests=%d err=%v", requests, err)
+	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT spend_pusd, requests FROM install_spend_daily WHERE install_id='ins_1' AND period_day='2026-06-20'`).Scan(&spend, &requests); err != nil || spend != 2_800_000 || requests != 2 {
+		t.Fatalf("install=(%d,%d) err=%v", spend, requests, err)
+	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT spend_pusd, requests FROM global_spend_daily WHERE period_day='2026-06-20'`).Scan(&spend, &requests); err != nil || spend != 5_600_000 || requests != 4 {
+		t.Fatalf("global=(%d,%d) err=%v", spend, requests, err)
+	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT spend_pusd FROM provider_spend_daily WHERE provider='deepseek' AND period_day='2026-06-20'`).Scan(&spend); err != nil || spend != 5_600_000 {
+		t.Fatalf("provider=%d err=%v", spend, err)
+	}
+
+	var state string
+	var reserved int64
+	var charged sql.NullInt64
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT state,reserved_pusd,charged_pusd FROM spend_ledger WHERE request_id='req_open'`).Scan(&state, &reserved, &charged); err != nil || state != "open" || reserved != 1_400_000 || charged.Valid {
+		t.Fatalf("open ledger=(%s,%d,%v) err=%v", state, reserved, charged, err)
+	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT state,reserved_pusd,charged_pusd FROM spend_ledger WHERE request_id='req_done'`).Scan(&state, &reserved, &charged); err != nil || state != "settled" || reserved != 1_400_000 || !charged.Valid || charged.Int64 != 560_000 {
+		t.Fatalf("done ledger=(%s,%d,%v) err=%v", state, reserved, charged, err)
+	}
+
+	settings := map[string]string{}
+	rows, err := db.Reader.Query(ctx, `SELECT key,value FROM settings`)
+	if err != nil {
+		t.Fatalf("settings query: %v", err)
+	}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			t.Fatalf("settings scan: %v", err)
+		}
+		settings[key] = value
+	}
+	_ = rows.Close()
+	if settings["GLOBAL_DAILY_SPEND_MICRO_USD"] != "29" {
+		t.Fatalf("global converted setting=%q want 29", settings["GLOBAL_DAILY_SPEND_MICRO_USD"])
+	}
+	if settings["INSTALL_DAILY_SPEND_MICRO_USD"] != "1" {
+		t.Fatalf("install converted setting=%q want 1", settings["INSTALL_DAILY_SPEND_MICRO_USD"])
+	}
+	for _, removed := range []string{"MODEL_ALLOWLIST", "GLOBAL_DAILY_BUDGET_TOKENS", "INSTALL_DAILY_TOKEN_CAP"} {
+		if _, ok := settings[removed]; ok {
+			t.Fatalf("legacy setting %s was not removed", removed)
+		}
+	}
+	if settings["RATE_PER_MIN"] != "20" {
+		t.Fatalf("unrelated setting lost: %v", settings)
+	}
+
+	// v1 tables are retained byte-for-byte as read-only audit history.
+	var legacyTokens int64
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT tokens_used FROM budget WHERE period='2026-06-20'`).Scan(&legacyTokens); err != nil || legacyTokens != 20 {
+		t.Fatalf("legacy budget=%d err=%v", legacyTokens, err)
+	}
+}
+
+func TestProviderSpendMigrationFloorsWalletsFromChargeableLegacyLedger(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+	raw, err := sql.Open("sqlite", dsn(cfg, true))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	raw.SetMaxOpenConns(1)
+	w := orm.Open(raw)
+	if err := ensureMigrationsTable(ctx, w); err != nil {
+		t.Fatalf("ensure migrations: %v", err)
+	}
+	migs, err := loadMigrations()
+	if err != nil || len(migs) < 2 {
+		t.Fatalf("load migrations: len=%d err=%v", len(migs), err)
+	}
+	if err := applyOne(ctx, w, migs[0]); err != nil {
+		t.Fatalf("apply v1: %v", err)
+	}
+
+	created := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	seed := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO usage(install_id,period,count,tokens) VALUES ('ins_1','2026-07',4,0)`, nil},
+		// Five tokens is the copied v1 wallet. The chargeable ledger floor below is
+		// ten for ins_1 and fourteen globally, so MAX must raise rather than add.
+		{`INSERT INTO usage(install_id,period,count,tokens) VALUES ('ins_1','2026-07-20',3,5)`, nil},
+		{`INSERT INTO budget(period,tokens_used,requests) VALUES ('2026-07-20',5,3)`, nil},
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+		  VALUES ('req_done','ins_1','2026-07-20',9,2,?)`, []any{created}},
+		// This is the exact terminal encoding used by the v1 orphan reconciler:
+		// settled=reserved while its five-token wallet reservation was refunded.
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+		  VALUES ('req_old_orphan','ins_1','2026-07-20',5,5,?)`, []any{created}},
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+		  VALUES ('req_open','ins_1','2026-07-20',3,NULL,?)`, []any{created}},
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+		  VALUES ('req_rolled_back','ins_1','2026-07-20',4,0,?)`, []any{created}},
+		// No matching usage row: the ledger floor must create the install wallet.
+		{`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+		  VALUES ('req_missing_wallet','ins_2','2026-07-20',4,4,?)`, []any{created}},
+	}
+	for _, item := range seed {
+		if _, err := w.Exec(ctx, item.query, item.args...); err != nil {
+			_ = raw.Close()
+			t.Fatalf("seed %q: %v", item.query, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("open migrated: %v", err)
+	}
+	assertWallets := func(db *DB) {
+		t.Helper()
+		for installID, want := range map[string]int64{
+			"ins_1": 10 * 280_000,
+			"ins_2": 4 * 280_000,
+		} {
+			var spend, requests int64
+			if err := db.Reader.QueryRow(ctx,
+				`SELECT spend_pusd,requests FROM install_spend_daily WHERE install_id=? AND period_day='2026-07-20'`,
+				installID).Scan(&spend, &requests); err != nil || spend != want {
+				t.Fatalf("install %s=(%d,%d) err=%v want spend=%d", installID, spend, requests, err, want)
+			}
+			if installID == "ins_1" && requests != 3 {
+				t.Fatalf("copied daily sublimit count changed: got %d want 3", requests)
+			}
+			if installID == "ins_2" && requests != 0 {
+				t.Fatalf("ledger-created install row invented a sublimit count: got %d", requests)
+			}
+		}
+		for table, query := range map[string]string{
+			"provider": `SELECT spend_pusd,requests FROM provider_spend_daily
+			              WHERE provider='deepseek' AND period_day='2026-07-20'`,
+			"global": `SELECT spend_pusd,requests FROM global_spend_daily
+			            WHERE period_day='2026-07-20'`,
+		} {
+			var spend, requests int64
+			if err := db.Reader.QueryRow(ctx, query).Scan(&spend, &requests); err != nil ||
+				spend != 14*280_000 || requests != 4 {
+				t.Fatalf("%s=(%d,%d) err=%v want (%d,4)", table, spend, requests, err, 14*280_000)
+			}
+		}
+	}
+	assertWallets(db)
+
+	var openState, rollbackState string
+	var openCharged, rollbackCharged sql.NullInt64
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT state,charged_pusd FROM spend_ledger WHERE request_id='req_open'`).Scan(&openState, &openCharged); err != nil {
+		t.Fatalf("read migrated open: %v", err)
+	}
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT state,charged_pusd FROM spend_ledger WHERE request_id='req_rolled_back'`).Scan(&rollbackState, &rollbackCharged); err != nil {
+		t.Fatalf("read migrated rollback: %v", err)
+	}
+	if openState != "open" || openCharged.Valid {
+		t.Fatalf("open migration=(%s,%v)", openState, openCharged)
+	}
+	if rollbackState != "rolled_back" || !rollbackCharged.Valid || rollbackCharged.Int64 != 0 {
+		t.Fatalf("rollback migration=(%s,%v)", rollbackState, rollbackCharged)
+	}
+
+	// Re-opening must skip the checksummed migration rather than applying the floor
+	// a second time. The values remain byte-for-byte unchanged.
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migrated: %v", err)
+	}
+	db, err = Open(cfg)
+	if err != nil {
+		t.Fatalf("reopen migrated: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	assertWallets(db)
+}
+
+func TestProviderSpendMigrationRejectsUnsafeLegacyLedger(t *testing.T) {
+	const maxConvertibleTokens = int64(32_940_614_417_338)
+	cases := []struct {
+		name string
+		seed func(context.Context, *orm.DB) error
+	}{
+		{
+			name: "aggregate multiplication overflow",
+			seed: func(ctx context.Context, w *orm.DB) error {
+				if _, err := w.Exec(ctx,
+					`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+					 VALUES ('req_max','ins_1','2026-07-20',?,NULL,?)`,
+					maxConvertibleTokens, time.Now().UTC()); err != nil {
+					return err
+				}
+				_, err := w.Exec(ctx,
+					`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+					 VALUES ('req_one_more','ins_2','2026-07-20',1,1,?)`, time.Now().UTC())
+				return err
+			},
+		},
+		{
+			name: "negative settlement",
+			seed: func(ctx context.Context, w *orm.DB) error {
+				_, err := w.Exec(ctx,
+					`INSERT INTO ledger(request_id,install_id,period_day,reserved,settled,created_at)
+					 VALUES ('req_negative','ins_1','2026-07-20',1,-1,?)`, time.Now().UTC())
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			ctx := context.Background()
+			raw, err := sql.Open("sqlite", dsn(cfg, true))
+			if err != nil {
+				t.Fatalf("open raw: %v", err)
+			}
+			raw.SetMaxOpenConns(1)
+			w := orm.Open(raw)
+			if err := ensureMigrationsTable(ctx, w); err != nil {
+				t.Fatalf("ensure migrations: %v", err)
+			}
+			migs, err := loadMigrations()
+			if err != nil || len(migs) < 2 {
+				t.Fatalf("load migrations: len=%d err=%v", len(migs), err)
+			}
+			if err := applyOne(ctx, w, migs[0]); err != nil {
+				t.Fatalf("apply v1: %v", err)
+			}
+			if err := tc.seed(ctx, w); err != nil {
+				t.Fatalf("seed unsafe v1: %v", err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatalf("close raw: %v", err)
+			}
+
+			if db, err := Open(cfg); err == nil {
+				_ = db.Close()
+				t.Fatal("unsafe legacy ledger must fail migration")
+			}
+
+			// applyOne wraps the SQL body and migration row in one transaction: a
+			// rejected floor must leave neither v2 schema nor version 2 behind.
+			check, err := sql.Open("sqlite", dsn(cfg, true))
+			if err != nil {
+				t.Fatalf("reopen raw: %v", err)
+			}
+			t.Cleanup(func() { _ = check.Close() })
+			var versionRows, v2Tables int64
+			if err := check.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM schema_migrations WHERE version=2`).Scan(&versionRows); err != nil {
+				t.Fatalf("query migration ledger: %v", err)
+			}
+			if err := check.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spend_ledger'`).Scan(&v2Tables); err != nil {
+				t.Fatalf("query v2 schema: %v", err)
+			}
+			if versionRows != 0 || v2Tables != 0 {
+				t.Fatalf("failed migration partially committed: version=%d tables=%d", versionRows, v2Tables)
+			}
+		})
+	}
+}
+
+func TestProviderSpendMigrationKeepsExistingV2Setting(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+	raw, err := sql.Open("sqlite", dsn(cfg, true))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	w := orm.Open(raw)
+	if err := ensureMigrationsTable(ctx, w); err != nil {
+		t.Fatalf("ensure migrations: %v", err)
+	}
+	migs, _ := loadMigrations()
+	if err := applyOne(ctx, w, migs[0]); err != nil {
+		t.Fatalf("apply v1: %v", err)
+	}
+	now := time.Now().UTC()
+	for _, kv := range [][2]string{
+		{"GLOBAL_DAILY_BUDGET_TOKENS", "100"},
+		{"GLOBAL_DAILY_SPEND_MICRO_USD", "777"},
+	} {
+		if _, err := w.Exec(ctx, `INSERT INTO settings(key,value,updated_at) VALUES (?,?,?)`, kv[0], kv[1], now); err != nil {
+			t.Fatalf("seed setting: %v", err)
+		}
+	}
+	_ = raw.Close()
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("open migrated: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var value string
+	if err := db.Reader.QueryRow(ctx,
+		`SELECT value FROM settings WHERE key='GLOBAL_DAILY_SPEND_MICRO_USD'`).Scan(&value); err != nil || value != "777" {
+		t.Fatalf("existing v2 value=%q err=%v", value, err)
 	}
 }
 

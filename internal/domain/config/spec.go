@@ -28,9 +28,9 @@ const (
 // Spec describes one settable key: how to apply a string onto a Config (apply)
 // and render the current value (get), its tier, and — for bounded runtime
 // numbers — the SAME inclusive [Min,Max] apply enforces (surfaced so the client
-// can pre-validate before a round-trip). Bounded marks a numeric spec
-// (MODEL_ALLOWLIST is a string list with no range; startup-hard specs are
-// read-only). RestartRequired is true for startup-hard keys AND for
+// can pre-validate before a round-trip). Bounded marks a numeric spec (logical
+// model ids are strings with no numeric range; startup-hard specs are read-only).
+// RestartRequired is true for startup-hard keys AND for
 // N_GLOBAL_CONCURRENCY (persisted/validated hot, but the semaphore capacity only
 // re-takes effect on restart).
 type Spec struct {
@@ -46,44 +46,56 @@ type Spec struct {
 // Specs is the registry of every dashboard-surfaced config item, returned in a
 // stable order. Runtime ones (TierRuntimeHot) are exactly the hot-editable set;
 // startup-hard ones are surfaced read-only (incl. the memory-budget inputs which
-// must NEVER hot-reload). Secrets (DEEPSEEK_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
+// must NEVER hot-reload). Secrets (DEEPSEEK_API_KEY, GEMINI_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
 // are deliberately absent — env-only, never persisted, never dumped.
 func Specs() []Spec {
 	return []Spec{
-		{Key: "MODEL_ALLOWLIST", Tier: TierRuntimeHot,
+		{Key: "PUBLIC_MODEL_ID", Tier: TierRuntimeHot,
 			apply: func(c *Config, raw string) error {
-				var list []string
-				for _, m := range strings.Split(raw, ",") {
-					if m = strings.TrimSpace(m); m != "" {
-						list = append(list, m)
-					}
+				id := strings.TrimSpace(raw)
+				if id == "" {
+					return errMsg("PUBLIC_MODEL_ID must not be empty")
 				}
-				if len(list) == 0 {
-					return errMsg("MODEL_ALLOWLIST must not be empty")
-				}
-				c.ModelAllowlist = list
-				c.DefaultModel = list[0]
+				c.PublicModelID = id
 				return nil
 			},
-			get: func(c *Config) string { return strings.Join(c.ModelAllowlist, ",") }},
-		{Key: "GLOBAL_DAILY_BUDGET_TOKENS", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxGlobalDailyBudget,
+			get: func(c *Config) string { return c.PublicModelID }},
+		{Key: "GLOBAL_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("GLOBAL_DAILY_BUDGET_TOKENS", raw, 1, MaxGlobalDailyBudget)
+				n, err := reqInt64("GLOBAL_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
 				if err == nil {
-					c.GlobalDailyBudget = n
+					c.GlobalDailySpendPUSD = n * 1_000_000
 				}
 				return err
 			},
-			get: func(c *Config) string { return strconv.FormatInt(c.GlobalDailyBudget, 10) }},
-		{Key: "INSTALL_DAILY_TOKEN_CAP", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxInstallDailyTokenCap,
+			get: func(c *Config) string { return strconv.FormatInt(c.GlobalDailySpendPUSD/1_000_000, 10) }},
+		{Key: "INSTALL_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("INSTALL_DAILY_TOKEN_CAP", raw, 1, MaxInstallDailyTokenCap)
+				n, err := reqInt64("INSTALL_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
 				if err == nil {
-					c.InstallDailyTokenCap = n
+					c.InstallDailySpendPUSD = n * 1_000_000
 				}
 				return err
 			},
-			get: func(c *Config) string { return strconv.FormatInt(c.InstallDailyTokenCap, 10) }},
+			get: func(c *Config) string { return strconv.FormatInt(c.InstallDailySpendPUSD/1_000_000, 10) }},
+		{Key: "DEEPSEEK_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("DEEPSEEK_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
+				if err == nil {
+					c.DeepSeekDailySpendPUSD = n * 1_000_000
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.DeepSeekDailySpendPUSD/1_000_000, 10) }},
+		{Key: "GEMINI_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("GEMINI_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
+				if err == nil {
+					c.GeminiDailySpendPUSD = n * 1_000_000
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.GeminiDailySpendPUSD/1_000_000, 10) }},
 		{Key: "MONTHLY_QUOTA", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxMonthlyQuota,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("MONTHLY_QUOTA", raw, 1, MaxMonthlyQuota)
@@ -132,6 +144,24 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.Itoa(c.MaxMessageChars) }},
+		{Key: "MAX_MEDIA_PARTS", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: int64(MaxMediaParts),
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt("MAX_MEDIA_PARTS", raw, 1, MaxMediaParts)
+				if err == nil {
+					c.MaxMediaParts = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.Itoa(c.MaxMediaParts) }},
+		{Key: "MAX_MEDIA_DECODED_BYTES", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxMediaDecodedBytes,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("MAX_MEDIA_DECODED_BYTES", raw, 1, MaxMediaDecodedBytes)
+				if err == nil {
+					c.MaxMediaDecodedBytes = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.MaxMediaDecodedBytes, 10) }},
 		// MAX_BODY_BYTES is the request-body byte cap (memory protection, §5.3): the
 		// business middleware chain's MaxBytesReader bound. Like N_GLOBAL_CONCURRENCY
 		// it is persisted/validated hot but the chain is assembled once at boot, so
@@ -307,6 +337,10 @@ func Specs() []Spec {
 
 		// Startup hard-constraints (dashboard read-only; memory-budget inputs must
 		// never hot-reload — they gate the PERF-2 worst-case RSS self-check).
+		{Key: "TEXT_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TextUpstreamModel }},
+		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
+		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
+		{Key: "GEMINI_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.GeminiBaseURL }},
 		{Key: "GOMEMLIMIT_MIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.GoMemLimitMiB) }},
 		{Key: "SQLITE_CACHE_KIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.SQLiteCacheKiB) }},
 		{Key: "READ_POOL_MAX_CONNS", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.ReadPoolMaxConns) }},

@@ -4,466 +4,598 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	_ "github.com/glebarez/go-sqlite" // pure-Go sqlite driver, registered as "sqlite".
+	_ "github.com/glebarez/go-sqlite"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/orm"
 )
 
-// newTestStore opens a real on-disk sqlite file with the production accounting
-// schema (usage/budget/ledger) split across a single-conn writer pool (matches
-// production BEGIN IMMEDIATE serialization) and a concurrent read pool.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "q.db")
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
-		"&_pragma=foreign_keys(ON)"
-
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
 	w, err := sql.Open("sqlite", dsn+"&_txlock=immediate")
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
-	w.SetMaxOpenConns(1) // single serialized writer, as in production.
+	w.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = w.Close() })
 
 	schema := []string{
-		`CREATE TABLE usage (
-			install_id TEXT NOT NULL, period TEXT NOT NULL,
-			count INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (install_id, period))`,
-		`CREATE TABLE budget (
-			period TEXT PRIMARY KEY,
-			tokens_used INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0)`,
-		`CREATE TABLE ledger (
-			request_id TEXT PRIMARY KEY, install_id TEXT NOT NULL, period_day TEXT NOT NULL,
-			reserved INTEGER NOT NULL, settled INTEGER, created_at DATETIME NOT NULL)`,
-		`CREATE INDEX idx_ledger_open ON ledger(settled, created_at)`,
+		`CREATE TABLE quota_monthly (
+			install_id TEXT NOT NULL, period_month TEXT NOT NULL,
+			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
+			PRIMARY KEY(install_id, period_month))`,
+		`CREATE TABLE install_spend_daily (
+			install_id TEXT NOT NULL, period_day TEXT NOT NULL,
+			spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
+			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
+			PRIMARY KEY(install_id, period_day))`,
+		`CREATE TABLE provider_spend_daily (
+			provider TEXT NOT NULL CHECK(provider IN ('deepseek','gemini')),
+			period_day TEXT NOT NULL, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
+			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
+			PRIMARY KEY(provider, period_day))`,
+		`CREATE TABLE global_spend_daily (
+			period_day TEXT PRIMARY KEY, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
+			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0))`,
+		`CREATE TABLE spend_ledger (
+			request_id TEXT PRIMARY KEY, install_id TEXT NOT NULL,
+			provider TEXT NOT NULL CHECK(provider IN ('deepseek','gemini')),
+			model TEXT NOT NULL, rate_card_id TEXT NOT NULL,
+			period_month TEXT NOT NULL, period_day TEXT NOT NULL,
+			reserved_pusd INTEGER NOT NULL CHECK(reserved_pusd > 0),
+			charged_pusd INTEGER CHECK(charged_pusd >= 0),
+			state TEXT NOT NULL CHECK(state IN ('open','settled','rolled_back','orphaned')),
+			sublimit_applied INTEGER NOT NULL CHECK(sublimit_applied IN (0,1)),
+			created_at DATETIME NOT NULL, terminal_at DATETIME)`,
+		`CREATE INDEX idx_spend_ledger_open ON spend_ledger(state, created_at)`,
 	}
-	for _, s := range schema {
-		if _, err := w.Exec(s); err != nil {
+	for _, ddl := range schema {
+		if _, err := w.Exec(ddl); err != nil {
 			t.Fatalf("create schema: %v", err)
 		}
 	}
-
 	r, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("open reader: %v", err)
 	}
 	r.SetMaxOpenConns(4)
 	t.Cleanup(func() { _ = r.Close() })
-
 	return New(orm.Open(w), orm.Open(r))
 }
 
 func testPeriod() quota.Period { return quota.Period{Month: "2026-06", Day: "2026-06-20"} }
 
-// generous limits so a specific gate can be isolated by lowering just that one.
+func mustPlan(t *testing.T, provider billing.Provider, prompt, output int64) billing.Plan {
+	t.Helper()
+	model := billing.DeepSeekV4Flash
+	if provider == billing.ProviderGemini {
+		model = billing.Gemini31FlashLite
+	}
+	p, err := billing.NewPlan(provider, model, billing.InputStandard, prompt, output)
+	if err != nil {
+		t.Fatalf("new plan: %v", err)
+	}
+	return p
+}
+
 func limits() quota.Limits {
 	return quota.Limits{
-		MonthlyQuota:         1_000_000,
-		InstallDailyTokenCap: 1_000_000_000,
-		GlobalDailyBudget:    1_000_000_000,
-		DailySublimit:        0,
+		MonthlyQuota:          1_000_000,
+		InstallDailySpendPUSD: 1_000_000_000_000_000,
+		ProviderDailySpendPUSD: map[billing.Provider]int64{
+			billing.ProviderDeepSeek: 1_000_000_000_000_000,
+			billing.ProviderGemini:   1_000_000_000_000_000,
+		},
+		GlobalDailySpendPUSD: 1_000_000_000_000_000,
 	}
 }
 
-func readUsage(t *testing.T, s *Store, installID, period string) (count, tokens int64) {
+func reserve(t *testing.T, s *Store, installID string, plan billing.Plan, lim quota.Limits) *quota.Reservation {
 	t.Helper()
-	err := s.reader.QueryRow(context.Background(),
-		`SELECT count, tokens FROM usage WHERE install_id = ? AND period = ?`,
-		installID, period).Scan(&count, &tokens)
-	if err == sql.ErrNoRows {
-		return 0, 0
-	}
-	if err != nil {
-		t.Fatalf("readUsage: %v", err)
-	}
-	return count, tokens
-}
-
-func readBudget(t *testing.T, s *Store, day string) (used, requests int64) {
-	t.Helper()
-	err := s.reader.QueryRow(context.Background(),
-		`SELECT tokens_used, requests FROM budget WHERE period = ?`, day).Scan(&used, &requests)
-	if err == sql.ErrNoRows {
-		return 0, 0
-	}
-	if err != nil {
-		t.Fatalf("readBudget: %v", err)
-	}
-	return used, requests
-}
-
-func TestReserveLazyCreatesAndDebits(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 100, p, limits())
+	r, err := s.Reserve(context.Background(), installID, plan, testPeriod(), lim)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if r.RequestID == "" || r.Reserved != 100 {
-		t.Fatalf("bad reservation %+v", r)
+	return r
+}
+
+func readMonth(t *testing.T, s *Store, installID, month string) int64 {
+	t.Helper()
+	var n int64
+	err := s.reader.QueryRow(context.Background(),
+		`SELECT requests FROM quota_monthly WHERE install_id=? AND period_month=?`, installID, month).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0
 	}
-	if c, _ := readUsage(t, s, "ins_1", p.Month); c != 1 {
-		t.Errorf("month count = %d, want 1", c)
+	if err != nil {
+		t.Fatalf("read month: %v", err)
 	}
-	if _, tok := readUsage(t, s, "ins_1", p.Day); tok != 100 {
-		t.Errorf("day tokens = %d, want 100", tok)
+	return n
+}
+
+func readInstall(t *testing.T, s *Store, installID, day string) (spend, requests int64) {
+	t.Helper()
+	err := s.reader.QueryRow(context.Background(),
+		`SELECT spend_pusd, requests FROM install_spend_daily WHERE install_id=? AND period_day=?`,
+		installID, day).Scan(&spend, &requests)
+	if err == sql.ErrNoRows {
+		return 0, 0
 	}
-	if used, reqs := readBudget(t, s, p.Day); used != 100 || reqs != 1 {
-		t.Errorf("budget = (%d,%d), want (100,1)", used, reqs)
+	if err != nil {
+		t.Fatalf("read install: %v", err)
+	}
+	return spend, requests
+}
+
+func readProvider(t *testing.T, s *Store, provider billing.Provider, day string) (spend, requests int64) {
+	t.Helper()
+	err := s.reader.QueryRow(context.Background(),
+		`SELECT spend_pusd, requests FROM provider_spend_daily WHERE provider=? AND period_day=?`,
+		string(provider), day).Scan(&spend, &requests)
+	if err == sql.ErrNoRows {
+		return 0, 0
+	}
+	if err != nil {
+		t.Fatalf("read provider: %v", err)
+	}
+	return spend, requests
+}
+
+func readGlobal(t *testing.T, s *Store, day string) (spend, requests int64) {
+	t.Helper()
+	err := s.reader.QueryRow(context.Background(),
+		`SELECT spend_pusd, requests FROM global_spend_daily WHERE period_day=?`, day).Scan(&spend, &requests)
+	if err == sql.ErrNoRows {
+		return 0, 0
+	}
+	if err != nil {
+		t.Fatalf("read global: %v", err)
+	}
+	return spend, requests
+}
+
+func readLedger(t *testing.T, s *Store, requestID string) (state string, charged sql.NullInt64) {
+	t.Helper()
+	if err := s.reader.QueryRow(context.Background(),
+		`SELECT state, charged_pusd FROM spend_ledger WHERE request_id=?`, requestID).Scan(&state, &charged); err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	return state, charged
+}
+
+func TestReserveDebitsEveryPUSDWallet(t *testing.T) {
+	s := newTestStore(t)
+	p := mustPlan(t, billing.ProviderDeepSeek, 100, 20)
+	r := reserve(t, s, "ins_1", p, limits())
+	if r.ReservedPUSD != p.ReservedPUSD || r.Plan.RateCardID != p.RateCardID {
+		t.Fatalf("reservation lost frozen plan: %+v", r)
+	}
+	if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 1 {
+		t.Fatalf("month=%d want 1", got)
+	}
+	if got, _ := readInstall(t, s, "ins_1", testPeriod().Day); got != p.ReservedPUSD {
+		t.Fatalf("install spend=%d want %d", got, p.ReservedPUSD)
+	}
+	if got, reqs := readProvider(t, s, p.Provider, testPeriod().Day); got != p.ReservedPUSD || reqs != 1 {
+		t.Fatalf("provider=(%d,%d) want (%d,1)", got, reqs, p.ReservedPUSD)
+	}
+	if got, reqs := readGlobal(t, s, testPeriod().Day); got != p.ReservedPUSD || reqs != 1 {
+		t.Fatalf("global=(%d,%d) want (%d,1)", got, reqs, p.ReservedPUSD)
 	}
 }
 
-// GW-INV-01: N+1 concurrent reserves against a cap of N → exactly N succeed, no
-// oversell. Run with -race; the single-writer BEGIN IMMEDIATE serializes the RMW.
-func TestConcurrentReserveNoOversell(t *testing.T) {
+func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
+	plan := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	cases := []struct {
+		name string
+		edit func(*quota.Limits)
+		want error
+	}{
+		{"monthly", func(l *quota.Limits) { l.MonthlyQuota = 0 }, quota.ErrMonthlyExhausted},
+		{"install", func(l *quota.Limits) { l.InstallDailySpendPUSD = plan.ReservedPUSD - 1 }, quota.ErrInstallSpendExceeded},
+		{"provider", func(l *quota.Limits) { l.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = plan.ReservedPUSD - 1 }, quota.ErrProviderSpendExceeded},
+		{"global", func(l *quota.Limits) { l.GlobalDailySpendPUSD = plan.ReservedPUSD - 1 }, quota.ErrBudgetExceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			lim := limits()
+			tc.edit(&lim)
+			_, err := s.Reserve(context.Background(), "ins_1", plan, testPeriod(), lim)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err=%v want %v", err, tc.want)
+			}
+			if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 0 {
+				t.Fatalf("denial leaked month count=%d", got)
+			}
+			if got, _ := readGlobal(t, s, testPeriod().Day); got != 0 {
+				t.Fatalf("denial leaked global spend=%d", got)
+			}
+		})
+	}
+}
+
+func TestReserveHonorsPreexistingConservativeWalletFloor(t *testing.T) {
+	plan := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	const floor int64 = 9_000_000
+	cases := []struct {
+		name     string
+		seed     func(context.Context, *Store) error
+		limits   func(quota.Limits) quota.Limits
+		wantDeny error
+	}{
+		{
+			name: "install",
+			seed: func(ctx context.Context, s *Store) error {
+				_, err := s.writer.Exec(ctx,
+					`INSERT INTO install_spend_daily(install_id,period_day,spend_pusd,requests)
+					 VALUES ('ins_1',?, ?,0)`, testPeriod().Day, floor)
+				return err
+			},
+			limits: func(l quota.Limits) quota.Limits {
+				l.InstallDailySpendPUSD = floor
+				return l
+			},
+			wantDeny: quota.ErrInstallSpendExceeded,
+		},
+		{
+			name: "provider",
+			seed: func(ctx context.Context, s *Store) error {
+				_, err := s.writer.Exec(ctx,
+					`INSERT INTO provider_spend_daily(provider,period_day,spend_pusd,requests)
+					 VALUES ('deepseek',?, ?,1)`, testPeriod().Day, floor)
+				return err
+			},
+			limits: func(l quota.Limits) quota.Limits {
+				l.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = floor
+				return l
+			},
+			wantDeny: quota.ErrProviderSpendExceeded,
+		},
+		{
+			name: "global",
+			seed: func(ctx context.Context, s *Store) error {
+				_, err := s.writer.Exec(ctx,
+					`INSERT INTO global_spend_daily(period_day,spend_pusd,requests) VALUES (?, ?,1)`,
+					testPeriod().Day, floor)
+				return err
+			},
+			limits: func(l quota.Limits) quota.Limits {
+				l.GlobalDailySpendPUSD = floor
+				return l
+			},
+			wantDeny: quota.ErrBudgetExceeded,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			if err := tc.seed(ctx, s); err != nil {
+				t.Fatalf("seed floor: %v", err)
+			}
+			_, err := s.Reserve(ctx, "ins_1", plan, testPeriod(), tc.limits(limits()))
+			if !errors.Is(err, tc.wantDeny) {
+				t.Fatalf("reserve err=%v want %v", err, tc.wantDeny)
+			}
+			if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 0 {
+				t.Fatalf("denied reserve leaked month count=%d", got)
+			}
+		})
+	}
+}
+
+func TestReserveMissingProviderCapFailsClosed(t *testing.T) {
 	s := newTestStore(t)
-	p := testPeriod()
-	const cap = 50
-	const attempts = cap + 25
 	lim := limits()
-	lim.MonthlyQuota = cap // gate 1 is the cap under test.
+	delete(lim.ProviderDailySpendPUSD, billing.ProviderGemini)
+	_, err := s.Reserve(context.Background(), "ins_1", mustPlan(t, billing.ProviderGemini, 1, 1), testPeriod(), lim)
+	if !errors.Is(err, quota.ErrProviderLimitMissing) {
+		t.Fatalf("err=%v want ErrProviderLimitMissing", err)
+	}
+}
+
+func TestReserveRejectsForgedPlanWithoutFrozenRateCard(t *testing.T) {
+	s := newTestStore(t)
+	good := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	forged := billing.Plan{
+		Provider: good.Provider, Model: good.Model, RateCardID: good.RateCardID,
+		InputClass: good.InputClass, PromptQuote: good.PromptQuote,
+		OutputQuote: good.OutputQuote, ReservedPUSD: good.ReservedPUSD,
+	}
+	if _, err := s.Reserve(context.Background(), "ins_1", forged, testPeriod(), limits()); err == nil {
+		t.Fatal("manually forged Plan must not cross the persistence boundary")
+	}
+	if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 0 {
+		t.Fatalf("forged plan mutated quota: %d", got)
+	}
+}
+
+func TestProviderWalletsAreIsolatedButGlobalIsShared(t *testing.T) {
+	s := newTestStore(t)
+	ds := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	gm := mustPlan(t, billing.ProviderGemini, 1, 1)
+	lim := limits()
+	lim.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = ds.ReservedPUSD
+	lim.ProviderDailySpendPUSD[billing.ProviderGemini] = gm.ReservedPUSD
+	lim.GlobalDailySpendPUSD = ds.ReservedPUSD + gm.ReservedPUSD
+	reserve(t, s, "ins_ds", ds, lim)
+	if _, err := s.Reserve(context.Background(), "ins_ds2", ds, testPeriod(), lim); !errors.Is(err, quota.ErrProviderSpendExceeded) {
+		t.Fatalf("second DeepSeek err=%v want provider denial", err)
+	}
+	reserve(t, s, "ins_gm", gm, lim)
+	if got, _ := readGlobal(t, s, testPeriod().Day); got != ds.ReservedPUSD+gm.ReservedPUSD {
+		t.Fatalf("shared global=%d", got)
+	}
+}
+
+func TestConcurrentGlobalReserveNoOversell(t *testing.T) {
+	s := newTestStore(t)
+	p := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	const capN = 30
+	const attempts = 50
+	lim := limits()
+	lim.GlobalDailySpendPUSD = capN * p.ReservedPUSD
 
 	var ok, denied int64
-	var wg sync.WaitGroup
 	start := make(chan struct{})
+	var wg sync.WaitGroup
 	for i := 0; i < attempts; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, err := s.Reserve(context.Background(), "ins_1", 1, p, lim)
+			_, err := s.Reserve(context.Background(), "ins_"+time.Unix(int64(i), 0).Format("150405"), p, testPeriod(), lim)
 			switch {
 			case err == nil:
 				atomic.AddInt64(&ok, 1)
-			case errors.Is(err, quota.ErrMonthlyExhausted):
+			case errors.Is(err, quota.ErrBudgetExceeded):
 				atomic.AddInt64(&denied, 1)
 			default:
-				t.Errorf("unexpected reserve error: %v", err)
+				t.Errorf("unexpected err: %v", err)
 			}
-		}()
+		}(i)
 	}
 	close(start)
 	wg.Wait()
-
-	if ok != cap {
-		t.Errorf("succeeded = %d, want exactly %d (oversell!)", ok, cap)
+	if ok != capN || denied != attempts-capN {
+		t.Fatalf("ok=%d denied=%d", ok, denied)
 	}
-	if denied != attempts-cap {
-		t.Errorf("denied = %d, want %d", denied, attempts-cap)
-	}
-	if c, _ := readUsage(t, s, "ins_1", p.Month); c != cap {
-		t.Errorf("final month count = %d, want %d (no oversell)", c, cap)
+	if got, _ := readGlobal(t, s, testPeriod().Day); got != capN*p.ReservedPUSD {
+		t.Fatalf("global=%d want %d", got, capN*p.ReservedPUSD)
 	}
 }
 
-func TestBudgetExhaustedReturnsTypedDeny(t *testing.T) {
+func TestRollbackExactConservation(t *testing.T) {
 	s := newTestStore(t)
-	p := testPeriod()
+	p := mustPlan(t, billing.ProviderGemini, 10, 5)
 	lim := limits()
-	lim.GlobalDailyBudget = 100
-
-	if _, err := s.Reserve(context.Background(), "ins_1", 80, p, lim); err != nil {
-		t.Fatalf("first reserve: %v", err)
-	}
-	// 80 + 80 > 100 → budget gate denies.
-	_, err := s.Reserve(context.Background(), "ins_2", 80, p, lim)
-	if !errors.Is(err, quota.ErrBudgetExceeded) {
-		t.Fatalf("got %v, want ErrBudgetExceeded", err)
-	}
-	// The denied reserve must have rolled back ENTIRELY: budget still at 80,
-	// ins_2 took no month count.
-	if used, _ := readBudget(t, s, p.Day); used != 80 {
-		t.Errorf("budget = %d, want 80 (denied reserve must fully roll back)", used)
-	}
-	if c, _ := readUsage(t, s, "ins_2", p.Month); c != 0 {
-		t.Errorf("ins_2 month count = %d, want 0", c)
-	}
-}
-
-func TestRollbackConservationNetsZero(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	lim := limits()
-	lim.DailySublimit = 100 // enabled so rollback must also reverse the sublimit +1.
-
-	r, err := s.Reserve(context.Background(), "ins_1", 250, p, lim)
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
+	lim.DailySublimit = 3
+	r := reserve(t, s, "ins_1", p, lim)
 	if !r.SublimitApplied {
-		t.Fatal("SublimitApplied should be true when DailySublimit>0")
+		t.Fatal("sublimit flag not frozen")
 	}
 	if err := s.Rollback(context.Background(), r); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	if c, tok := readUsage(t, s, "ins_1", p.Month); c != 0 || tok != 0 {
-		t.Errorf("month row = (%d,%d), want (0,0)", c, tok)
+	if got := readMonth(t, s, r.InstallID, r.Period.Month); got != 0 {
+		t.Fatalf("month=%d", got)
 	}
-	// Day row: both the sublimit count +1 and the token reserve must net to zero.
-	if c, tok := readUsage(t, s, "ins_1", p.Day); c != 0 || tok != 0 {
-		t.Errorf("day row = (%d,%d), want (0,0)", c, tok)
+	if spend, reqs := readInstall(t, s, r.InstallID, r.Period.Day); spend != 0 || reqs != 0 {
+		t.Fatalf("install=(%d,%d)", spend, reqs)
 	}
-	if used, reqs := readBudget(t, s, p.Day); used != 0 || reqs != 0 {
-		t.Errorf("budget = (%d,%d), want (0,0)", used, reqs)
+	if spend, reqs := readProvider(t, s, p.Provider, r.Period.Day); spend != 0 || reqs != 0 {
+		t.Fatalf("provider=(%d,%d)", spend, reqs)
+	}
+	if spend, reqs := readGlobal(t, s, r.Period.Day); spend != 0 || reqs != 0 {
+		t.Fatalf("global=(%d,%d)", spend, reqs)
+	}
+	state, charged := readLedger(t, s, r.RequestID)
+	if state != stateRolledBack || !charged.Valid || charged.Int64 != 0 {
+		t.Fatalf("ledger=(%s,%v)", state, charged)
 	}
 }
 
-// B1 (off direction): sublimit DISABLED at reserve → flag false → rollback must
-// NOT touch the day-row count even though the row exists from the token reserve.
-func TestRollbackB1FlagNotConfig(t *testing.T) {
+func TestRollbackUnderflowRollsBackCASAndAllAdjustments(t *testing.T) {
 	s := newTestStore(t)
-	p := testPeriod()
-	lim := limits() // DailySublimit = 0.
-
-	r, err := s.Reserve(context.Background(), "ins_1", 10, p, lim)
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if r.SublimitApplied {
-		t.Fatal("SublimitApplied should be false when DailySublimit==0")
-	}
-	// Simulate a hot-reload that ENABLED the sublimit between reserve & rollback.
-	// Rollback must rely on the flag (false), not re-read config — so the day
-	// count stays 0, not -0/decremented. Seed a sentinel count to detect a wrong
-	// decrement.
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 1, 1), limits())
 	if _, err := s.writer.Exec(context.Background(),
-		`UPDATE usage SET count = 5 WHERE install_id = ? AND period = ?`, "ins_1", p.Day); err != nil {
-		t.Fatalf("seed: %v", err)
+		`UPDATE install_spend_daily SET spend_pusd=0 WHERE install_id=? AND period_day=?`, r.InstallID, r.Period.Day); err != nil {
+		t.Fatalf("corrupt balance: %v", err)
 	}
-	if err := s.Rollback(context.Background(), r); err != nil {
-		t.Fatalf("rollback: %v", err)
+	if err := s.Rollback(context.Background(), r); err == nil {
+		t.Fatal("underflow must fail, not clamp to zero")
 	}
-	if c, _ := readUsage(t, s, "ins_1", p.Day); c != 5 {
-		t.Errorf("day count = %d, want 5 (rollback must not touch it: flag was false)", c)
+	state, charged := readLedger(t, s, r.RequestID)
+	if state != stateOpen || charged.Valid {
+		t.Fatalf("CAS was not rolled back: (%s,%v)", state, charged)
+	}
+	if spend, reqs := readGlobal(t, s, r.Period.Day); spend != r.ReservedPUSD || reqs != 1 {
+		t.Fatalf("global partially adjusted=(%d,%d)", spend, reqs)
 	}
 }
 
-func TestSettleRefundDelta(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 200, p, limits())
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
+func TestSettleRefundAndTopUp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		actual func(int64) int64
+	}{
+		{"refund", func(r int64) int64 { return r / 4 }},
+		{"top-up", func(r int64) int64 { return r + 12345 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+			actual := tc.actual(r.ReservedPUSD)
+			if err := s.Settle(context.Background(), r, actual); err != nil {
+				t.Fatalf("settle: %v", err)
+			}
+			if got, _ := readInstall(t, s, r.InstallID, r.Period.Day); got != actual {
+				t.Fatalf("install=%d want %d", got, actual)
+			}
+			if got, _ := readProvider(t, s, r.Plan.Provider, r.Period.Day); got != actual {
+				t.Fatalf("provider=%d want %d", got, actual)
+			}
+			if got, _ := readGlobal(t, s, r.Period.Day); got != actual {
+				t.Fatalf("global=%d want %d", got, actual)
+			}
+			state, charged := readLedger(t, s, r.RequestID)
+			if state != stateSettled || !charged.Valid || charged.Int64 != actual {
+				t.Fatalf("ledger=(%s,%v)", state, charged)
+			}
+		})
 	}
-	// actual 50 < reserved 200 → refund 150.
-	if err := s.Settle(context.Background(), r, 50); err != nil {
+}
+
+func TestSettleTopUpOverflowRollsBackLedgerAndEveryWallet(t *testing.T) {
+	s := newTestStore(t)
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	const topUp int64 = 12345
+	nearOverflow := math.MaxInt64 - topUp + 1
+	ctx := context.Background()
+	for _, update := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE install_spend_daily SET spend_pusd=? WHERE install_id=? AND period_day=?`, []any{nearOverflow, r.InstallID, r.Period.Day}},
+		{`UPDATE provider_spend_daily SET spend_pusd=? WHERE provider=? AND period_day=?`, []any{nearOverflow, string(r.Plan.Provider), r.Period.Day}},
+		{`UPDATE global_spend_daily SET spend_pusd=? WHERE period_day=?`, []any{nearOverflow, r.Period.Day}},
+	} {
+		if _, err := s.writer.Exec(ctx, update.query, update.args...); err != nil {
+			t.Fatalf("seed near-overflow wallet: %v", err)
+		}
+	}
+
+	if err := s.Settle(ctx, r, r.ReservedPUSD+topUp); err == nil {
+		t.Fatal("top-up beyond int64 must fail atomically")
+	}
+	state, charged := readLedger(t, s, r.RequestID)
+	if state != stateOpen || charged.Valid {
+		t.Fatalf("ledger CAS survived failed top-up: state=%s charged=%v", state, charged)
+	}
+	if got, _ := readInstall(t, s, r.InstallID, r.Period.Day); got != nearOverflow {
+		t.Fatalf("install wallet changed: got=%d want=%d", got, nearOverflow)
+	}
+	if got, _ := readProvider(t, s, r.Plan.Provider, r.Period.Day); got != nearOverflow {
+		t.Fatalf("provider wallet changed: got=%d want=%d", got, nearOverflow)
+	}
+	if got, _ := readGlobal(t, s, r.Period.Day); got != nearOverflow {
+		t.Fatalf("global wallet changed: got=%d want=%d", got, nearOverflow)
+	}
+}
+
+func TestTerminalCASIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	actual := r.ReservedPUSD / 2
+	if err := s.Settle(context.Background(), r, actual); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	if used, _ := readBudget(t, s, p.Day); used != 50 {
-		t.Errorf("budget = %d, want 50 after refund", used)
-	}
-	if _, tok := readUsage(t, s, "ins_1", p.Day); tok != 50 {
-		t.Errorf("day tokens = %d, want 50", tok)
-	}
-	// Month count is KEPT (output happened).
-	if c, _ := readUsage(t, s, "ins_1", p.Month); c != 1 {
-		t.Errorf("month count = %d, want 1 (kept on settle)", c)
-	}
-}
-
-func TestSettleTopUpDelta(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 100, p, limits())
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	// actual 300 > reserved 100 → top-up debit 200 → balances rise to 300.
-	if err := s.Settle(context.Background(), r, 300); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if used, _ := readBudget(t, s, p.Day); used != 300 {
-		t.Errorf("budget = %d, want 300 after top-up", used)
-	}
-	if _, tok := readUsage(t, s, "ins_1", p.Day); tok != 300 {
-		t.Errorf("day tokens = %d, want 300", tok)
-	}
-}
-
-func TestDoubleSettleIdempotent(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 200, p, limits())
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if err := s.Settle(context.Background(), r, 50); err != nil {
-		t.Fatalf("settle 1: %v", err)
-	}
-	// Second settle with a different actual must be a no-op (settled NOT NULL).
 	if err := s.Settle(context.Background(), r, 0); err != nil {
-		t.Fatalf("settle 2: %v", err)
+		t.Fatalf("second settle: %v", err)
 	}
-	if used, _ := readBudget(t, s, p.Day); used != 50 {
-		t.Errorf("budget = %d, want 50 (second settle must be no-op)", used)
+	if err := s.Rollback(context.Background(), r); err != nil {
+		t.Fatalf("late rollback: %v", err)
+	}
+	if got, _ := readGlobal(t, s, r.Period.Day); got != actual {
+		t.Fatalf("terminal loser adjusted balance=%d", got)
 	}
 }
 
-// GW-INV-04: a settle and an orphan-reconcile racing the SAME row → exactly one
-// adjusts balances. Run with -race.
-func TestSettleVsReconcileRaceOneWinner(t *testing.T) {
+func TestOrphanKeepsFullReservedSpend(t *testing.T) {
 	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 200, p, limits())
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	// Backdate the ledger row so the reconciler considers it an orphan.
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderGemini, 10, 10), limits())
 	if _, err := s.writer.Exec(context.Background(),
-		`UPDATE ledger SET created_at = ? WHERE request_id = ?`,
-		time.Now().UTC().Add(-time.Hour), r.RequestID); err != nil {
+		`UPDATE spend_ledger SET created_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Hour), r.RequestID); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
+	n, err := s.ReconcileOrphans(context.Background(), time.Now().UTC().Add(-time.Minute))
+	if err != nil || n != 1 {
+		t.Fatalf("reconcile=(%d,%v)", n, err)
+	}
+	if got, _ := readGlobal(t, s, r.Period.Day); got != r.ReservedPUSD {
+		t.Fatalf("orphan refunded spend: got %d want %d", got, r.ReservedPUSD)
+	}
+	if got := readMonth(t, s, r.InstallID, r.Period.Month); got != 1 {
+		t.Fatalf("orphan refunded month count=%d", got)
+	}
+	state, charged := readLedger(t, s, r.RequestID)
+	if state != stateOrphaned || !charged.Valid || charged.Int64 != r.ReservedPUSD {
+		t.Fatalf("orphan ledger=(%s,%v)", state, charged)
+	}
+}
 
+func TestSettleVsOrphanRaceHasOneWinner(t *testing.T) {
+	s := newTestStore(t)
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	if _, err := s.writer.Exec(context.Background(),
+		`UPDATE spend_ledger SET created_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Hour), r.RequestID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	actual := r.ReservedPUSD / 3
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _ = s.Settle(context.Background(), r, 50) }()
+	go func() { defer wg.Done(); _ = s.Settle(context.Background(), r, actual) }()
 	go func() {
 		defer wg.Done()
 		_, _ = s.ReconcileOrphans(context.Background(), time.Now().UTC().Add(-time.Minute))
 	}()
 	wg.Wait()
-
-	// Exactly one winner: budget is either 50 (settle won) or 0 (reconcile won),
-	// never 50-200 double-applied or anything else.
-	used, _ := readBudget(t, s, p.Day)
-	if used != 50 && used != 0 {
-		t.Fatalf("budget = %d, want 50 (settle won) or 0 (reconcile won) — double adjust!", used)
+	got, _ := readGlobal(t, s, r.Period.Day)
+	if got != actual && got != r.ReservedPUSD {
+		t.Fatalf("race double-adjusted global=%d", got)
 	}
-	// Whichever won, the ledger is now settled NOT NULL (terminal).
-	var settled sql.NullInt64
-	if err := s.reader.QueryRow(context.Background(),
-		`SELECT settled FROM ledger WHERE request_id = ?`, r.RequestID).Scan(&settled); err != nil {
-		t.Fatalf("read settled: %v", err)
-	}
-	if !settled.Valid {
-		t.Fatal("ledger still settled NULL after settle+reconcile")
+	state, _ := readLedger(t, s, r.RequestID)
+	if state != stateSettled && state != stateOrphaned {
+		t.Fatalf("state=%s", state)
 	}
 }
 
-func TestReconcileOnlyTouchesAgedNullRows(t *testing.T) {
+func TestViewAndPeriodSnapshotReuse(t *testing.T) {
 	s := newTestStore(t)
-	p := testPeriod()
-
-	// orphan: aged + settled NULL (should be reconciled).
-	orphan, err := s.Reserve(context.Background(), "ins_orphan", 100, p, limits())
-	if err != nil {
-		t.Fatalf("reserve orphan: %v", err)
-	}
-	if _, err := s.writer.Exec(context.Background(),
-		`UPDATE ledger SET created_at = ? WHERE request_id = ?`,
-		time.Now().UTC().Add(-time.Hour), orphan.RequestID); err != nil {
-		t.Fatalf("backdate orphan: %v", err)
-	}
-
-	// fresh: settled NULL but recent (must be SKIPPED).
-	fresh, err := s.Reserve(context.Background(), "ins_fresh", 100, p, limits())
-	if err != nil {
-		t.Fatalf("reserve fresh: %v", err)
-	}
-
-	// settled: aged but already settled (must be SKIPPED).
-	done, err := s.Reserve(context.Background(), "ins_done", 100, p, limits())
-	if err != nil {
-		t.Fatalf("reserve done: %v", err)
-	}
-	if _, err := s.writer.Exec(context.Background(),
-		`UPDATE ledger SET created_at = ?, settled = 100 WHERE request_id = ?`,
-		time.Now().UTC().Add(-time.Hour), done.RequestID); err != nil {
-		t.Fatalf("settle done: %v", err)
-	}
-
-	n, err := s.ReconcileOrphans(context.Background(), time.Now().UTC().Add(-time.Minute))
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("reconciled %d rows, want exactly 1 (only the aged-null orphan)", n)
-	}
-	// orphan refunded on budget+day tokens; +1 month count KEPT (GW-INV-06).
-	if _, tok := readUsage(t, s, "ins_orphan", p.Day); tok != 0 {
-		t.Errorf("orphan day tokens = %d, want 0 (refunded)", tok)
-	}
-	if c, _ := readUsage(t, s, "ins_orphan", p.Month); c != 1 {
-		t.Errorf("orphan month count = %d, want 1 (kept)", c)
-	}
-	// fresh untouched.
-	if _, tok := readUsage(t, s, "ins_fresh", p.Day); tok != 100 {
-		t.Errorf("fresh day tokens = %d, want 100 (not reconciled)", tok)
-	}
-	_ = fresh
-}
-
-func TestRollbackThenSettleNoOp(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	r, err := s.Reserve(context.Background(), "ins_1", 100, p, limits())
+	p := mustPlan(t, billing.ProviderDeepSeek, 10, 10)
+	entry := quota.Period{Month: "2026-06", Day: "2026-06-20"}
+	r, err := s.Reserve(context.Background(), "ins_1", p, entry, limits())
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if err := s.Rollback(context.Background(), r); err != nil {
-		t.Fatalf("rollback: %v", err)
+	used, installSpend, globalSpend, err := s.View(context.Background(), "ins_1", entry)
+	if err != nil || used != 1 || installSpend != p.ReservedPUSD || globalSpend != p.ReservedPUSD {
+		t.Fatalf("view=(%d,%d,%d,%v)", used, installSpend, globalSpend, err)
 	}
-	// A late settle after rollback must be a no-op (settled=0, not NULL).
-	if err := s.Settle(context.Background(), r, 999); err != nil {
-		t.Fatalf("late settle: %v", err)
-	}
-	if used, _ := readBudget(t, s, p.Day); used != 0 {
-		t.Errorf("budget = %d, want 0 (settle after rollback is no-op)", used)
-	}
-}
-
-func TestViewReadsCountAndBudget(t *testing.T) {
-	s := newTestStore(t)
-	p := testPeriod()
-	if _, err := s.Reserve(context.Background(), "ins_1", 100, p, limits()); err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	used, budgetUsed, err := s.View(context.Background(), "ins_1", p)
-	if err != nil {
-		t.Fatalf("view: %v", err)
-	}
-	if used != 1 {
-		t.Errorf("monthly used = %d, want 1", used)
-	}
-	if budgetUsed != 100 {
-		t.Errorf("budgetUsed = %d, want 100", budgetUsed)
-	}
-	// Unknown install reads zeros, not an error.
-	u, b, err := s.View(context.Background(), "ins_unknown", p)
-	if err != nil || u != 0 || b != 100 {
-		t.Errorf("unknown view = (%d,%d,%v), want (0,100,nil)", u, b, err)
-	}
-}
-
-// PeriodSnapshotReuse: a reservation made on the entry day, then settled/rolled
-// back AFTER the wall clock crosses midnight, must affect ONLY the entry day's
-// rows — because the stored Period is reused, never recomputed (GW-INV-05).
-func TestPeriodSnapshotReuseAcrossMidnight(t *testing.T) {
-	s := newTestStore(t)
-	entry := quota.Period{Month: "2026-06-20"[:7], Day: "2026-06-20"}
-	r, err := s.Reserve(context.Background(), "ins_1", 100, entry, limits())
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	// The reservation carries the entry period; settle uses r.Period, so even if
-	// "now" were the next day, only the entry day row moves.
 	if err := s.Settle(context.Background(), r, 0); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	if used, _ := readBudget(t, s, "2026-06-20"); used != 0 {
-		t.Errorf("entry-day budget = %d, want 0 (refunded on the entry day)", used)
+	if got, _ := readGlobal(t, s, entry.Day); got != 0 {
+		t.Fatalf("entry day=%d", got)
 	}
-	// The next day's row was never created.
-	if used, _ := readBudget(t, s, "2026-06-21"); used != 0 {
-		t.Errorf("next-day budget = %d, want 0 (never touched)", used)
+	if got, _ := readGlobal(t, s, "2026-06-21"); got != 0 {
+		t.Fatalf("next day touched=%d", got)
 	}
+}
+
+func TestOpenReservationsCountsOnlyOpen(t *testing.T) {
+	s := newTestStore(t)
+	p := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	open := reserve(t, s, "ins_open", p, limits())
+	done := reserve(t, s, "ins_done", p, limits())
+	if err := s.Settle(context.Background(), done, done.ReservedPUSD); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	n, err := s.OpenReservations(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("open=(%d,%v)", n, err)
+	}
+	_ = open
 }

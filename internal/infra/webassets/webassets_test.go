@@ -56,6 +56,37 @@ func TestStaticServesBundleWithContentType(t *testing.T) {
 	}
 }
 
+// TestEmbeddedDashboardShowsBothProviderStates is a feature-level smoke guard
+// over the exact bundle Go embeds. It catches a source/dist mismatch that would
+// leave operators with the old ambiguous aggregate breaker card even though the
+// overview API exposes provider-specific state.
+func TestEmbeddedDashboardShowsBothProviderStates(t *testing.T) {
+	entries, err := webFS.ReadDir("ui/dist/assets")
+	if err != nil {
+		t.Fatalf("read embedded assets: %v", err)
+	}
+	var bundle strings.Builder
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+		b, err := webFS.ReadFile("ui/dist/assets/" + entry.Name())
+		if err != nil {
+			t.Fatalf("read embedded JS %q: %v", entry.Name(), err)
+		}
+		bundle.Write(b)
+	}
+	if bundle.Len() == 0 {
+		t.Fatal("no embedded JS bundle")
+	}
+	bundleText := bundle.String()
+	for _, label := range []string{"DeepSeek", "Gemini", "已配置", "未配置", "BREAKER N/A", "BREAKER OPEN", "BREAKER CLOSED"} {
+		if !strings.Contains(bundleText, label) {
+			t.Fatalf("embedded dashboard bundle is missing provider-state label %q", label)
+		}
+	}
+}
+
 // TestStaticTraversalFallsBackToSPA: a path traversal or unknown asset never
 // escapes the embed and never 404s — it renders the SPA shell.
 func TestStaticTraversalFallsBackToSPA(t *testing.T) {

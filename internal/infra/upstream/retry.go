@@ -10,9 +10,11 @@ import (
 )
 
 // retryPolicy bounds the connect→first-byte retry window (REL-1, GW-INV-26).
-// Only transient pre-output faults (connect fail / TLS reset / 502·503·504, and
-// a per-key signal the next attempt can route around) are retried — NEVER 429,
-// NEVER after output starts (that would double-bill / double-produce).
+// Only definitely-unbilled per-key signals that the next attempt can route
+// around (401/403 cooldown or key-breaker open) are retried. A connect failure,
+// timeout, or 5xx is charge-ambiguous and therefore terminal: retrying it could
+// create multiple provider charges behind one reservation. NEVER retry 429 or
+// after output starts either.
 type retryPolicy struct {
 	maxAttempts int           // total attempts incl. the first
 	base        time.Duration // initial backoff
@@ -61,9 +63,12 @@ func parseRetryAfter(v string, now time.Time) time.Duration {
 // attempt-set per request) are recorded; 429, client cancel, and post-output
 // disconnects are not. Open → immediate UPSTREAM_BUSY. IsSuccessful excludes
 // context.Canceled belt-and-suspenders so a client cancel never trips it.
-func newProcessBreaker(onStateChange func(from, to gobreaker.State)) *gobreaker.CircuitBreaker[struct{}] {
+func newProcessBreaker(name string, onStateChange func(from, to gobreaker.State)) *gobreaker.CircuitBreaker[struct{}] {
+	if name == "" {
+		name = "upstream"
+	}
 	return gobreaker.NewCircuitBreaker[struct{}](gobreaker.Settings{
-		Name:        "deepseek-upstream",
+		Name:        name,
 		MaxRequests: 1,
 		Interval:    30 * time.Second,
 		Timeout:     10 * time.Second,

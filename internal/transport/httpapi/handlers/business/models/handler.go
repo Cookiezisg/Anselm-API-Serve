@@ -2,7 +2,7 @@
 // lookup → app/model.List → the OpenAI list envelope (§7). Read-only discovery
 // surface — it reserves no quota and bills nothing — but it IS install-token-gated
 // (anti-anonymous-scrape) via the SAME shared auth as chat/quota. The catalog is
-// the live MODEL_ALLOWLIST (hot-reload reflected next request); this handler only
+// the single live provider-neutral model id (hot-reload reflected next request); this handler only
 // guards the method, runs the auth tree (§2), and serializes the envelope verbatim.
 package models
 
@@ -23,7 +23,7 @@ type Authenticator interface {
 }
 
 // Catalog is the app/model surface: it assembles the OpenAI envelope from the live
-// allowlist. An interface so the handler unit-tests against a stub; *app/model.Catalog
+// logical model id. An interface so the handler unit-tests against a stub; *app/model.Catalog
 // satisfies it structurally.
 type Catalog interface {
 	List() dommodel.ListEnvelope
@@ -41,7 +41,7 @@ func New(auth Authenticator, catalog Catalog) *Handler {
 }
 
 // ServeHTTP guards GET, runs the shared auth tree, and serializes the live
-// allowlist envelope verbatim. Unlike the other endpoints this returns the OpenAI
+// logical-model envelope verbatim. Unlike the other endpoints this returns the OpenAI
 // {object,data} list wrapper (a deliberate compatibility deviation from the
 // bare-entity rule, §7), produced wholesale by app/model so the wire shape has a
 // single home.

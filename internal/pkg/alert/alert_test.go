@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +14,18 @@ func statusByReason(a *Alerter) map[string]AlertState {
 		m[st.Reason] = st
 	}
 	return m
+}
+
+func TestBudgetMessagesUseSpendSemantics(t *testing.T) {
+	a := New(Thresholds{})
+	a.Check(context.Background(), Signals{BudgetUsed: 1000, BudgetLimit: 1000})
+	states := statusByReason(a)
+	for _, reason := range []string{"budget_exhausted", "budget_high"} {
+		msg := states[reason].Message
+		if !strings.Contains(msg, "daily spend budget") {
+			t.Fatalf("%s message must describe the pUSD spend wallet, got %q", reason, msg)
+		}
+	}
 }
 
 // firingReasons returns the reasons currently firing.

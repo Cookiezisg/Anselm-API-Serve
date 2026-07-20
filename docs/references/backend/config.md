@@ -4,98 +4,121 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-06-21
-review-due: 2026-09-19
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
 # 配置全面（config）
 
-> 与代码逐字对齐：层级 / apply / 边界来自 `internal/domain/config/spec.go` + `config.go`（`Max*` 常量、`ValidateSemantics`）；默认值 / env 解析来自 `internal/infra/configprovider/load.go`（`LoadBase`）。three-tier 见 ADR-006。
+> `internal/domain/config/spec.go` 是 dashboard/apply registry，`config.go` 是边界与跨字段语义事实源，`internal/infra/configprovider/load.go` 是 env/default 事实源。金额在 env/dashboard 使用整数 microUSD，进入账本后精确换算为 pUSD：`1 microUSD=10^6 pUSD`、`1 USD=10^12 pUSD`。路由/计价决策见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
 
-## 0. 三层级
+## 1. 三层级与 secret 边界
 
-| Tier | 含义 | 仪表盘 | 持久化 | 改法 |
-|---|---|---|---|---|
-| `TierRuntimeHot` | 后台可改、原子热生效 | 可编辑 | `settings` 表 overlay | 在线热改（全有或全无） |
-| `TierStartupHard` | 启动硬约束（含 PERF-2 内存预算项 + 监听 / tz / DB 路径） | **只读** | env-only | 改需重启 |
-| secret（不在 `Specs` registry） | 机密 | **不出现** | env-only | env + 重启 |
-
-机密三件套 `DEEPSEEK_API_KEY` / `DASHBOARD_USER`·`DASHBOARD_PASSWORD` / `INSTALL_POW_SECRET` 故意**不在** `config.Specs()`，故永不被 apply、永不入库、永不在 Dump/Snapshot 出真值（GW-INV-14）。`applyOne` 对未知/机密 key 与 startup-hard key **指名拒绝**。
-
-## 1. runtime-hot 项（`Specs()` 顺序，env 默认 + 边界）
-
-边界列 `[Min, Max]` 是 `apply` 与 env-load **共用**的同一套天花板（防 OOM + 防「天文数字=护栏形同虚设」）。`Max*` 常量在 `config.go`。
-
-| key | 默认 | Min | Max | Bounded | RestartReq | 说明 |
-|---|---|---|---|---|---|---|
-| `MODEL_ALLOWLIST` | （**必填**） | — | — | 否 | 否 | 逗号分隔；空报错；首项 = `DefaultModel`（GW-INV-35） |
-| `GLOBAL_DAILY_BUDGET_TOKENS` | （**必填 >0**） | 1 | 1_000_000_000_000 | 是 | 否 | 唯一钱包护栏（GW-INV-07） |
-| `INSTALL_DAILY_TOKEN_CAP` | （**必填 >0**） | 1 | 1_000_000_000_000 | 是 | 否 | 单 install 日 token 子配额 |
-| `MONTHLY_QUOTA` | 5000 | 1 | 1_000_000_000 | 是 | 否 | 月度次数 |
-| `MAX_TOKENS_CAP` | 4096 | 1 | 1_000_000 | 是 | 否 | 单请求输出 clamp 上限（GW-INV-37） |
-| `INPUT_TOKEN_CAP` | 16384 | 0 | 10_000_000 | 是 | 否 | 单请求输入估算上限；**0=禁用**（交上游模型判定，估算仍入预留） |
-| `MAX_MESSAGES` | 256 | 1 | 100_000 | 是 | 否 | messages 元素数上限（OWASP API4，GW-INV-33） |
-| `MAX_MESSAGE_CHARS` | 131072 | 1 | 16_777_216 | 是 | 否 | 单条 content 字符数上限 |
-| `MAX_BODY_BYTES` | 262144 | 4096 | 8_388_608 | 是 | **是** | 请求体字节上限（内存保护，GW-INV-34）；链装配一次，重启生效；与 Caddy `request_body max_size` 对齐 |
-| `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100_000 | 是 | **是** | 全局在飞并发；信号量容量重启才换（GW-INV-21） |
-| `RATE_PER_MIN` | 20 | 0 | 10_000_000 | 是 | 否 | per-install 分钟令牌桶 |
-| `DAILY_SUBLIMIT` | 0 | 0 | 1_000_000_000 | 是 | 否 | per-install 日次数子限额；0=禁用 |
-| `INSTALL_PER_IP_HOUR` | 10 | 1 | 1_000_000 | 是 | 否 | /install 单 IP 时频控 |
-| `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100_000_000 | 是 | 否 | 全局每日领号粗阀；0=禁用 |
-| `INSTALL_PER_FP_DAILY` | 0 | 0 | 1_000_000 | 是 | 否 | 同 fp 当日领号上限；0=禁用 |
-| `INSTALL_PER_FP_COOLDOWN_SEC` | 0 | 0 | 86_400 | 是 | 否 | 同 fp 相邻领号最小间隔秒；0=禁用 |
-| `INSTALL_POW_MODE` | `off` | — | — | 否（enum） | 否 | `off`\|`shadow`\|`enforce`；非法值 fail-fast；生效≠off 须有 secret |
-| `INSTALL_POW_DIFFICULTY` | 20 | 1 | 32 | 是 | 否 | 前导零 bit 数 |
-| `TOKEN_ANOMALY_RPM` | 0 | 0 | 10_000_000 | 是 | 否 | per-install 异常 RPM 触发点；0=禁用整套自动降速 |
-| `TOKEN_THROTTLE_FACTOR` | 4 | 1 | 1000 | 是 | 否 | 降速倍数=RATE_PER_MIN/此值；1=逃生口 |
-| `TOKEN_THROTTLE_COOLDOWN_SEC` | 300 | 1 | 86_400 | 是 | 否 | 单次降速持续秒 |
-| `QUEUE_WAIT_MS` | 1500 | 0 | 60_000 | 是 | 否 | N_global 满时有界等待窗口（REL-7，GW-INV-28）；0=binary reject |
-| `UPSTREAM_HEADER_TIMEOUT_SEC` | 60 | 1 | 600 | 是 | 否 | connect→header；不盖流式 body（GW-INV-27） |
-| `DISK_MIN_MB` | 500 | 0 | 1_073_741_824 | 是 | 否 | 数据盘剩余绝对下限 MiB（REL-6，GW-INV-29） |
-| `DISK_MIN_PERCENT` | 5 | 0 | 100 | 是 | 否 | 剩余百分比下限；0=禁用百分比判定 |
-
-> 注：`Specs()` 的 `DISK_MIN_PERCENT` Min/Max 标 0/100；env-load 路径同样校验 0..100。`GLOBAL_DAILY_BUDGET_TOKENS` / `INSTALL_DAILY_TOKEN_CAP` 无 env 默认（缺失或 ≤0 即 fail-fast）。
-
-## 2. startup-hard 项（仪表盘只读，env-only，改需重启）
-
-| key | 默认 | env 约束 | 说明 |
+| Tier | dashboard | settings | 生效方式 |
 |---|---|---|---|
-| `GOMEMLIMIT_MIB` | 768 | ≥0（0=禁用） | `debug.SetMemoryLimit` 软上限；PERF-2 自检输入 |
-| `SQLITE_CACHE_KIB` | 32768 | >0 | 每连接 page cache KiB |
-| `READ_POOL_MAX_CONNS` | 4 | >0 | 只读池并发上限（每连接一份 cache） |
-| `SQLITE_MMAP_MB` | 256 | ≥0（0=禁用） | mmap_size MiB（内部存 `SQLiteMmapBytes` 字节） |
-| `SQLITE_WAL_AUTOCHECKPOINT` | 4000 | ≥0 | WAL 自动 checkpoint 触发页数 |
-| `MEM_BUDGET_MIB` | 2048 | >0 | 总内存预算 |
-| `MEM_SAFETY_MARGIN_MIB` | 400 | ≥0 | 为 OS/runtime 突发预留的余量下限 |
-| `ADMIN_ADDR` | `127.0.0.1:9090` | 三监听互异 | /metrics 独立 admin 端口（loopback） |
-| `DASHBOARD_ADDR` | `127.0.0.1:8081` | 三监听互异 + 必须 loopback | 管理后台独立 loopback 监听（`requireLoopback` 绑定 fail-fast，不上公网；运维经 SSH 隧道） |
-| `LISTEN_ADDR` | `127.0.0.1:8080` | 三监听互异 | business 监听 |
-| `RESET_TZ` | `Asia/Shanghai` | `LoadLocation` 失败 **PANIC** | period 边界时区；绝无静默 UTC 回退（GW-INV-38） |
-| `GATEWAY_DB_PATH` | `anselm-gateway.db` | — | SQLite 落盘位置 |
+| `TierRuntimeHot` | 可编辑 | 可持久化 | clone→全量校验→单 tx persist→atomic swap |
+| `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
+| secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-非 registry 但 env-only 的 startup 项：`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`，去尾 `/`）、`LOG_LEVEL`（默认 `info`）、`DASHBOARD_DEV_INSECURE_COOKIE`（默认 false，仅 dev）。
+Secrets：`DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。
 
-## 3. 机密（secret-env-only，绝不入库 / 绝不 dump 真值）
+## 2. runtime-hot registry（`Specs()` 顺序）
 
-| key | 约束 |
+`Bounded` 数值在 env-load 与 overlay 路径共用同一闭区间；`MAX_BODY_BYTES` 与 `N_GLOBAL_CONCURRENCY` 虽可持久化，实际装配容量要 restart 才变化。
+
+| key | 默认 | Min | Max | Restart | 语义 |
+|---|---:|---:|---:|---|---|
+| `PUBLIC_MODEL_ID` | `anselm-auto` | — | — | 否 | 唯一 client-facing 逻辑模型 id；非空；不选择 provider |
+| `GLOBAL_DAILY_SPEND_MICRO_USD` | 14,000,000 | 1 | 9,000,000,000,000 | 否 | shared global 日钱包（默认 $14） |
+| `INSTALL_DAILY_SPEND_MICRO_USD` | 5,600,000 | 1 | 9,000,000,000,000 | 否 | per-install 日钱包（默认 $5.60） |
+| `DEEPSEEK_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | DeepSeek provider 日钱包 |
+| `GEMINI_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | Gemini provider 日钱包 |
+| `MONTHLY_QUOTA` | 5000 | 1 | 1,000,000,000 | 否 | per-install 月请求次数 |
+| `MAX_TOKENS_CAP` | 4096 | 1 | 1,000,000 | 否 | client 输出 clamp 的 gateway 上限；再受实际模型 limit 限制 |
+| `INPUT_TOKEN_CAP` | 16384 | 0 | 10,000,000 | 否 | 文本/tools 保守 estimate 上限；0=禁用；**不是媒体 token 上限** |
+| `MAX_MESSAGES` | 256 | 1 | 100,000 | 否 | 完整 history 的 message 数上限 |
+| `MAX_MESSAGE_CHARS` | 131072 | 1 | 16,777,216 | 否 | 单 message 文本 rune 上限 |
+| `MAX_MEDIA_PARTS` | 8 | 1 | 64 | 否 | 整请求 image+audio part 数上限 |
+| `MAX_MEDIA_DECODED_BYTES` | `min(3MiB, MAX_BODY_BYTES×3/4)` | 1 | 8,388,608 | 否 | 整请求累计 decoded media bytes；同时必须 ≤ body cap |
+| `MAX_BODY_BYTES` | 262144 | 4096 | 8,388,608 | **是** | business chat body cap；中间件装配一次 |
+| `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100,000 | **是** | 两 provider 共享的总 upstream 在飞 cap |
+| `RATE_PER_MIN` | 20 | 0 | 10,000,000 | 否 | per-install 分钟令牌桶；0=禁用 |
+| `DAILY_SUBLIMIT` | 0 | 0 | 1,000,000,000 | 否 | per-install 日请求次数子限；0=禁用 |
+| `INSTALL_PER_IP_HOUR` | 10 | 1 | 1,000,000 | 否 | `/install` per-IP 小时上限 |
+| `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100,000,000 | 否 | 全局日领号 cap；0=禁用 |
+| `INSTALL_PER_FP_DAILY` | 0 | 0 | 1,000,000 | 否 | per-fingerprint 日领号；0=禁用 |
+| `INSTALL_PER_FP_COOLDOWN_SEC` | 0 | 0 | 86,400 | 否 | fp 相邻领号间隔；0=禁用 |
+| `INSTALL_POW_MODE` | `off` | — | — | 否 | enum `off|shadow|enforce` |
+| `INSTALL_POW_DIFFICULTY` | 20 | 1 | 32 | 否 | PoW 前导零 bit |
+| `TOKEN_ANOMALY_RPM` | 0 | 0 | 10,000,000 | 否 | 自动降速触发点；0=整套禁用 |
+| `TOKEN_THROTTLE_FACTOR` | 4 | 1 | 1000 | 否 | 降速倍数 |
+| `TOKEN_THROTTLE_COOLDOWN_SEC` | 300 | 1 | 86,400 | 否 | 降速持续秒 |
+| `QUEUE_WAIT_MS` | 1500 | 0 | 60,000 | 否 | shared N_global 满后的有界等待；0=立即拒绝 |
+| `UPSTREAM_HEADER_TIMEOUT_SEC` | 60 | 1 | 600 | 否 | 每 attempt connect→first byte；不覆盖 stream body |
+| `DISK_MIN_MB` | 500 | 0 | 1,073,741,824 | 否 | data volume 剩余 MiB floor；0=禁用该判据 |
+| `DISK_MIN_PERCENT` | 5 | 0 | 100 | 否 | data volume 剩余百分比；0=禁用该判据 |
+
+默认 `MAX_BODY_BYTES=256KiB` 时，media decoded 默认是 `196608` bytes（base64 约占原始数据的 4/3）；operator 放大 body cap 后默认公式仍只在启动 env-load 时计算，不会随随后单键 hot edit 自动联动。
+
+## 3. startup-hard / env-only
+
+### 3.1 `Specs()` 中的 dashboard 只读项
+
+| key | 默认 | 约束 / 语义 |
+|---|---|---|
+| `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
+| `MULTIMODAL_UPSTREAM_MODEL` | `gemini-3.1-flash-lite` | Gemini 启用时必须是精确已编译 rate card；媒体路由 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
+| `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
+| `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
+| `READ_POOL_MAX_CONNS` | 4 | >0 |
+| `SQLITE_MMAP_MB` | 256 | ≥0；0=禁用 |
+| `ADMIN_ADDR` | `127.0.0.1:9090` | 与另两监听互异，必须 loopback |
+| `DASHBOARD_ADDR` | `127.0.0.1:8081` | 与另两监听互异，必须 loopback |
+| `LISTEN_ADDR` | `127.0.0.1:8080` | 与另两监听互异 |
+| `RESET_TZ` | `Asia/Shanghai` | `LoadLocation` 失败 panic，无 UTC fallback |
+| `GATEWAY_DB_PATH` | `anselm-gateway.db` | SQLite 文件 |
+
+### 3.2 其它 startup env（不在 dashboard registry）
+
+| key | 默认 | 约束 / 语义 |
+|---|---:|---|
+| `SQLITE_WAL_AUTOCHECKPOINT` | 4000 | ≥0 pages |
+| `MEM_BUDGET_MIB` | 2048 | >0 |
+| `MEM_SAFETY_MARGIN_MIB` | 400 | ≥0 |
+| `LOG_LEVEL` | `info` | process log level |
+| `DASHBOARD_DEV_INSECURE_COOKIE` | `false` | 仅 dev；生产 cookie 恒 Secure |
+
+## 4. secret-env-only
+
+| key | 约束 / 缺失行为 |
 |---|---|
-| `DEEPSEEK_API_KEY` | **必填**；逗号分隔多 key，首个为主；缺失 → `ErrDeepSeekKeyRequired` |
-| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 两者**同设或同空**（半配 fail-fast）；设了即启 dashboard |
-| `INSTALL_POW_SECRET` | env-only；present→`configured`/absent→`disabled`，**绝不自动生成**；生效 mode≠off 时必须非空 |
+| `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
+| `GEMINI_API_KEY` | 可选；同样支持逗号分隔多 key；为空则不构造 Gemini backend，文本/readiness 正常，合法多模态返回 `503 MULTIMODAL_UNAVAILABLE` |
+| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 同设或同空；半配 fail-fast；同设才启 dashboard auth |
+| `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 
-## 4. 跨字段语义（SEC-2，`ValidateSemantics`，env-load + overlay + 每次热改都跑）
+每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Gemini 缺 key 不是“坏 key”或 readiness fault，而是该 deployment 没有多模态 capability。
 
-1. `INSTALL_DAILY_TOKEN_CAP` ≤ `GLOBAL_DAILY_BUDGET_TOKENS`（否则单 install 能抽干全天钱包，子配额无意义）。
-2. `INPUT_TOKEN_CAP` + `MAX_TOKENS_CAP` ≤ `INSTALL_DAILY_TOKEN_CAP`（否则单请求最坏预留恒超日子配额，当天首个请求即被拒，无调用能成功）；`INPUT_TOKEN_CAP=0`（输入闸禁用）时退化为 `MAX_TOKENS_CAP` ≤ `INSTALL_DAILY_TOKEN_CAP`，逐请求上界由 app/chat 运行时预检 `est>InstallDailyTokenCap → 400` 兜底（GW-INV-10）。
-3. 生效 `INSTALL_POW_MODE` ∈ {shadow, enforce} 必须有非空 `INSTALL_POW_SECRET`（`CONFIG_POW_SECRET_REQUIRED` fail-fast；env + 热改两路对齐）。
+## 5. 跨字段语义（每次 env-load / overlay / hot batch 都跑）
 
-以上违反由 GW-INV-10 / GW-INV-39 守。
+1. 四个 spend cap 都 >0；`INSTALL_DAILY_SPEND_MICRO_USD` 与 DeepSeek provider cap 始终 ≤ `GLOBAL_DAILY_SPEND_MICRO_USD`；Gemini provider cap 仅在 `GEMINI_API_KEY` 已配置、该 provider 启用时要求 ≤ global（inactive 值不阻断纯文本启动）。
+2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
+3. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入 install 日 cap。
+4. **仅当 `GEMINI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Gemini rate card，Gemini provider wallet 必须装入 global wallet，且按 audio rate 的完整 `1,048,576` input + `65,536` output quote（`622,592 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Gemini 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算媒体 token；媒体形状/bytes 单独受限并交 Gemini 判定实际 token。
+5. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
+6. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 
-## 5. PERF-2 内存预算自检（`ValidateMemoryBudget`）
+违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
 
-最坏 RSS = `GOMEMLIMIT_MIB` + cacheMiB × `(1 + READ_POOL_MAX_CONNS)` + mmapMiB（cache 是 per-connection：写池 1 份 + 读池 N 份；mmap 两池共享只记一次，故乘子是 `1+READ_POOL` 而非误算的 ×2）。三态：在 `MEM_BUDGET_MIB − MEM_SAFETY_MARGIN_MIB` 内 → 过；`GOMEMLIMIT_MIB=0`（堆无界）且超 → advisory WARN 放行；`GOMEMLIMIT_MIB>0` 且超 → fail-fast（`ErrMemoryBudget`，指名要调小的旋钮）。GW-INV-40。
+## 6. PERF-2 与热改原子性
 
-## 6. 热改路径（`ApplyOverrides`）
+最坏 RSS=`GOMEMLIMIT_MIB + (SQLITE_CACHE_KIB/1024)×(1+READ_POOL_MAX_CONNS) + SQLITE_MMAP_MB`。若超过 `MEM_BUDGET_MIB−MEM_SAFETY_MARGIN_MIB`：`GOMEMLIMIT_MIB=0` 时 WARN 放行，否则 `ErrMemoryBudget` fail-fast。
 
-纯函数、全有或全无：克隆 base → 按 key 排序逐项 `applyOne`（未知/机密/startup-hard 指名拒绝）→ 重跑 `ValidateSemantics`；任一失败返 `(Config{}, err)`，**绝不返回半生效配置**。infra `Provider` 在写锁下：domain 校验 → `settings` 表全或无持久化 → 原子 swap（持久化失败不 swap）。读路径 `Load()` 无锁取当前 atomic 快照（每请求快照一次，热更新永不在单请求内半旧半新）。
+`ApplyOverrides` 对 base clone 依 key 排序 apply；未知/secret/startup-hard 均指名拒绝；随后重跑全部跨字段语义。Provider 在写锁内先单事务持久化、成功后 atomic swap；任一错误不落半份 settings、不发布半份 Config。每个业务请求只读取一次 Config snapshot。
+
+## 7. v1 overlay 迁移
+
+迁移 `0002_provider_spend_ledger.sql` 将旧 `GLOBAL_DAILY_BUDGET_TOKENS` / `INSTALL_DAILY_TOKEN_CAP` 以 `ceil(tokens×280000 pUSD / 10^6)` 换为新 microUSD settings，并删除旧键与 `MODEL_ALLOWLIST`。新版本不读取这些旧 env/settings 名称；`PUBLIC_MODEL_ID` 是唯一公开模型配置。

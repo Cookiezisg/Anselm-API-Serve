@@ -38,8 +38,10 @@ export default function Export() {
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Paragraph>
             导出当前数据库的<Text strong>一致快照</Text>（SQLite <Text code>VACUUM INTO</Text>，含 WAL
-            已提交状态）。快照只含落盘内容（installs / usage / budget / ledger / settings），
-            <Text strong>绝不含任何内存机密</Text>（DeepSeek key / 后台口令在 env + 进程内存，从不入库）。
+            已提交状态）。快照包含 installs / quota_monthly / global_spend_daily /
+            install_spend_daily / provider_spend_daily / spend_ledger / settings 等持久化表。其中成本列
+            <Text code>*_pusd</Text> 以整数 pUSD 存储（1 pUSD = 10⁻¹² USD），不使用浮点美元记账。
+            <Text strong>绝不含任何内存机密</Text>（上游 API key / 后台口令在 env + 进程内存，从不入库）。
           </Paragraph>
           <Button type="primary" size="large" icon={<DownloadOutlined />} onClick={onDownload}>
             下载数据库快照

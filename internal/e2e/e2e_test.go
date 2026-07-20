@@ -22,6 +22,7 @@ package e2e
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -40,8 +41,11 @@ import (
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
 	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
@@ -57,7 +61,7 @@ import (
 // --- the in-test composition root (mirrors internal/bootstrap.Build) ----------
 
 // stack bundles the wired handler with the few collaborators a test reaches back
-// into (the quota service + the raw quota store for budget polling).
+// into (the quota service + the raw quota store for spend-wallet polling).
 type stack struct {
 	handler http.Handler
 	quota   *appquota.Service
@@ -77,25 +81,31 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 		t.Fatal(err)
 	}
 	return &config.Config{
-		DeepSeekAPIKeys:       []string{"sk-test-key-never-leaks"},
-		DeepSeekBaseURL:       strings.TrimRight(upstreamURL, "/"),
-		ModelAllowlist:        []string{"deepseek-chat"},
-		DefaultModel:          "deepseek-chat",
-		MonthlyQuota:          100,
-		GlobalDailyBudget:     1_000_000,
-		InstallDailyTokenCap:  1_000_000,
-		MaxTokensCap:          4096,
-		InputTokenCap:         16384,
-		MaxMessages:           256,
-		MaxMessageChars:       131072,
-		NGlobalConcurrency:    8,
-		RatePerMin:            1000,
-		InstallPerIPHour:      100,
-		QueueWait:             0,
-		Location:              loc,
-		ResetTZ:               "Asia/Shanghai",
-		UpstreamHeaderTimeout: 5 * time.Second,
-		InstallPowMode:        config.PowModeOff,
+		DeepSeekAPIKeys:         []string{"sk-test-key-never-leaks"},
+		DeepSeekBaseURL:         strings.TrimRight(upstreamURL, "/"),
+		PublicModelID:           "anselm-auto",
+		TextUpstreamModel:       billing.DeepSeekV4Flash,
+		MultimodalUpstreamModel: billing.Gemini31FlashLite,
+		MonthlyQuota:            100,
+		GlobalDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
+		InstallDailySpendPUSD:   2 * billing.PicoUSDPerUSD,
+		DeepSeekDailySpendPUSD:  10 * billing.PicoUSDPerUSD,
+		GeminiDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
+		MaxTokensCap:            4096,
+		InputTokenCap:           16384,
+		MaxMessages:             256,
+		MaxMessageChars:         131072,
+		MaxMediaParts:           8,
+		MaxMediaDecodedBytes:    192 * 1024,
+		MaxBodyBytes:            256 * 1024,
+		NGlobalConcurrency:      8,
+		RatePerMin:              1000,
+		InstallPerIPHour:        100,
+		QueueWait:               0,
+		Location:                loc,
+		ResetTZ:                 "Asia/Shanghai",
+		UpstreamHeaderTimeout:   5 * time.Second,
+		InstallPowMode:          config.PowModeOff,
 	}
 }
 
@@ -110,10 +120,21 @@ func buildStack(t *testing.T, upstreamURL string) *stack {
 
 // buildStackWith is buildStack with an optional mutator on the assembled config
 // before the Provider is seeded — used to flip the M2 Sybil/PoW gates or shrink a
-// budget end to end without forking the whole assembly.
+// spend wallet end to end without forking the whole assembly.
 func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config)) *stack {
+	return buildStackWithProviders(t, upstreamURL, "", mutate)
+}
+
+// buildStackWithProviders additionally wires a Gemini compatibility endpoint.
+// Most legacy e2e cases leave it blank to prove text service remains independent;
+// multimodal cases opt in and exercise the same two-client registry as bootstrap.
+func buildStackWithProviders(t *testing.T, upstreamURL, geminiURL string, mutate func(*config.Config)) *stack {
 	t.Helper()
 	cfg := baseConfig(t, upstreamURL)
+	if geminiURL != "" {
+		cfg.GeminiAPIKeys = []string{"gemini-test-key-never-leaks"}
+		cfg.GeminiBaseURL = strings.TrimRight(geminiURL, "/")
+	}
 	if mutate != nil {
 		mutate(cfg)
 	}
@@ -153,10 +174,27 @@ func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// Real upstream client pointed (per-request via cfg.DeepSeekBaseURL) at the fake
-	// DeepSeek — the SAME concrete client bootstrap builds, wrapped in the covariance
-	// adapter so chat sees chat.UpstreamStream.
-	upClient := upstream.New(cfg.DeepSeekAPIKeys, cfg.UpstreamHeaderTimeout, logger, nil)
+	// Real provider-local client pointed at the fake DeepSeek, then placed in the
+	// same no-fallback registry bootstrap uses. Endpoint, key pool and breaker are
+	// construction-time facts; the request can never redirect credentials.
+	deepSeekClient := upstream.NewBackend(upstream.Options{
+		Backend:            upstream.BackendDeepSeek,
+		ChatCompletionsURL: cfg.DeepSeekBaseURL + "/chat/completions",
+		APIKeys:            cfg.DeepSeekAPIKeys,
+		HeaderTimeout:      cfg.UpstreamHeaderTimeout,
+		Logger:             logger,
+	})
+	var geminiClient upstream.BackendClient
+	if len(cfg.GeminiAPIKeys) > 0 {
+		geminiClient = upstream.NewBackend(upstream.Options{
+			Backend:            upstream.BackendGemini,
+			ChatCompletionsURL: cfg.GeminiBaseURL + "/chat/completions",
+			APIKeys:            cfg.GeminiAPIKeys,
+			HeaderTimeout:      cfg.UpstreamHeaderTimeout,
+			Logger:             logger,
+		})
+	}
+	providers := chatprovider.New(deepSeekClient, geminiClient)
 
 	// Shared rate limiter (the bucket the chat RL gate reaches through).
 	rl := ratelimit.New(cfg.RatePerMin)
@@ -174,7 +212,7 @@ func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config
 	chatSvc := appchat.New(appchat.Deps{
 		Auth:     installSvc,
 		Quota:    quotaSvc,
-		Upstream: upstreamAdapter{c: upClient},
+		Upstream: upstreamAdapter{r: providers},
 		RL:       rl,
 		Throttle: noThrottle{},
 		Disk:     dg,
@@ -206,16 +244,21 @@ func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config
 // upstreamAdapter widens *upstream.Stream into the app's chat.UpstreamStream (Go
 // has no return-type covariance), mapping the nil-stream case so a nil *Stream
 // never becomes a non-nil interface — exactly bootstrap's adapter.
-type upstreamAdapter struct{ c upstream.Client }
+type upstreamAdapter struct{ r *chatprovider.Registry }
 
-func (a upstreamAdapter) Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (appchat.UpstreamStream, *apierr.APIError) {
-	s, e := a.c.Do(ctx, payload, stream, cfg)
-	if e != nil {
-		return nil, e
+func (a upstreamAdapter) Open(ctx context.Context, provider billing.Provider, model string, req domchat.CompletionRequest, firstByteTimeout time.Duration) (appchat.UpstreamStream, *appchat.UpstreamFailure) {
+	s, failure := a.r.Open(ctx, provider, model, req, firstByteTimeout)
+	if failure != nil {
+		return nil, &appchat.UpstreamFailure{APIError: failure.APIError, Exposure: failure.Exposure}
 	}
 	return s, nil
 }
-func (a upstreamAdapter) BreakerOpen() bool { return a.c.BreakerOpen() }
+func (a upstreamAdapter) Available(provider billing.Provider) bool {
+	return a.r != nil && a.r.Available(provider)
+}
+func (a upstreamAdapter) BreakerOpen(provider billing.Provider) bool {
+	return a.r != nil && a.r.BreakerOpen(provider)
+}
 
 // quotaCfg adapts the live Provider into app/quota.ConfigSource off ONE atomic
 // Load so a hot-edit never splits a reservation's view.
@@ -224,9 +267,13 @@ type quotaCfg struct{ p *configprovider.Provider }
 func (q quotaCfg) Limits() appquota.Limits {
 	c := q.p.Load()
 	return appquota.Limits{
-		MonthlyQuota:         c.MonthlyQuota,
-		InstallDailyTokenCap: c.InstallDailyTokenCap,
-		GlobalDailyBudget:    c.GlobalDailyBudget,
+		MonthlyQuota:          c.MonthlyQuota,
+		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
+		ProviderDailySpendPUSD: map[billing.Provider]int64{
+			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
+			billing.ProviderGemini:   c.GeminiDailySpendPUSD,
+		},
+		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
 		DailySublimit:        c.DailySublimit,
 	}
 }
@@ -250,9 +297,14 @@ func (c chatMx) Inflight(n int) {
 	c.m.InflightConc.Set(float64(n))
 	c.inflight.Store(int64(n))
 }
-func (c chatMx) Upstream(outcome string) { c.m.UpstreamRequests.WithLabelValues(outcome).Inc() }
-func (c chatMx) SettleFailure()          { c.m.SettleFailures.Inc() }
-func (c chatMx) RollbackFailure()        { c.m.RollbackFailures.Inc() }
+func (c chatMx) Upstream(provider billing.Provider, outcome string) {
+	c.m.UpstreamRequests.WithLabelValues(string(provider), outcome).Inc()
+}
+func (c chatMx) BillingDrift(provider billing.Provider) {
+	c.m.BillingDrifts.WithLabelValues(string(provider)).Inc()
+}
+func (c chatMx) SettleFailure()   { c.m.SettleFailures.Inc() }
+func (c chatMx) RollbackFailure() { c.m.RollbackFailures.Inc() }
 
 // noThrottle is the dormant M2 anomaly throttle (TOKEN_ANOMALY_RPM=0): zero work,
 // never tightens, never flags.
@@ -288,9 +340,9 @@ func fakeDeepSeek(t *testing.T) (*httptest.Server, func() (auth, body string)) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
 		fw, _ := w.(http.Flusher)
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.DeepSeekV4Flash+"\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
 		fw.Flush()
-		_, _ = io.WriteString(w, "data: {\"usage\":{\"total_tokens\":11}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.DeepSeekV4Flash+"\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8,\"total_tokens\":11}}\n\n")
 		fw.Flush()
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		fw.Flush()
@@ -332,9 +384,10 @@ func fakeDeepSeekNonStream(t *testing.T, mode string, usageTokens int64) *httpte
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
 		w.WriteHeader(http.StatusOK)
-		body := `{"id":"cmpl-1","object":"chat.completion","choices":[{"index":0,` +
+		body := `{"id":"cmpl-1","object":"chat.completion","model":"` + billing.DeepSeekV4Flash + `","choices":[{"index":0,` +
 			`"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],` +
-			`"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":` +
+			`"usage":{"prompt_tokens":3,"completion_tokens":` +
+			strconv.FormatInt(usageTokens-3, 10) + `,"total_tokens":` +
 			strconv.FormatInt(usageTokens, 10) + `}}`
 		_, _ = io.WriteString(w, body)
 	}))
@@ -367,40 +420,75 @@ func installToken(t *testing.T, srv *httptest.Server, client *http.Client) strin
 	return inst.Token
 }
 
-// waitBudget polls the global daily budget tokens_used until it equals want or the
+// waitGlobalSpend polls the shared daily pUSD wallet until it equals want or the
 // deadline elapses, since settle runs on a DETACHED background goroutine (REL-4)
-// not synchronous with the HTTP response return. The day-keyed budget row is read
-// via the real quotastore.View (install id is irrelevant to the budget column).
-func waitBudget(t *testing.T, s *stack, want int64) int64 {
+// rather than synchronously with the HTTP response return.
+func waitGlobalSpend(t *testing.T, s *stack, want int64) int64 {
 	t.Helper()
-	return pollBudget(t, s, func(used int64) bool { return used == want })
+	return pollGlobalSpend(t, s, func(spend int64) bool { return spend == want })
 }
 
-func pollBudget(t *testing.T, s *stack, done func(int64) bool) int64 {
+func pollGlobalSpend(t *testing.T, s *stack, done func(int64) bool) int64 {
 	t.Helper()
 	period := s.quota.SnapshotPeriod(time.Now())
 	deadline := time.Now().Add(3 * time.Second)
-	var used int64
+	var spend int64
 	for time.Now().Before(deadline) {
-		if u := budgetUsed(t, s, period); done(u) {
+		if u := globalSpendPUSD(t, s, period); done(u) {
 			return u
 		} else {
-			used = u
+			spend = u
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return used
+	return spend
 }
 
-// budgetUsed reads the day budget tokens_used column via the real store View (the
-// `used`/usage column is per-install and ignored here; budgetUsed is day-global).
-func budgetUsed(t *testing.T, s *stack, p domquota.Period) int64 {
+// globalSpendPUSD reads the shared day wallet via the real store View. Monthly
+// request count and install-local spend are intentionally ignored here.
+func globalSpendPUSD(t *testing.T, s *stack, p domquota.Period) int64 {
 	t.Helper()
-	_, budget, err := s.qstore.View(context.Background(), "any", p)
+	_, _, spend, err := s.qstore.View(context.Background(), "any", p)
 	if err != nil {
-		t.Fatalf("budget view: %v", err)
+		t.Fatalf("global spend view: %v", err)
 	}
-	return budget
+	return spend
+}
+
+// deepSeekCostPUSD prices an authoritative usage vector through the same frozen
+// rate card as production, so e2e assertions never duplicate price constants.
+func deepSeekCostPUSD(t *testing.T, prompt, completion int64) int64 {
+	t.Helper()
+	plan, err := billing.NewPlan(billing.ProviderDeepSeek, billing.DeepSeekV4Flash,
+		billing.InputStandard, prompt, completion)
+	if err != nil {
+		t.Fatalf("build DeepSeek cost plan: %v", err)
+	}
+	cost, ok, err := plan.Cost(billing.Usage{
+		Present: true, PromptTokens: prompt, CompletionTokens: completion,
+		TotalTokens: prompt + completion,
+	})
+	if err != nil || !ok {
+		t.Fatalf("price DeepSeek usage: cost=%d ok=%v err=%v", cost, ok, err)
+	}
+	return cost
+}
+
+func geminiCostPUSD(t *testing.T, prompt, completion int64) int64 {
+	t.Helper()
+	plan, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
+		billing.InputStandard, prompt, completion)
+	if err != nil {
+		t.Fatalf("build Gemini cost plan: %v", err)
+	}
+	cost, ok, err := plan.Cost(billing.Usage{
+		Present: true, PromptTokens: prompt, CompletionTokens: completion,
+		TotalTokens: prompt + completion,
+	})
+	if err != nil || !ok {
+		t.Fatalf("price Gemini usage: cost=%d ok=%v err=%v", cost, ok, err)
+	}
+	return cost
 }
 
 // --- tests --------------------------------------------------------------------
@@ -456,6 +544,9 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	if !strings.Contains(string(body), "[DONE]") {
 		t.Fatalf("stream not relayed to [DONE]: %s", body)
 	}
+	if strings.Count(string(body), `"model":"anselm-auto"`) != 2 || strings.Contains(string(body), billing.DeepSeekV4Flash) {
+		t.Fatalf("client stream must expose only PUBLIC_MODEL_ID, got: %s", body)
+	}
 	// X-Request-ID echoed back by the Recover middleware (chain is in play).
 	if chatResp.Header.Get("X-Request-ID") == "" {
 		t.Fatal("X-Request-ID not echoed — Recover middleware not in the chain")
@@ -471,8 +562,8 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	if gotAuth != "Bearer sk-test-key-never-leaks" {
 		t.Fatalf("upstream key not injected: %q", gotAuth)
 	}
-	if !strings.Contains(gotBody, `"model":"deepseek-chat"`) {
-		t.Fatalf("model not rewritten upstream: %s", gotBody)
+	if !strings.Contains(gotBody, `"model":"`+billing.DeepSeekV4Flash+`"`) {
+		t.Fatalf("exact text upstream model not forced: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"get_weather"`) || !strings.Contains(gotBody, `"tool_choice":"auto"`) {
 		t.Fatalf("tools/tool_choice not passed through (agentic contract): %s", gotBody)
@@ -499,6 +590,84 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	}
 	if qv.Used != 1 {
 		t.Fatalf("quota used=%d want 1 after one chat", qv.Used)
+	}
+}
+
+func TestE2EMultimodalRoutesOnlyToGeminiAndSettlesGeminiCost(t *testing.T) {
+	var deepSeekHits atomic.Int32
+	deepSeek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deepSeekHits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer deepSeek.Close()
+
+	var mu sync.Mutex
+	var gotPath, gotAuth, gotBody string
+	gemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"`+billing.Gemini31FlashLite+`","choices":[{"message":{"role":"assistant","content":"an image"}}],`+
+			`"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
+	}))
+	defer gemini.Close()
+
+	s := buildStackWithProviders(t, deepSeek.URL, gemini.URL, nil)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := srv.Client()
+	token := installToken(t, srv, client)
+
+	png := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}
+	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	body := `{"model":"please-use-deepseek","stream":false,"messages":[` +
+		`{"role":"user","content":"remember this"},` +
+		`{"role":"assistant","content":"noted","reasoning_content":"provider-private-state"},` +
+		`{"role":"user","content":[{"type":"text","text":"describe"},` +
+		`{"type":"image_url","image_url":{"url":` + strconv.Quote(dataURI) + `}}]}` +
+		`]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multimodal chat want 200 got %d body=%s", resp.StatusCode, responseBody)
+	}
+	if !strings.Contains(string(responseBody), `"model":"anselm-auto"`) || strings.Contains(string(responseBody), billing.Gemini31FlashLite) {
+		t.Fatalf("Gemini response must expose only PUBLIC_MODEL_ID, got: %s", responseBody)
+	}
+	if deepSeekHits.Load() != 0 {
+		t.Fatalf("multimodal request reached DeepSeek %d times", deepSeekHits.Load())
+	}
+
+	mu.Lock()
+	path, auth, upstreamBody := gotPath, gotAuth, gotBody
+	mu.Unlock()
+	if path != "/chat/completions" || auth != "Bearer gemini-test-key-never-leaks" {
+		t.Fatalf("Gemini wire target path=%q auth=%q", path, auth)
+	}
+	for _, want := range []string{
+		`"model":"` + billing.Gemini31FlashLite + `"`,
+		`"reasoning_effort":"minimal"`,
+		`"type":"image_url"`,
+	} {
+		if !strings.Contains(upstreamBody, want) {
+			t.Fatalf("Gemini payload missing %q: %s", want, upstreamBody)
+		}
+	}
+	if strings.Contains(upstreamBody, "please-use-deepseek") || strings.Contains(upstreamBody, "provider-private-state") {
+		t.Fatalf("client model or DeepSeek reasoning state leaked to Gemini: %s", upstreamBody)
+	}
+
+	wantSpend := geminiCostPUSD(t, 11, 3)
+	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
+		t.Fatalf("Gemini spend settled to %d pUSD, want %d", got, wantSpend)
 	}
 }
 
@@ -580,12 +749,13 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 
 // TestE2ENonStreamRelayAndSettle drives the stream:false path (reachable: the
 // whitelist forwards `stream`) end to end through the real stack:
-//   - (a) the 2xx JSON body is relayed verbatim to the client (upstream Set-Cookie stripped)
-//   - (b) settlement is to the ACTUAL usage.total_tokens (ParseUsageBody), NOT the
-//     pessimistic est — the global daily budget reflects exactly the actual.
+//   - (a) the 2xx JSON body is relayed with only model rewritten to PUBLIC_MODEL_ID
+//     (all completion fields preserved; upstream Set-Cookie stripped)
+//   - (b) settlement prices the ACTUAL structured usage under the DeepSeek rate
+//     card, rather than retaining the pessimistic reservation quote.
 func TestE2ENonStreamRelayAndSettle(t *testing.T) {
-	const actual = 11
-	up := fakeDeepSeekNonStream(t, "ok", actual)
+	const actualTokens = 11
+	up := fakeDeepSeekNonStream(t, "ok", actualTokens)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -603,12 +773,16 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// (a) 2xx + body relayed verbatim + upstream Set-Cookie not leaked.
+	// (a) 2xx + completion body preserved except for the public model boundary +
+	// upstream Set-Cookie not leaked.
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("non-stream chat want 200 got %d body=%s", resp.StatusCode, body)
 	}
 	if !strings.Contains(string(body), `"content":"hello there"`) {
-		t.Fatalf("non-stream body not relayed verbatim: %s", body)
+		t.Fatalf("non-stream completion content not preserved: %s", body)
+	}
+	if !strings.Contains(string(body), `"model":"anselm-auto"`) || strings.Contains(string(body), billing.DeepSeekV4Flash) {
+		t.Fatalf("non-stream response must expose only PUBLIC_MODEL_ID: %s", body)
 	}
 	if resp.Header.Get("Set-Cookie") != "" {
 		t.Fatal("upstream Set-Cookie leaked on non-stream path")
@@ -617,18 +791,19 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 		t.Fatalf("non-stream Content-Type want application/json got %q", resp.Header.Get("Content-Type"))
 	}
 
-	// (b) Settled to ACTUAL (11), not the conservative est (prompt + maxTokensCap,
-	// 4096+). A budget == actual proves settle-to-actual, not est.
-	if got := waitBudget(t, s, actual); got != actual {
-		t.Fatalf("budget settled to %d, want actual %d (settle-to-actual, not est)", got, actual)
+	// (b) prompt=3 + completion=8 is converted to pUSD by the frozen rate card.
+	// Equality proves settle-to-actual-cost rather than retain-the-quote.
+	wantSpend := deepSeekCostPUSD(t, 3, 8)
+	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
+		t.Fatalf("global spend settled to %d pUSD, want actual cost %d pUSD", got, wantSpend)
 	}
 }
 
 // TestE2ENonStreamPostOutputErrorFullSettles: when the upstream commits 2xx headers
 // but the body read then fails (truncated mid-body), output is already committed so
 // the gateway cannot retry/rollback — it must FULL-settle the reservation (honest,
-// conservative; never under-charge / leak budget) and surface a normalized
-// UPSTREAM_ERROR. Asserts the full est lands on the budget (no double-bill, no leak).
+// conservative; never under-charge / leak spend) and surface a normalized
+// UPSTREAM_ERROR. Asserts the full quote remains charged (no double-bill, no leak).
 func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 	up := fakeDeepSeekNonStream(t, "truncate", 0)
 	s := buildStack(t, up.URL)
@@ -638,9 +813,9 @@ func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 
 	token := installToken(t, srv, client)
 
-	// est = conservative prompt estimate + clamped max_tokens. With no client
-	// max_tokens the clamp is MaxTokensCap (4096); we assert the settled budget is
-	// the FULL est (>= MaxTokensCap), i.e. NOT a partial/zero settle that leaks.
+	// The quote includes the conservative prompt estimate + clamped output bound.
+	// With no client max_tokens, at least 4096 output tokens are reserved at the
+	// DeepSeek output rate; a lower balance would prove an incorrect refund.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -651,9 +826,10 @@ func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	got := pollBudget(t, s, func(used int64) bool { return used >= 4096 })
-	if got < 4096 {
-		t.Fatalf("post-output body-read error settled %d, want full est >= MaxTokensCap 4096 (no budget leak)", got)
+	minimumQuote := deepSeekCostPUSD(t, 1, 4096)
+	got := pollGlobalSpend(t, s, func(spend int64) bool { return spend >= minimumQuote })
+	if got < minimumQuote {
+		t.Fatalf("post-output body-read error charged %d pUSD, want full quote >= %d pUSD", got, minimumQuote)
 	}
 }
 
@@ -703,14 +879,13 @@ func TestE2ENonStream8MBBodyLimit(t *testing.T) {
 }
 
 // TestE2EModelsDeclaration drives GET /v1/models over the real socket: an install
-// token → 200 + the OpenAI-compatible list reflecting MODEL_ALLOWLIST; an
-// unauthenticated call → 401. Exercises the production routing + middleware chain +
-// the shared install auth.
+// token → 200 + the one OpenAI-compatible provider-neutral logical model; an
+// unauthenticated call → 401. Exercises the production routing + middleware chain
+// and the shared install auth without exposing either upstream model id.
 func TestE2EModelsDeclaration(t *testing.T) {
 	up, _ := fakeDeepSeek(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
-		c.ModelAllowlist = []string{"deepseek-chat", "deepseek-reasoner"}
-		c.DefaultModel = "deepseek-chat"
+		c.PublicModelID = "anselm-test"
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -757,11 +932,11 @@ func TestE2EModelsDeclaration(t *testing.T) {
 	if lr.Object != "list" {
 		t.Fatalf("object = %q want list", lr.Object)
 	}
-	if len(lr.Data) != 2 {
-		t.Fatalf("data len = %d want 2 (allowlist-driven)", len(lr.Data))
+	if len(lr.Data) != 1 {
+		t.Fatalf("data len = %d want exactly one logical model", len(lr.Data))
 	}
-	if lr.Data[0].ID != "deepseek-chat" || lr.Data[1].ID != "deepseek-reasoner" {
-		t.Fatalf("data ids = [%q %q] want [deepseek-chat deepseek-reasoner]", lr.Data[0].ID, lr.Data[1].ID)
+	if lr.Data[0].ID != "anselm-test" {
+		t.Fatalf("model id = %q want anselm-test", lr.Data[0].ID)
 	}
 	for i, m := range lr.Data {
 		if m.Object != "model" || m.OwnedBy != "anselm-gateway" {
@@ -905,14 +1080,14 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 	}
 }
 
-// TestE2EBudgetExhaustion: with a GLOBAL_DAILY_BUDGET smaller than a single
-// request's est (promptEst + clamped MAX_TOKENS_CAP), the reserve's budget gate
-// denies BEFORE any upstream call → 402 BUDGET_EXHAUSTED over the real stack.
+// TestE2EBudgetExhaustion: with a global daily pUSD wallet smaller than a single
+// request's frozen rate-card quote, Reserve denies before any upstream call and
+// returns 402 BUDGET_EXHAUSTED over the real stack.
 func TestE2EBudgetExhaustion(t *testing.T) {
 	up, _ := fakeDeepSeek(t)
-	// Budget of 10 tokens < est (≥ MaxTokensCap 4096); InstallDailyTokenCap stays
-	// high so the budget gate (Gate 3), not the install-day gate, is the denier.
-	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalDailyBudget = 10 })
+	// One pUSD is below every non-empty DeepSeek quote. The install/provider wallets
+	// remain ample, so this isolates the shared-wallet gate.
+	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalDailySpendPUSD = 1 })
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := srv.Client()
@@ -942,7 +1117,7 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 // (context overflow) end to end through the real stack —
 //   - (a) the client receives 400 UPSTREAM_REJECTED with details.reason ==
 //     "context_length" (the coarse enum; the upstream text never passes through)
-//   - (b) the reservation is rolled back: the global daily budget returns to 0
+//   - (b) the reservation is rolled back: the shared daily spend returns to 0
 //     (reserve committed BEFORE the upstream call, so 0 proves the rollback landed)
 //   - (c) rejections are NON-fault (ADR-011): even past the breaker's
 //     5-consecutive-failure threshold, a follow-up request still reaches upstream
@@ -965,7 +1140,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 		fw, _ := w.(http.Flusher)
 		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
 		fw.Flush()
-		_, _ = io.WriteString(w, "data: {\"usage\":{\"total_tokens\":11}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8,\"total_tokens\":11}}\n\n")
 		fw.Flush()
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		fw.Flush()
@@ -1020,9 +1195,9 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	}
 
 	// (b) Rollback landed: the reserve committed BEFORE each upstream call, so a
-	// budget back at 0 proves every rejected reservation was rolled back.
-	if got := waitBudget(t, s, 0); got != 0 {
-		t.Fatalf("rejected reservations not rolled back: budget=%d want 0", got)
+	// shared spend back at 0 proves every rejected reservation was rolled back.
+	if got := waitGlobalSpend(t, s, 0); got != 0 {
+		t.Fatalf("rejected reservations not rolled back: spend=%d pUSD want 0", got)
 	}
 
 	// (c) Breaker never opened (rejections are non-fault, ADR-011): the next
@@ -1035,9 +1210,10 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	if got := calls.Load(); got != rejectN+1 {
 		t.Fatalf("upstream calls = %d want %d (rejections never retried, follow-up not shed)", got, rejectN+1)
 	}
-	// ...and settles to its ACTUAL usage (11) only — the sole budget spend.
-	if got := waitBudget(t, s, 11); got != 11 {
-		t.Fatalf("budget after success = %d want 11 (rollbacks kept, success settled to actual)", got)
+	// ...and settles to its ACTUAL priced usage only — the sole wallet spend.
+	wantSpend := deepSeekCostPUSD(t, 3, 8)
+	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
+		t.Fatalf("spend after success = %d pUSD want %d pUSD", got, wantSpend)
 	}
 }
 

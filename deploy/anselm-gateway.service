@@ -20,14 +20,19 @@ Type=notify
 NotifyAccess=main
 # 机密由部署流水线写入(0600,root:root),包含 DEEPSEEK_API_KEY 等。
 EnvironmentFile=/etc/anselm-gateway.env
-# /usr/local/bin/anselm-gateway 是原子 symlink,指向当前版本化二进制
-# anselm-gateway-<gitsha>(OPS-1 回滚:切 symlink 即回退)。
+# /usr/local/bin/anselm-gateway 是原子 symlink,指向当前版本化二进制。
+# 回滚必须用 /usr/local/sbin/anselm-gateway-rollback 同时恢复 DB+配置+binary;
+# 只切 symlink 会把旧 binary 配到新 schema,明确禁止。
 ExecStart=/usr/local/bin/anselm-gateway
 Restart=always
 RestartSec=2
 
 # 数据目录(SQLite WAL/SHM 落盘);需与 GATEWAY_DB_PATH 对齐。
 WorkingDirectory=/var/lib/anselm-gateway
+# SQLite 主文件以及运行期创建的 WAL/SHM 必须默认只对 anselm 用户可读写。
+# 部署同时应把既有数据目录收紧到 0700、既有 DB/WAL/SHM 收紧到 0600；
+# UMask 覆盖此后进程创建/轮换的所有持久化文件。
+UMask=0077
 
 # === 沙箱加固 ===
 NoNewPrivileges=true

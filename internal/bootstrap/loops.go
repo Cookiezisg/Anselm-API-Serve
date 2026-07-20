@@ -6,16 +6,19 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
+	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
 	"github.com/sunweilin/anselm/gateway/internal/infra/ratelimit"
-	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
 )
 
 // --- M2 per-token anomaly auto-throttle (chat.Throttle) -----------------------
@@ -125,17 +128,46 @@ var _ appchat.Throttle = (*tokenThrottle)(nil)
 
 // --- cached upstream readiness prober (health.UpstreamProbe) ------------------
 
-// upstreamProber holds the last successful upstream probe time so /readyz reads a
-// CACHED result — never a live DeepSeek call per request (a per-request probe
-// could stall behind a struggling upstream). The background loop refreshes it.
+// upstreamProber holds the last time EVERY configured provider authenticated and
+// advertised its pinned model. /readyz reads this cached aggregate — never a live
+// provider call per request (which could stall behind a struggling upstream).
+// Gemini is deliberately absent from targets when its optional key is not
+// configured, so a text-only deployment remains ready while media fails with the
+// explicit MULTIMODAL_UNAVAILABLE contract.
 type upstreamProber struct {
-	client  upstream.Client
-	baseURL string
-	lastOK  atomic.Int64 // unix-nanos of the last success (0 = never)
+	targets []upstreamProbeTarget
+	client  *http.Client
+	lastOK  atomic.Int64 // unix-nanos of the last all-target success (0 = never)
 }
 
-func newUpstreamProber(client upstream.Client, baseURL string) *upstreamProber {
-	return &upstreamProber{client: client, baseURL: baseURL}
+type upstreamProbeTarget struct {
+	modelsURL string
+	modelID   string
+	apiKeys   []string
+}
+
+func newUpstreamProber(cfg config.Config) *upstreamProber {
+	targets := []upstreamProbeTarget{{
+		modelsURL: strings.TrimRight(cfg.DeepSeekBaseURL, "/") + "/models",
+		modelID:   cfg.TextUpstreamModel,
+		apiKeys:   append([]string(nil), cfg.DeepSeekAPIKeys...),
+	}}
+	if len(cfg.GeminiAPIKeys) > 0 {
+		targets = append(targets, upstreamProbeTarget{
+			modelsURL: strings.TrimRight(cfg.GeminiBaseURL, "/") + "/models",
+			modelID:   cfg.MultimodalUpstreamModel,
+			apiKeys:   append([]string(nil), cfg.GeminiAPIKeys...),
+		})
+	}
+	return &upstreamProber{
+		targets: targets,
+		client: &http.Client{
+			// Auth is injected below. Never follow a provider-controlled Location:
+			// redirecting would attach neither an intentional endpoint nor a safe
+			// deployment-readiness meaning, and could disclose credentials.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+	}
 }
 
 // LastOK reports the last success + its age (health.UpstreamProbe).
@@ -147,21 +179,92 @@ func (p *upstreamProber) LastOK() (bool, time.Duration) {
 	return true, time.Since(time.Unix(0, ns))
 }
 
-// probe does a cheap connectivity check against the upstream base URL. A TCP/TLS
-// reachable endpoint (any HTTP status) counts as OK — we are probing reachability,
-// not a real completion (which would spend budget). The breaker-open state alone
-// already gates the chat path; this only feeds /readyz.
+// probe calls each provider's no-completion /models endpoint with its configured
+// credentials. Success requires a 2xx response whose bounded JSON list contains
+// the exact pinned model. This catches bad/expired keys, wrong compatibility base
+// URLs, and unavailable model IDs without spending inference tokens. Multiple
+// keys are alternatives within one provider; every configured provider must pass.
 func (p *upstreamProber) probe(ctx context.Context) {
+	if p == nil || p.client == nil || len(p.targets) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL, nil)
-	if err != nil {
-		return
+	for _, target := range p.targets {
+		if !p.probeTarget(ctx, target) {
+			return
+		}
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return
-	}
-	_ = resp.Body.Close()
 	p.lastOK.Store(time.Now().UnixNano())
+}
+
+func (p *upstreamProber) probeTarget(ctx context.Context, target upstreamProbeTarget) bool {
+	for _, rawKey := range target.apiKeys {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.modelsURL, nil)
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Accept", "application/json")
+		// Match the completion client's key hygiene: the caller-owned request never
+		// carries the credential. A one-call transport clone injects it at the last
+		// possible moment, and redirects remain disabled on the copied client.
+		client := *p.client
+		base := client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		client.Transport = probeBearerTransport{base: base, apiKey: key}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		ok := responseAdvertisesModel(resp, target.modelID)
+		_ = resp.Body.Close()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// probeBearerTransport keeps readiness credentials out of the request object
+// owned by probeTarget. This mirrors infra/upstream's redacting transport while
+// keeping the health prober independent from completion breaker/key state.
+type probeBearerTransport struct {
+	base   http.RoundTripper
+	apiKey string
+}
+
+func (t probeBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+t.apiKey)
+	return t.base.RoundTrip(clone)
+}
+
+func responseAdvertisesModel(resp *http.Response, modelID string) bool {
+	if resp == nil || resp.Body == nil {
+		return false
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return false
+	}
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&list); err != nil {
+		return false
+	}
+	for _, model := range list.Data {
+		if model.ID == modelID {
+			return true
+		}
+	}
+	return false
 }

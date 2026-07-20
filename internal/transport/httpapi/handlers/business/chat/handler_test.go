@@ -11,6 +11,7 @@ import (
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
@@ -107,15 +108,18 @@ func TestHandler_NonPositiveBodyLimitFallsBackToDefault(t *testing.T) {
 func newService(t *testing.T, up appchat.Upstream) *appchat.Service {
 	t.Helper()
 	cfg := &config.Config{
-		ModelAllowlist:     []string{"x"},
-		DefaultModel:       "x",
-		MonthlyQuota:       100,
-		MaxTokensCap:       100,
-		InputTokenCap:      1_000_000,
-		MaxMessages:        100,
-		MaxMessageChars:    100000,
-		NGlobalConcurrency: 4,
-		Location:           time.UTC,
+		PublicModelID:           "anselm-auto",
+		TextUpstreamModel:       billing.DeepSeekV4Flash,
+		MultimodalUpstreamModel: billing.Gemini31FlashLite,
+		MonthlyQuota:            100,
+		MaxTokensCap:            100,
+		InputTokenCap:           1_000_000,
+		MaxMessages:             100,
+		MaxMessageChars:         100000,
+		MaxMediaParts:           8,
+		MaxMediaDecodedBytes:    3 * 1024 * 1024,
+		NGlobalConcurrency:      4,
+		Location:                time.UTC,
 	}
 	return appchat.New(appchat.Deps{
 		Auth:     stubAuth{},
@@ -137,8 +141,11 @@ func (stubAuth) LookupInstall(context.Context, string) (string, dominstall.Statu
 type stubQuota struct{}
 
 func (stubQuota) SnapshotPeriod(time.Time) domquota.Period { return domquota.Period{Day: "2026-06-20"} }
-func (stubQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period) (*domquota.Reservation, error) {
-	return &domquota.Reservation{RequestID: "r", InstallID: id, Period: p, Reserved: est}, nil
+func (stubQuota) Reserve(_ context.Context, id string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error) {
+	return &domquota.Reservation{
+		RequestID: "r", InstallID: id, Period: p,
+		Plan: plan, ReservedPUSD: plan.ReservedPUSD,
+	}, nil
 }
 func (stubQuota) Settle(context.Context, *domquota.Reservation, int64) error { return nil }
 func (stubQuota) Rollback(context.Context, *domquota.Reservation) error      { return nil }
@@ -148,13 +155,14 @@ type stubUpstream struct {
 	aerr *apierr.APIError
 }
 
-func (u stubUpstream) Do(context.Context, []byte, bool, *config.Config) (appchat.UpstreamStream, *apierr.APIError) {
+func (u stubUpstream) Open(context.Context, billing.Provider, string, domchat.CompletionRequest, time.Duration) (appchat.UpstreamStream, *appchat.UpstreamFailure) {
 	if u.aerr != nil {
-		return nil, u.aerr
+		return nil, &appchat.UpstreamFailure{APIError: u.aerr}
 	}
 	return io.NopCloser(strings.NewReader(u.body)), nil
 }
-func (stubUpstream) BreakerOpen() bool { return false }
+func (stubUpstream) Available(billing.Provider) bool   { return true }
+func (stubUpstream) BreakerOpen(billing.Provider) bool { return false }
 
 type stubRL struct{}
 

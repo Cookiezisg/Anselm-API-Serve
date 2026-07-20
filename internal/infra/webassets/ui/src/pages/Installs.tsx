@@ -22,6 +22,7 @@ import { ReloadOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/i
 import type { ColumnsType } from 'antd/es/table'
 import type { InstallRow } from '../lib/types'
 import { getInstalls, banInstall, unbanInstall, ApiError } from '../lib/api'
+import { formatMicroUsd } from '../lib/money'
 
 const { Title, Text } = Typography
 const PAGE_SIZE = 50
@@ -134,11 +135,11 @@ export default function Installs() {
       render: statusTag,
     },
     {
-      title: '今日 tokens',
-      dataIndex: 'todayTokens',
-      key: 'todayTokens',
+      title: '今日支出 (USD)',
+      dataIndex: 'todaySpendMicroUsd',
+      key: 'todaySpendMicroUsd',
       align: 'right',
-      render: (n: number) => n.toLocaleString('en-US'),
+      render: formatMicroUsd,
     },
     {
       title: '创建时间',

@@ -29,8 +29,8 @@ type Thresholds struct {
 // Every field is an aggregate the caller already holds: Check is a pure
 // thresholder — it never reads metrics/DB and never carries key/prompt/ip.
 type Signals struct {
-	BudgetUsed         int64 // tokens used today
-	BudgetLimit        int64 // daily budget limit
+	BudgetUsed         int64 // pUSD spent today
+	BudgetLimit        int64 // daily spend limit in pUSD
 	ReservationsOpen   int64 // ledger rows still settled IS NULL
 	BreakerOpen        bool  // upstream breaker is OPEN (shedding UPSTREAM_BUSY)
 	DiskDegraded       bool  // read-only degradation active (low disk)
@@ -133,9 +133,9 @@ func (a *Alerter) Check(_ context.Context, s Signals) {
 		}
 	}
 	a.set(now, reasonBudgetExhausted, "critical", budgetExhausted,
-		"daily token budget EXHAUSTED (used >= limit) — new requests shedding BUDGET_EXHAUSTED")
+		"daily spend budget EXHAUSTED (spend >= limit) — new requests shedding BUDGET_EXHAUSTED")
 	a.set(now, reasonBudgetHigh, "warning", budgetHigh,
-		"daily token budget high (used >= threshold of limit) — wallet guardrail approaching")
+		"daily spend budget high (spend >= threshold of limit) — wallet guardrail approaching")
 	a.set(now, reasonReservations, "warning", s.ReservationsOpen >= a.th.ReservationsOpen,
 		"open reservations (settled IS NULL) backlog high — possible missed-settle leak; check reconciler")
 	a.set(now, reasonBreakerOpen, "critical", s.BreakerOpen,

@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 	dashhandler "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/dashboard"
 	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
@@ -33,15 +35,26 @@ func (fakeBudget) GlobalBudget(context.Context) (string, int64, int64, error) {
 	return "2026-06-20", 1000, 100, nil
 }
 
+type fakeProviders struct{}
+
+func (fakeProviders) Available(provider billing.Provider) bool {
+	return provider == billing.ProviderDeepSeek
+}
+
+func (fakeProviders) BreakerOpen(provider billing.Provider) bool {
+	return provider == billing.ProviderDeepSeek
+}
+
 // countingRate proves B16: each /api/overview poll calls Snapshot independently;
 // concurrent pollers do not corrupt the shared sampler (pkg/ratesample is the real
 // implementation; we wire it directly and Observe to feed a window).
 func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *mwdash.Gate) {
 	t.Helper()
 	svc := appdash.New(appdash.Deps{
-		Budget: fakeBudget{},
-		Rate:   sampler,
-		Config: fakeConfig{},
+		Budget:    fakeBudget{},
+		Providers: fakeProviders{},
+		Rate:      sampler,
+		Config:    fakeConfig{},
 	})
 	gate := &mwdash.Gate{Sessions: mwdash.NewSessionStore(0, nil), SecureCookie: false}
 	h, err := dashhandler.New(dashhandler.Config{
@@ -55,6 +68,42 @@ func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *m
 		t.Fatal(err)
 	}
 	return BuildDashboardHandler(DashboardDeps{Handler: h, Gate: gate}), gate
+}
+
+func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
+	srv, _ := newDashHandler(t, ratesample.New(60))
+	cookie, _ := login(t, srv, "admin", "s3cret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overview: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var wire struct {
+		Providers map[string]struct {
+			Configured  bool `json:"configured"`
+			BreakerOpen bool `json:"breakerOpen"`
+		} `json:"providers"`
+		Aggregate bool `json:"upstreamBreakerOpen"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(wire.Providers) != 2 {
+		t.Fatalf("providers = %v, want exactly deepseek/gemini", wire.Providers)
+	}
+	if got := wire.Providers["deepseek"]; !got.Configured || !got.BreakerOpen {
+		t.Fatalf("deepseek = %+v, want configured/open", got)
+	}
+	if got := wire.Providers["gemini"]; got.Configured || got.BreakerOpen {
+		t.Fatalf("gemini = %+v, want unconfigured/closed", got)
+	}
+	if !wire.Aggregate {
+		t.Fatal("compatibility aggregate must remain true when one provider breaker is open")
+	}
 }
 
 // login performs POST /login and returns the session cookie + csrf token.
@@ -241,6 +290,33 @@ func TestLoginLockoutArmsAndReturns429(t *testing.T) {
 	}
 	if _, ok := env.Error.Details["retryAfterSec"]; !ok {
 		t.Fatal("lockout body must carry details.retryAfterSec")
+	}
+}
+
+// TestLoginLockoutIgnoresForwardedFor pins the dashboard's direct-peer trust
+// boundary. The loopback dashboard is reached directly (or through an SSH
+// tunnel), so XFF is client-controlled and rotating it must not mint fresh login
+// buckets. Ephemeral source-port changes from the same peer must not do so either.
+func TestLoginLockoutIgnoresForwardedFor(t *testing.T) {
+	srv, _ := newDashHandler(t, ratesample.New(60))
+	for i := 0; i < mwdash.LoginMaxFailures; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
+		req.RemoteAddr = fmt.Sprintf("127.0.0.1:%d", 5000+i)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("failure %d: want 401 before lockout, got %d", i+1, rec.Code)
+		}
+	}
+
+	final := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
+	final.RemoteAddr = "127.0.0.1:65000"
+	final.Header.Set("X-Forwarded-For", "203.0.113.250")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, final)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("rotating XFF/source port bypassed direct-peer lockout: want 429, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
 

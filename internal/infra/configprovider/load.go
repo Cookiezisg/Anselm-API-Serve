@@ -9,26 +9,28 @@
 // 加载顺序:env 默认/机密/硬约束(LoadBase)← DB overlay 覆盖运行时可改项
 // (LoadWithOverlay)。读路径 Load() 无锁取当前 atomic 快照(每请求快照一次,热更
 // 新永不在单请求内半旧半新);写路径 ApplyOverrides 在写锁下:domain 校验 → 全或无
-// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / DASHBOARD_* /
-// INSTALL_POW_SECRET)只读 env,绝不入 overlay、绝不在 Dump/Snapshot 出真值。
+// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / GEMINI_API_KEY /
+// DASHBOARD_* / INSTALL_POW_SECRET)只读 env,绝不入 overlay、绝不在 Dump/Snapshot 出真值。
 package configprovider
 
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
 
-// Named fail-fast errors for the required-secret / required-list keys, so callers
-// (and tests) can assert the precise cause without string matching.
+// Named fail-fast errors for required env-only secrets, so callers and tests can
+// assert the precise cause without string matching.
 var (
-	ErrDeepSeekKeyRequired   = errors.New("DEEPSEEK_API_KEY is required")
-	ErrModelAllowlistMissing = errors.New("MODEL_ALLOWLIST is required")
+	ErrDeepSeekKeyRequired = errors.New("DEEPSEEK_API_KEY is required")
 )
 
 // LoadBase reads EVERY env key (via the injected getenv so tests stay hermetic),
@@ -42,7 +44,9 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	g := &envReader{getenv: getenv}
 	c := config.Config{}
 
-	// DeepSeek key(s) — the one required secret; comma-separated, first is primary.
+	// DeepSeek key(s) remain required because the text route is the baseline
+	// capability. Gemini is optional: without a key only multimodal requests return
+	// MULTIMODAL_UNAVAILABLE; text service and readiness continue normally.
 	rawKeys := getenv("DEEPSEEK_API_KEY")
 	if strings.TrimSpace(rawKeys) == "" {
 		return config.Config{}, ErrDeepSeekKeyRequired
@@ -57,35 +61,30 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	}
 
 	c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
-
-	allow := getenv("MODEL_ALLOWLIST")
-	if strings.TrimSpace(allow) == "" {
-		return config.Config{}, ErrModelAllowlistMissing
-	}
-	for _, m := range strings.Split(allow, ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			c.ModelAllowlist = append(c.ModelAllowlist, m)
+	validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
+	for _, k := range strings.Split(getenv("GEMINI_API_KEY"), ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			c.GeminiAPIKeys = append(c.GeminiAPIKeys, k)
 		}
 	}
-	if len(c.ModelAllowlist) == 0 {
-		return config.Config{}, ErrModelAllowlistMissing
-	}
-	c.DefaultModel = c.ModelAllowlist[0]
+	c.GeminiBaseURL = strings.TrimRight(g.str("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai"), "/")
+	validateHTTPBaseURL(g, "GEMINI_BASE_URL", c.GeminiBaseURL)
+
+	c.PublicModelID = g.str("PUBLIC_MODEL_ID", "anselm-auto")
+	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
+	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Gemini31FlashLite)
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
 
-	c.GlobalDailyBudget = g.int64("GLOBAL_DAILY_BUDGET_TOKENS", 0)
-	if c.GlobalDailyBudget <= 0 {
-		g.fail("GLOBAL_DAILY_BUDGET_TOKENS must be > 0 (the only wallet guardrail)")
-	}
-	g.bound64("GLOBAL_DAILY_BUDGET_TOKENS", c.GlobalDailyBudget, 1, config.MaxGlobalDailyBudget)
-
-	c.InstallDailyTokenCap = g.int64("INSTALL_DAILY_TOKEN_CAP", 0)
-	if c.InstallDailyTokenCap <= 0 {
-		g.fail("INSTALL_DAILY_TOKEN_CAP must be > 0")
-	}
-	g.bound64("INSTALL_DAILY_TOKEN_CAP", c.InstallDailyTokenCap, 1, config.MaxInstallDailyTokenCap)
+	globalSpendMicro := g.boundedInt64("GLOBAL_DAILY_SPEND_MICRO_USD", 14_000_000, 1, config.MaxDailySpendMicroUSD)
+	installSpendMicro := g.boundedInt64("INSTALL_DAILY_SPEND_MICRO_USD", 5_600_000, 1, config.MaxDailySpendMicroUSD)
+	deepSeekSpendMicro := g.boundedInt64("DEEPSEEK_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
+	geminiSpendMicro := g.boundedInt64("GEMINI_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
+	c.GlobalDailySpendPUSD = globalSpendMicro * billing.PicoUSDPerMicroUSD
+	c.InstallDailySpendPUSD = installSpendMicro * billing.PicoUSDPerMicroUSD
+	c.DeepSeekDailySpendPUSD = deepSeekSpendMicro * billing.PicoUSDPerMicroUSD
+	c.GeminiDailySpendPUSD = geminiSpendMicro * billing.PicoUSDPerMicroUSD
 
 	c.MaxTokensCap = g.boundedInt64("MAX_TOKENS_CAP", 4096, 1, config.MaxTokensCap)
 	// INPUT_TOKEN_CAP=0 disables the input estimate gate (upstream model judges).
@@ -94,6 +93,9 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.MaxMessageChars = g.boundedInt("MAX_MESSAGE_CHARS", 131072, 1, config.MaxMessageChars)
 	// Default mirrors domain/chat.BodyDecodeLimit (the historical 256KiB contract).
 	c.MaxBodyBytes = g.boundedInt64("MAX_BODY_BYTES", 256*1024, config.MinBodyBytes, config.MaxBodyBytesCeiling)
+	c.MaxMediaParts = g.boundedInt("MAX_MEDIA_PARTS", 8, 1, config.MaxMediaParts)
+	defaultMediaBytes := min(int64(3*1024*1024), c.MaxBodyBytes*3/4)
+	c.MaxMediaDecodedBytes = g.boundedInt64("MAX_MEDIA_DECODED_BYTES", defaultMediaBytes, 1, config.MaxMediaDecodedBytes)
 	c.NGlobalConcurrency = g.boundedInt("N_GLOBAL_CONCURRENCY", 8, 1, config.MaxNGlobalConcurrency)
 	c.RatePerMin = g.boundedInt("RATE_PER_MIN", 20, 0, config.MaxRatePerMin)
 	c.DailySublimit = g.boundedInt64("DAILY_SUBLIMIT", 0, 0, config.MaxDailySublimit)
@@ -218,6 +220,13 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 		return config.Config{}, g.err
 	}
 	return c, nil
+}
+
+func validateHTTPBaseURL(g *envReader, name, value string) {
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !secureurl.AllowsCredentialTransport(u) {
+		g.fail(name + " must be an absolute HTTPS base URL without userinfo, query, or fragment (HTTP is allowed only for a literal loopback IP)")
+	}
 }
 
 // loadPowSecret resolves the env-only INSTALL_POW_SECRET into the in-memory key +

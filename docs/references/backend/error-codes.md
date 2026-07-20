@@ -4,8 +4,8 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-06-21
-review-due: 2026-09-19
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
@@ -26,14 +26,21 @@ audience: [human, ai]
 |---|---|---|---|
 | `INVALID_TOKEN` | 401 | missing or invalid install token | bearer 缺失或非法 |
 | `ACCOUNT_BANNED` | 403 | this install has been disabled | install 被封禁 |
-| `RATE_LIMITED` | 429 | rate or daily sub-limit exceeded | per-minute 速率或日次数子限额 |
+| `RATE_LIMITED` | 429 | rate or daily sub-limit exceeded | per-minute 速率、日次数子限额或 per-install 日成本钱包到顶 |
 | `QUOTA_EXHAUSTED` | 429 | monthly free-tier quota exhausted | 月度免费额度耗尽 |
-| `UPSTREAM_BUSY` | 429 | upstream capacity is busy, retry shortly | 队列满/超时、breaker open、上游 429；**独立类，永不 retry / breaker**（GW-INV-23） |
-| `BUDGET_EXHAUSTED` | **402** | daily free-tier budget reached, try again tomorrow or use your own key | 每日全局预算到顶；注意是 402 非 429 |
-| `BAD_REQUEST` | 400 | invalid request body | 请求体非法（含 `n>1`、消息形状越界、严格白名单失败、body 超 `MAX_BODY_BYTES`、`est` 超单 install 日容量的运行时预检） |
-| `UPSTREAM_ERROR` | 502 | upstream model provider error | 上游 provider 错误（5xx/connect/重试耗尽；**不含** 4xx 请求拒绝） |
-| `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 上游 400/413/422 请求拒绝（如超上下文）；`details.reason ∈ {context_length, max_tokens, invalid_request}`；不 retry、不计 breaker、预留回滚（GW-INV-41） |
-| `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | 上游超时 |
+| `UPSTREAM_BUSY` | 429 | upstream capacity is busy, retry shortly | shared queue 满/超时、provider/process breaker open、provider 429；当前 CallFailure 为明确未计费，rollback；429 本身不自动 retry |
+| `BUDGET_EXHAUSTED` | **402** | daily service budget reached, try again tomorrow | 所选 provider 或 shared global 日 pUSD 钱包到顶；注意是 402 非 429 |
+| `BAD_REQUEST` | 400 | invalid request body | body/shape/content 非法，含 n>1、unsupported/remote media、media limits、文本输入 cap、quote 超 install 日容量；生产 Caddy 的 5MiB edge cap 也把原生 413 归一为同一 JSON/status，不暴露第二套 wire 契约 |
+| `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 请求含合法 media，但 deployment 未配置 `GEMINI_API_KEY`；reserve/Open 前拒绝；文本能力仍正常；无 fallback |
+| `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
+| `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
+| `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | ChargePossible；不 retry，保留 full quote |
+
+### wire code 与 charge exposure 正交
+
+infra 返回 `CallFailure{APIError, Exposure}`；app 只以 `Exposure.MayHaveCharged()` 决定 full settle/rollback。`ChargePossible` 是零值，未知值同样视为可能收费；只有显式 `DefinitelyUnbilled` 可退款。APIError 负责 client 归一，**任何 code/status/message 都不是财务凭证**。
+
+自动 retry 只限 `DefinitelyUnbilled` 的 401/403 key cooldown 或 key-breaker-open failover，总 attempt≤3。connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、立即终止；明确 429/其它 3xx/4xx虽可 rollback，也不 retry。
 
 ## 3. /install reject 码（DISTINCT，便于审计分离，GW-INV-20）
 

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
@@ -51,27 +53,38 @@ type Authenticator interface {
 // (not swallowed) so the use case can count + WARN them (B2).
 type Quota interface {
 	SnapshotPeriod(now time.Time) domquota.Period
-	Reserve(ctx context.Context, installID string, est int64, p domquota.Period) (*domquota.Reservation, error)
-	Settle(ctx context.Context, r *domquota.Reservation, actual int64) error
+	Reserve(ctx context.Context, installID string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error)
+	Settle(ctx context.Context, r *domquota.Reservation, actualPUSD int64) error
 	Rollback(ctx context.Context, r *domquota.Reservation) error
 }
 
-// Upstream is the DeepSeek port. Satisfied by an infra/upstream.Client adapter
+// Upstream is the provider router port. Satisfied by an infra/upstream adapter
 // wired in bootstrap (app declares the port in stdlib/domain terms so it never
-// imports infra). Do runs connect→first-byte through the breaker + bounded retry
-// and returns an UpstreamStream the use case relays + Closes, or a normalized
-// *apierr (never the upstream body). BreakerOpen lets the use case fast-shed
-// before taking an N_global slot.
+// imports infra). Open runs connect→first-byte through the breaker + bounded key failover
+// and returns an UpstreamStream the use case relays + Closes, or an
+// UpstreamFailure containing both the normalized error and an independently
+// classified charge-exposure fact. Available exposes construction-time
+// credential presence; BreakerOpen lets the use case fast-shed the selected
+// provider before taking an N_global slot.
 type Upstream interface {
-	Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (UpstreamStream, *apierr.APIError)
-	BreakerOpen() bool
+	Open(ctx context.Context, provider billing.Provider, model string, req domchat.CompletionRequest, firstByteTimeout time.Duration) (UpstreamStream, *UpstreamFailure)
+	Available(provider billing.Provider) bool
+	BreakerOpen(provider billing.Provider) bool
+}
+
+// UpstreamFailure separates client-facing error normalization from accounting.
+// Exposure's zero value is ChargePossible, so a malformed adapter fails safe by
+// retaining the reservation rather than creating an accidental refund path.
+type UpstreamFailure struct {
+	APIError *apierr.APIError
+	Exposure billing.ChargeExposure
 }
 
 // UpstreamStream is the relayed upstream body: the use case reads SSE frames /
 // the non-stream body off it and Closes it. Kept to io.Reader+Closer (the only
 // surface the relay needs) so the port stays infra-free; the upstream client's
-// concrete *Stream satisfies it (the gateway normalizes non-2xx to *apierr, so a
-// returned stream is always the committed 2xx body — no status needed here).
+// concrete *Stream satisfies it (the gateway normalizes non-2xx to a failure, so
+// a returned stream is always the committed 2xx body — no status needed here).
 type UpstreamStream interface {
 	io.Reader
 	Close() error
@@ -124,10 +137,11 @@ type Logger interface {
 // hot path needn't nil-check. SettleFailures/RollbackFailures back the B2
 // alarm: a failed terminal accounting write is a COUNTED, visible event.
 type Metrics interface {
-	Inflight(n int)          // current N_global occupancy gauge.
-	Upstream(outcome string) // gateway_upstream_requests_total{outcome}.
-	SettleFailure()          // a detached Settle returned an error (B2).
-	RollbackFailure()        // a detached Rollback returned an error (B2).
+	Inflight(n int)                                     // current N_global occupancy gauge.
+	Upstream(provider billing.Provider, outcome string) // gateway_upstream_requests_total{provider,outcome}.
+	BillingDrift(provider billing.Provider)             // actual provider cost exceeded its hard quote.
+	SettleFailure()                                     // a detached Settle returned an error (B2).
+	RollbackFailure()                                   // a detached Rollback returned an error (B2).
 }
 
 // WaitGroupLike is the REL-4 shutdown barrier the detached settle/rollback

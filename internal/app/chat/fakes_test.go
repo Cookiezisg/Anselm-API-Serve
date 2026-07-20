@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
@@ -66,26 +68,28 @@ func (a fakeAuth) LookupInstall(context.Context, string) (string, dominstall.Sta
 }
 
 type fakeQuota struct {
-	mu          sync.Mutex
-	reserveErr  error
-	reserved    int64
-	settleCalls []int64
-	settleErr   error
-	rollbackN   int
-	rollbackErr error
+	mu           sync.Mutex
+	reserveErr   error
+	plan         billing.Plan
+	reservedPUSD int64
+	settleCalls  []int64
+	settleErr    error
+	rollbackN    int
+	rollbackErr  error
 }
 
 func (q *fakeQuota) SnapshotPeriod(time.Time) domquota.Period {
 	return domquota.Period{Month: "2026-06", Day: "2026-06-20"}
 }
-func (q *fakeQuota) Reserve(_ context.Context, id string, est int64, p domquota.Period) (*domquota.Reservation, error) {
+func (q *fakeQuota) Reserve(_ context.Context, id string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error) {
 	if q.reserveErr != nil {
 		return nil, q.reserveErr
 	}
 	q.mu.Lock()
-	q.reserved = est
+	q.plan = plan
+	q.reservedPUSD = plan.ReservedPUSD
 	q.mu.Unlock()
-	return &domquota.Reservation{RequestID: "req_x", InstallID: id, Period: p, Reserved: est}, nil
+	return &domquota.Reservation{RequestID: "req_x", InstallID: id, Period: p, Plan: plan, ReservedPUSD: plan.ReservedPUSD}, nil
 }
 func (q *fakeQuota) Settle(_ context.Context, _ *domquota.Reservation, actual int64) error {
 	q.mu.Lock()
@@ -107,28 +111,55 @@ func (q *fakeQuota) settles() []int64 {
 func (q *fakeQuota) rollbacks() int { q.mu.Lock(); defer q.mu.Unlock(); return q.rollbackN }
 
 type fakeUpstream struct {
-	body        string
-	aerr        *apierr.APIError
-	breakerOpen bool
+	mu        sync.Mutex
+	body      string
+	aerr      *apierr.APIError
+	exposure  billing.ChargeExposure
+	available map[billing.Provider]bool
+	breakers  map[billing.Provider]bool
+	calls     []upstreamCall
 	// block, when non-nil, blocks Do until closed (simulates a slow upstream so a
 	// second request finds no free slot).
 	block <-chan struct{}
 }
 
-func (u *fakeUpstream) Do(ctx context.Context, _ []byte, _ bool, _ *config.Config) (UpstreamStream, *apierr.APIError) {
+type upstreamCall struct {
+	Provider billing.Provider
+	Model    string
+	Request  domchat.CompletionRequest
+	Timeout  time.Duration
+}
+
+func (u *fakeUpstream) Open(ctx context.Context, provider billing.Provider, model string, req domchat.CompletionRequest, timeout time.Duration) (UpstreamStream, *UpstreamFailure) {
+	u.mu.Lock()
+	u.calls = append(u.calls, upstreamCall{Provider: provider, Model: model, Request: req, Timeout: timeout})
+	u.mu.Unlock()
 	if u.block != nil {
 		select {
 		case <-u.block:
 		case <-ctx.Done():
-			return nil, apierr.ErrUpstreamBusy
+			return nil, &UpstreamFailure{APIError: apierr.ErrUpstreamBusy, Exposure: billing.DefinitelyUnbilled}
 		}
 	}
 	if u.aerr != nil {
-		return nil, u.aerr
+		return nil, &UpstreamFailure{APIError: u.aerr, Exposure: u.exposure}
 	}
 	return io.NopCloser(bytes.NewReader([]byte(u.body))), nil
 }
-func (u *fakeUpstream) BreakerOpen() bool { return u.breakerOpen }
+func (u *fakeUpstream) Available(provider billing.Provider) bool {
+	if u.available == nil {
+		return true
+	}
+	return u.available[provider]
+}
+func (u *fakeUpstream) BreakerOpen(provider billing.Provider) bool {
+	return u.breakers != nil && u.breakers[provider]
+}
+func (u *fakeUpstream) callSnapshot() []upstreamCall {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]upstreamCall(nil), u.calls...)
+}
 
 type fakeRL struct {
 	allow    bool
@@ -150,42 +181,103 @@ type fakeConfig struct{ c *config.Config }
 
 func (f fakeConfig) Load() *config.Config { return f.c }
 
+type countingConfig struct {
+	mu    sync.Mutex
+	c     *config.Config
+	loads int
+}
+
+func (f *countingConfig) Load() *config.Config {
+	f.mu.Lock()
+	f.loads++
+	f.mu.Unlock()
+	return f.c
+}
+func (f *countingConfig) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loads
+}
+
 type fakeClock struct{ t time.Time }
 
 func (c fakeClock) Now() time.Time { return c.t }
+
+type fakeLogger struct {
+	mu    sync.Mutex
+	warns [][]any
+}
+
+func (l *fakeLogger) Warn(_ context.Context, msg string, args ...any) {
+	l.mu.Lock()
+	entry := append([]any{msg}, args...)
+	l.warns = append(l.warns, entry)
+	l.mu.Unlock()
+}
+func (l *fakeLogger) warningCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.warns)
+}
 
 type fakeMetrics struct {
 	mu          sync.Mutex
 	settleFails int
 	rollFails   int
 	upstream    map[string]int
+	drift       map[billing.Provider]int
 }
 
-func newFakeMetrics() *fakeMetrics         { return &fakeMetrics{upstream: map[string]int{}} }
-func (m *fakeMetrics) Inflight(int)        {}
-func (m *fakeMetrics) Upstream(o string)   { m.mu.Lock(); m.upstream[o]++; m.mu.Unlock() }
+func newFakeMetrics() *fakeMetrics {
+	return &fakeMetrics{upstream: map[string]int{}, drift: map[billing.Provider]int{}}
+}
+func (m *fakeMetrics) Inflight(int) {}
+func (m *fakeMetrics) Upstream(p billing.Provider, o string) {
+	m.mu.Lock()
+	m.upstream[string(p)+"/"+o]++
+	m.mu.Unlock()
+}
+func (m *fakeMetrics) BillingDrift(p billing.Provider) {
+	m.mu.Lock()
+	m.drift[p]++
+	m.mu.Unlock()
+}
 func (m *fakeMetrics) SettleFailure()      { m.mu.Lock(); m.settleFails++; m.mu.Unlock() }
 func (m *fakeMetrics) RollbackFailure()    { m.mu.Lock(); m.rollFails++; m.mu.Unlock() }
 func (m *fakeMetrics) settleFailures() int { m.mu.Lock(); defer m.mu.Unlock(); return m.settleFails }
-func (m *fakeMetrics) upstreamCount(o string) int {
+func (m *fakeMetrics) upstreamCount(p billing.Provider, o string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.upstream[o]
+	return m.upstream[string(p)+"/"+o]
+}
+func (m *fakeMetrics) driftCount(p billing.Provider) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.drift[p]
 }
 
 // testCfg is a permissive config that passes every shape/cap gate.
 func testCfg() *config.Config {
 	return &config.Config{
-		ModelAllowlist:     []string{"deepseek-chat"},
-		DefaultModel:       "deepseek-chat",
-		MonthlyQuota:       1000,
-		MaxTokensCap:       1000,
-		InputTokenCap:      1_000_000,
-		MaxMessages:        100,
-		MaxMessageChars:    100000,
-		NGlobalConcurrency: 2,
-		QueueWait:          50 * time.Millisecond,
-		Location:           time.UTC,
+		PublicModelID:           "anselm-auto",
+		TextUpstreamModel:       billing.DeepSeekV4Flash,
+		MultimodalUpstreamModel: billing.Gemini31FlashLite,
+		MonthlyQuota:            1000,
+		InstallDailySpendPUSD:   10 * billing.PicoUSDPerUSD,
+		GlobalDailySpendPUSD:    100 * billing.PicoUSDPerUSD,
+		DeepSeekDailySpendPUSD:  100 * billing.PicoUSDPerUSD,
+		GeminiDailySpendPUSD:    100 * billing.PicoUSDPerUSD,
+		MaxTokensCap:            1000,
+		InputTokenCap:           1_000_000,
+		MaxMessages:             100,
+		MaxMessageChars:         100000,
+		MaxMediaParts:           8,
+		MaxMediaDecodedBytes:    1 << 20,
+		MaxBodyBytes:            4 << 20,
+		NGlobalConcurrency:      2,
+		QueueWait:               50 * time.Millisecond,
+		UpstreamHeaderTimeout:   3 * time.Second,
+		Location:                time.UTC,
 	}
 }
 
@@ -224,14 +316,15 @@ func (d *disconnectSink) Write(p []byte) (int, error) {
 // payloadSpy records the marshaled upstream payload then succeeds with a usage
 // body, so a test can assert the sanitized body's contents.
 type payloadSpy struct {
-	payload []byte
+	request domchat.CompletionRequest
 }
 
-func (s *payloadSpy) Do(_ context.Context, payload []byte, _ bool, _ *config.Config) (UpstreamStream, *apierr.APIError) {
-	s.payload = append([]byte(nil), payload...)
-	return io.NopCloser(bytes.NewReader([]byte(`{"usage":{"total_tokens":1}}`))), nil
+func (s *payloadSpy) Open(_ context.Context, _ billing.Provider, _ string, req domchat.CompletionRequest, _ time.Duration) (UpstreamStream, *UpstreamFailure) {
+	s.request = req
+	return io.NopCloser(bytes.NewReader([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))), nil
 }
-func (s *payloadSpy) BreakerOpen() bool { return false }
+func (s *payloadSpy) Available(billing.Provider) bool   { return true }
+func (s *payloadSpy) BreakerOpen(billing.Provider) bool { return false }
 
 var errBoom = errors.New("boom")
 

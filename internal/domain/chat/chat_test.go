@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestDecodeInbound_ToolsAndToolChoiceSurvive(t *testing.T) {
@@ -90,42 +91,97 @@ func TestDecodeInbound_NGreaterThanOneRejected(t *testing.T) {
 	}
 }
 
+func TestDecodeInbound_RejectsTrailingJSONOrGarbage(t *testing.T) {
+	for _, body := range []string{
+		`{"messages":[{"role":"user","content":"a"}]} trailing`,
+		`{"messages":[{"role":"user","content":"a"}]} {}`,
+		`{"messages":[{"role":"user","content":"a"}]} null`,
+	} {
+		if _, ae := DecodeInbound([]byte(body)); ae == nil || ae.Status != 400 {
+			t.Fatalf("trailing payload must be rejected: body=%q err=%v", body, ae)
+		}
+	}
+}
+
+func TestDecodeInboundRejectsInvalidUTF8BeforeOpaqueRawFields(t *testing.T) {
+	body := append([]byte(`{"messages":[{"role":"user","content":"ok"}],"tools":[{"description":"`), 0xff)
+	body = append(body, []byte(`"}]}`)...)
+	if utf8.Valid(body) {
+		t.Fatal("test fixture unexpectedly contains valid UTF-8")
+	}
+	if _, ae := DecodeInbound(body); ae == nil || ae.Status != 400 {
+		t.Fatalf("invalid UTF-8 must fail closed before RawMessage passthrough: %v", ae)
+	}
+}
+
 func TestCheckMessageShape(t *testing.T) {
-	ok := []chatMessage{{Role: "user", Content: "hi"}}
+	ok := []Message{{Role: "user", Content: StringContent("hi")}}
 	if msg := CheckMessageShape(ok, 10, 100); msg != "" {
 		t.Fatalf("expected accept, got %q", msg)
 	}
-	many := make([]chatMessage, 11)
+	many := make([]Message, 11)
 	if msg := CheckMessageShape(many, 10, 100); msg != "too many messages" {
 		t.Fatalf("expected too many messages, got %q", msg)
 	}
-	big := []chatMessage{{Role: "user", Content: strings.Repeat("x", 101)}}
+	big := []Message{{Role: "user", Content: StringContent(strings.Repeat("x", 101))}}
 	if msg := CheckMessageShape(big, 10, 100); msg != "message content too large" {
 		t.Fatalf("expected content too large, got %q", msg)
 	}
 	// Rune (not byte) semantics: 3 CJK chars = 9 bytes but 3 runes ≤ cap 5.
-	cjk := []chatMessage{{Role: "user", Content: "你好吗"}}
+	cjk := []Message{{Role: "user", Content: StringContent("你好吗")}}
 	if msg := CheckMessageShape(cjk, 10, 5); msg != "" {
 		t.Fatalf("rune-count cap should accept 3 CJK runes ≤ 5, got %q", msg)
 	}
 }
 
 func TestEstimate_CountsTools(t *testing.T) {
-	msgs := []chatMessage{{Role: "user", Content: "hello world"}}
+	msgs := []Message{{Role: "user", Content: StringContent("hello world")}}
 	base := EstimatePromptTokens(msgs)
 	in := InboundRequest{Messages: msgs, Tools: json.RawMessage(`[{"type":"function","function":{"name":"longtoolname","description":"a fairly long description here"}}]`)}
 	withTools := in.PromptEstimate()
 	if withTools <= base {
 		t.Fatalf("tools must add to estimate: base=%d withTools=%d", base, withTools)
 	}
+	in.ToolChoice = json.RawMessage(`{"type":"function","function":{"name":"longtoolname"}}`)
+	withChoice := in.PromptEstimate()
+	if withChoice <= withTools {
+		t.Fatalf("tool_choice must add to estimate: tools=%d withChoice=%d", withTools, withChoice)
+	}
+	if got := in.TextPromptEstimate(); got != withChoice {
+		t.Fatalf("text request estimates diverged: PromptEstimate=%d TextPromptEstimate=%d", withChoice, got)
+	}
+}
+
+func TestEstimateCountsToolCallID(t *testing.T) {
+	base := EstimatePromptTokens([]Message{{Role: "tool", Content: StringContent("ok"), ToolCallID: "x"}})
+	long := EstimatePromptTokens([]Message{{Role: "tool", Content: StringContent("ok"), ToolCallID: strings.Repeat("x", 300)}})
+	if long <= base {
+		t.Fatalf("tool_call_id must add to estimate: base=%d long=%d", base, long)
+	}
 }
 
 func TestEstimate_ConservativeCJK(t *testing.T) {
-	// CJK estimate should approach ~1 token/char (rune-dominated), an upper bound.
-	msgs := []chatMessage{{Role: "user", Content: strings.Repeat("中", 100)}}
+	// A byte-fallback tokenizer can split one CJK scalar into three tokens. The
+	// estimate must therefore bound UTF-8 bytes, not merely rune count.
+	msgs := []Message{{Role: "user", Content: StringContent(strings.Repeat("中", 100))}}
 	est := EstimatePromptTokens(msgs)
-	if est < 100 {
-		t.Fatalf("CJK estimate must be ≥ rune count (conservative): got %d", est)
+	if est < 300 {
+		t.Fatalf("CJK estimate must be ≥ UTF-8 byte count (conservative): got %d", est)
+	}
+}
+
+func TestEstimateBoundsEveryForwardedMessageByte(t *testing.T) {
+	msg := Message{
+		Role:             "assistant",
+		Content:          StringContent("正文🙂"),
+		Name:             "worker",
+		ToolCalls:        json.RawMessage(`[{"id":"call_1","type":"function"}]`),
+		ToolCallID:       "call_1",
+		ReasoningContent: json.RawMessage(`"opaque"`),
+	}
+	payloadBytes := len(msg.Role) + len("正文🙂") + len(msg.Name) + len(msg.ToolCalls) + len(msg.ToolCallID) + len(msg.ReasoningContent)
+	if got := EstimatePromptTokens([]Message{msg}); got < int64(payloadBytes) {
+		t.Fatalf("estimate=%d does not bound forwarded bytes=%d", got, payloadBytes)
 	}
 }
 
@@ -147,19 +203,6 @@ func TestClampMaxTokens(t *testing.T) {
 	}
 }
 
-func TestResolveModel(t *testing.T) {
-	allow := []string{"deepseek-chat", "deepseek-reasoner"}
-	if got := ResolveModel(allow, "deepseek-chat", "deepseek-reasoner"); got != "deepseek-reasoner" {
-		t.Fatalf("allowlisted model must pass: %s", got)
-	}
-	if got := ResolveModel(allow, "deepseek-chat", "gpt-4"); got != "deepseek-chat" {
-		t.Fatalf("unknown → default: %s", got)
-	}
-	if got := ResolveModel(allow, "deepseek-chat", ""); got != "deepseek-chat" {
-		t.Fatalf("empty → default: %s", got)
-	}
-}
-
 func TestParseUsage(t *testing.T) {
 	if got := ParseUsageLine([]byte(`data: {"usage":{"total_tokens":42}}`)); got != 42 {
 		t.Fatalf("stream usage: %d", got)
@@ -176,6 +219,43 @@ func TestParseUsage(t *testing.T) {
 	if got := ParseUsageBody([]byte(`garbage`)); got != -1 {
 		t.Fatalf("bad body → -1: %d", got)
 	}
+	if got := ParseUsageSnapshotLine([]byte(`data: {"usage":{"prompt_tokens":3,"completion_tokens":-1,"total_tokens":3}}`)); !got.Malformed {
+		t.Fatalf("negative stream usage must be marked malformed: %+v", got)
+	}
+	if got := ParseUsageSnapshotLine([]byte(`data: {"usage":{"prompt_tokens":"three"}}`)); !got.Present || !got.Malformed {
+		t.Fatalf("wrong-typed usage must retain malformed evidence: %+v", got)
+	}
+}
+
+func TestParseUsageRejectsDuplicateBillingKeys(t *testing.T) {
+	for name, payload := range map[string]string{
+		"duplicate top-level usage":       `{"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11},"Usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+		"negative overwritten in usage":   `{"usage":{"prompt_tokens":10,"completion_tokens":-1,"Completion_Tokens":1,"total_tokens":11}}`,
+		"negative overwritten in details": `{"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"completion_tokens_details":{"reasoning_tokens":-1,"Reasoning_Tokens":1}}}`,
+		"unicode simple-fold alias":       `{"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"completion_tokens_details":{"reasoning_tokens":-1,"reaſoning_tokenſ":1}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ParseUsageSnapshotBody([]byte(payload))
+			if !got.Malformed {
+				t.Fatalf("duplicate billing key must be sticky malformed: %+v", got)
+			}
+		})
+	}
+}
+
+func TestIsDONERequiresExactSSESentinel(t *testing.T) {
+	if !IsDONE([]byte(" data:   [DONE]  ")) {
+		t.Fatal("exact sentinel must terminate the stream")
+	}
+	for _, line := range [][]byte{
+		[]byte(`data: {"choices":[{"delta":{"content":"[DONE]"}}]}`),
+		[]byte(`event: [DONE]`),
+		[]byte(`data: [DONE] trailing`),
+	} {
+		if IsDONE(line) {
+			t.Fatalf("content/non-sentinel line must not terminate: %s", line)
+		}
+	}
 }
 
 // FuzzDecodeInbound asserts DecodeInbound never panics and never lets a
@@ -185,6 +265,9 @@ func FuzzDecodeInbound(f *testing.F) {
 	f.Add([]byte(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`))
 	f.Add([]byte(`{"n":3,"logit_bias":{}}`))
 	f.Add([]byte(`{"tools":[1,2,3],"tool_choice":"none"}`))
+	f.Add([]byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	f.Add([]byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`))
+	f.Add([]byte(`{"messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":"x"}}]}]}`))
 	f.Add([]byte(`not json`))
 	f.Add([]byte(``))
 	f.Fuzz(func(t *testing.T, body []byte) {
@@ -192,6 +275,9 @@ func FuzzDecodeInbound(f *testing.F) {
 		if ae != nil {
 			return // rejected, never forwarded
 		}
+		// Validation/classification shares the decoded canonical union and must
+		// remain panic-free on arbitrary structurally accepted input.
+		_, _ = in.ValidateAndClassify(MediaLimits{MaxParts: 8, MaxDecodedBytes: 1 << 20})
 		out := SanitizeUpstream(in, "real-model", 64)
 		raw, err := json.Marshal(out)
 		if err != nil {

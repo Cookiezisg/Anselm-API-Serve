@@ -1,10 +1,7 @@
-// Package quotastore is the accounting persistence (UoW, ADR-005): it implements
-// the app/quota Repository port STRUCTURALLY (it never imports app) over the
-// separated SQLite pools. Every multi-row atomic write is ONE orm.Transaction on
-// the single-writer pool (BEGIN IMMEDIATE), so the read-modify-write of each
-// guardrail cannot interleave with another reserve/settle/rollback. *sql.Tx
-// never leaks out of this package. The deny categories are returned as the
-// domain's typed sentinels (domain/quota); the app maps them to wire codes.
+// Package quotastore persists the provider-aware fixed-point spend ledger.
+// Every aggregate mutation is one BEGIN IMMEDIATE transaction on the serialized
+// writer, so monthly entitlement, install/provider/global wallets, and the
+// reservation state can never be observed partially applied.
 package quotastore
 
 import (
@@ -13,120 +10,140 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/orm"
 )
 
-// Store performs atomic quota operations. Writes go to the single serialized
-// writer (BEGIN IMMEDIATE); reads (View, orphan scan) go to the bounded read
-// pool. It holds no config — the live Limits snapshot is passed in per Reserve.
+const (
+	stateOpen       = "open"
+	stateSettled    = "settled"
+	stateRolledBack = "rolled_back"
+	stateOrphaned   = "orphaned"
+)
+
+// Store performs atomic quota operations. It holds no live configuration; the
+// caller passes one immutable Limits snapshot to each Reserve.
 type Store struct {
 	writer *orm.DB
 	reader *orm.DB
 }
 
-// New wires the store to the separated pools.
-func New(writer, reader *orm.DB) *Store {
-	return &Store{writer: writer, reader: reader}
-}
+func New(writer, reader *orm.DB) *Store { return &Store{writer: writer, reader: reader} }
 
-// newRequestID mints a ledger key: "req_" + hex(8 random bytes). rand.Read from
-// crypto/rand never returns a short read on a healthy OS; on the impossible error
-// the zeroed bytes still yield a syntactically valid (just non-random) id, which
-// the UNIQUE primary key would reject on the astronomically unlikely collision.
 func newRequestID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "req_" + hex.EncodeToString(b[:])
 }
 
-// Reserve pre-debits the guardrails in ONE BEGIN IMMEDIATE transaction. Each
-// gate is a conditional UPDATE; RowsAffected()==0 returns the matching domain
-// sentinel and the orm.Transaction rolls the whole tx back (it commits only on a
-// nil return). Gates run in spec order: month count → install-day tokens →
-// optional daily sublimit → global-day budget → INSERT ledger(settled NULL).
-// SublimitApplied is set true IFF the gated +1 actually executed (B1).
-func (s *Store) Reserve(ctx context.Context, installID string, est int64, p quota.Period, lim quota.Limits) (*quota.Reservation, error) {
-	rid := newRequestID()
-	r := &quota.Reservation{RequestID: rid, InstallID: installID, Period: p, Reserved: est}
+// Reserve atomically takes the monthly request entitlement and the three pUSD
+// wallets: install-day, provider-day, and shared global-day. Raw token counts
+// never enter these tables; the frozen billing Plan is the conversion boundary.
+func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan, p quota.Period, lim quota.Limits) (*quota.Reservation, error) {
+	if err := validatePlan(plan); err != nil {
+		return nil, err
+	}
+	providerCap, ok := lim.ProviderDailyLimit(plan.Provider)
+	if !ok {
+		return nil, quota.ErrProviderLimitMissing
+	}
 
+	r := &quota.Reservation{
+		RequestID:    newRequestID(),
+		InstallID:    installID,
+		Period:       p,
+		Plan:         plan,
+		ReservedPUSD: plan.ReservedPUSD,
+	}
 	err := s.writer.Transaction(ctx, func(tx *orm.DB) error {
-		// Gate 1: monthly count < MonthlyQuota. Lazy-create the month row first.
 		if _, err := tx.Exec(ctx,
-			`INSERT OR IGNORE INTO usage(install_id, period, count, tokens) VALUES (?, ?, 0, 0)`,
+			`INSERT OR IGNORE INTO quota_monthly(install_id, period_month, requests) VALUES (?, ?, 0)`,
 			installID, p.Month); err != nil {
 			return fmt.Errorf("quotastore: month upsert: %w", err)
 		}
-		res, err := tx.Exec(ctx,
-			`UPDATE usage SET count = count + 1
-			   WHERE install_id = ? AND period = ? AND count < ?`,
-			installID, p.Month, lim.MonthlyQuota)
-		if err != nil {
-			return fmt.Errorf("quotastore: month update: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return quota.ErrMonthlyExhausted
+		if err := execOne(ctx, tx, "month reserve",
+			`UPDATE quota_monthly SET requests = requests + 1
+			   WHERE install_id = ? AND period_month = ? AND requests < ?`,
+			installID, p.Month, lim.MonthlyQuota); err != nil {
+			if isConditionalMiss(err) {
+				return quota.ErrMonthlyExhausted
+			}
+			return err
 		}
 
-		// Gate 2: install-day tokens + est <= InstallDailyTokenCap.
 		if _, err := tx.Exec(ctx,
-			`INSERT OR IGNORE INTO usage(install_id, period, count, tokens) VALUES (?, ?, 0, 0)`,
-			installID, p.Day); err != nil {
-			return fmt.Errorf("quotastore: day upsert: %w", err)
+			`INSERT OR IGNORE INTO install_spend_daily(install_id, period_day, spend_pusd, requests)
+			 VALUES (?, ?, 0, 0)`, installID, p.Day); err != nil {
+			return fmt.Errorf("quotastore: install-day upsert: %w", err)
 		}
-		res, err = tx.Exec(ctx,
-			`UPDATE usage SET tokens = tokens + ?
-			   WHERE install_id = ? AND period = ? AND tokens + ? <= ?`,
-			est, installID, p.Day, est, lim.InstallDailyTokenCap)
-		if err != nil {
-			return fmt.Errorf("quotastore: day token update: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return quota.ErrDayTokensExceeded
+		if err := execOne(ctx, tx, "install spend reserve",
+			`UPDATE install_spend_daily SET spend_pusd = spend_pusd + ?
+			   WHERE install_id = ? AND period_day = ? AND spend_pusd + ? <= ?`,
+			plan.ReservedPUSD, installID, p.Day, plan.ReservedPUSD, lim.InstallDailySpendPUSD); err != nil {
+			if isConditionalMiss(err) {
+				return quota.ErrInstallSpendExceeded
+			}
+			return err
 		}
 
-		// Gate 2b: optional per-install daily request sublimit (day-row count).
 		if lim.DailySublimit > 0 {
-			res, err = tx.Exec(ctx,
-				`UPDATE usage SET count = count + 1
-				   WHERE install_id = ? AND period = ? AND count < ?`,
-				installID, p.Day, lim.DailySublimit)
-			if err != nil {
-				return fmt.Errorf("quotastore: sublimit update: %w", err)
+			if err := execOne(ctx, tx, "daily sublimit reserve",
+				`UPDATE install_spend_daily SET requests = requests + 1
+				   WHERE install_id = ? AND period_day = ? AND requests < ?`,
+				installID, p.Day, lim.DailySublimit); err != nil {
+				if isConditionalMiss(err) {
+					return quota.ErrSublimitExceeded
+				}
+				return err
 			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return quota.ErrSublimitExceeded
-			}
-			// The gated +1 fired — record it so Rollback reverses exactly this,
-			// independent of any later DailySublimit hot-reload (B1).
 			r.SublimitApplied = true
 		}
 
-		// Gate 3: global-day budget + est <= GlobalDailyBudget.
 		if _, err := tx.Exec(ctx,
-			`INSERT OR IGNORE INTO budget(period, tokens_used, requests) VALUES (?, 0, 0)`,
-			p.Day); err != nil {
-			return fmt.Errorf("quotastore: budget upsert: %w", err)
+			`INSERT OR IGNORE INTO provider_spend_daily(provider, period_day, spend_pusd, requests)
+			 VALUES (?, ?, 0, 0)`, string(plan.Provider), p.Day); err != nil {
+			return fmt.Errorf("quotastore: provider-day upsert: %w", err)
 		}
-		res, err = tx.Exec(ctx,
-			`UPDATE budget SET tokens_used = tokens_used + ?, requests = requests + 1
-			   WHERE period = ? AND tokens_used + ? <= ?`,
-			est, p.Day, est, lim.GlobalDailyBudget)
-		if err != nil {
-			return fmt.Errorf("quotastore: budget update: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return quota.ErrBudgetExceeded
+		if err := execOne(ctx, tx, "provider spend reserve",
+			`UPDATE provider_spend_daily
+			    SET spend_pusd = spend_pusd + ?, requests = requests + 1
+			  WHERE provider = ? AND period_day = ? AND spend_pusd + ? <= ?`,
+			plan.ReservedPUSD, string(plan.Provider), p.Day, plan.ReservedPUSD, providerCap); err != nil {
+			if isConditionalMiss(err) {
+				return quota.ErrProviderSpendExceeded
+			}
+			return err
 		}
 
-		// Step 4: ledger row (settled NULL) for crash reconciliation.
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO ledger(request_id, install_id, period_day, reserved, settled, created_at)
-			   VALUES (?, ?, ?, ?, NULL, ?)`,
-			rid, installID, p.Day, est, time.Now().UTC()); err != nil {
-			return fmt.Errorf("quotastore: ledger insert: %w", err)
+			`INSERT OR IGNORE INTO global_spend_daily(period_day, spend_pusd, requests) VALUES (?, 0, 0)`,
+			p.Day); err != nil {
+			return fmt.Errorf("quotastore: global-day upsert: %w", err)
+		}
+		if err := execOne(ctx, tx, "global spend reserve",
+			`UPDATE global_spend_daily
+			    SET spend_pusd = spend_pusd + ?, requests = requests + 1
+			  WHERE period_day = ? AND spend_pusd + ? <= ?`,
+			plan.ReservedPUSD, p.Day, plan.ReservedPUSD, lim.GlobalDailySpendPUSD); err != nil {
+			if isConditionalMiss(err) {
+				return quota.ErrBudgetExceeded
+			}
+			return err
+		}
+
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO spend_ledger(
+			   request_id, install_id, provider, model, rate_card_id,
+			   period_month, period_day, reserved_pusd, charged_pusd, state,
+			   sublimit_applied, created_at, terminal_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)`,
+			r.RequestID, installID, string(plan.Provider), plan.Model, plan.RateCardID,
+			p.Month, p.Day, plan.ReservedPUSD, stateOpen, boolInt(r.SublimitApplied), time.Now().UTC()); err != nil {
+			return fmt.Errorf("quotastore: spend ledger insert: %w", err)
 		}
 		return nil
 	})
@@ -136,144 +153,213 @@ func (s *Store) Reserve(ctx context.Context, installID string, est int64, p quot
 	return r, nil
 }
 
-// Settle reconciles reserved vs actual: refund (actual<est) or top-up
-// (actual>est) on budget + install-day tokens, marking the ledger row settled.
-// The `settled IS NULL` CAS makes Settle/Rollback/Reconcile mutually exclusive
-// single-winners (GW-INV-04): a lost race commits a no-op without touching
-// balances. Monthly count is intentionally KEPT (output happened, §7.2).
-func (s *Store) Settle(ctx context.Context, r *quota.Reservation, actual int64) error {
-	if actual < 0 {
-		actual = 0
+func validatePlan(plan billing.Plan) error {
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("quotastore: invalid billing plan: %w", err)
 	}
-	delta := r.Reserved - actual // >0 refund, <0 top-up debit.
-
-	return s.writer.Transaction(ctx, func(tx *orm.DB) error {
-		res, err := tx.Exec(ctx,
-			`UPDATE ledger SET settled = ? WHERE request_id = ? AND settled IS NULL`,
-			actual, r.RequestID)
-		if err != nil {
-			return fmt.Errorf("quotastore: ledger settle: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // already settled/rolled-back/reconciled — no-op winner.
-		}
-		if delta != 0 {
-			if err := adjustDay(ctx, tx, r.Period.Day, r.InstallID, delta); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// Rollback reverses ALL reservations for a pre-output failure: budget tokens +
-// requests, install-day tokens, monthly count, and the day-row sublimit count
-// IFF r.SublimitApplied (B1 — never re-reads config). Same `settled IS NULL` CAS
-// single-winner guard (settled=0). Decrements floor at 0 as defense-in-depth;
-// the CAS guard is the primary correctness mechanism (a crash can only overcount).
-func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
-	return s.writer.Transaction(ctx, func(tx *orm.DB) error {
-		res, err := tx.Exec(ctx,
-			`UPDATE ledger SET settled = 0 WHERE request_id = ? AND settled IS NULL`,
-			r.RequestID)
-		if err != nil {
-			return fmt.Errorf("quotastore: ledger rollback: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // lost the CAS — no-op.
-		}
-
-		// 1) global-day budget: refund full reserved + the request count.
-		if _, err := tx.Exec(ctx,
-			`UPDATE budget SET tokens_used = MAX(0, tokens_used - ?), requests = MAX(0, requests - 1)
-			   WHERE period = ?`,
-			r.Reserved, r.Period.Day); err != nil {
-			return fmt.Errorf("quotastore: budget rollback: %w", err)
-		}
-		// 2) install-day tokens: refund full reserved.
-		if _, err := tx.Exec(ctx,
-			`UPDATE usage SET tokens = MAX(0, tokens - ?) WHERE install_id = ? AND period = ?`,
-			r.Reserved, r.InstallID, r.Period.Day); err != nil {
-			return fmt.Errorf("quotastore: day token rollback: %w", err)
-		}
-		// 3) monthly count: refund the +1.
-		if _, err := tx.Exec(ctx,
-			`UPDATE usage SET count = MAX(0, count - 1) WHERE install_id = ? AND period = ?`,
-			r.InstallID, r.Period.Month); err != nil {
-			return fmt.Errorf("quotastore: month rollback: %w", err)
-		}
-		// 4) daily sublimit +1 IFF it fired at reserve time (B1).
-		if r.SublimitApplied {
-			if _, err := tx.Exec(ctx,
-				`UPDATE usage SET count = MAX(0, count - 1) WHERE install_id = ? AND period = ?`,
-				r.InstallID, r.Period.Day); err != nil {
-				return fmt.Errorf("quotastore: sublimit rollback: %w", err)
-			}
-		}
-		return nil
-	})
-}
-
-// adjustDay applies a settle delta to both balances: refund (delta>0) lowers
-// usage, top-up (delta<0) raises it. Floors at 0 on the refund direction as
-// defense-in-depth; a top-up (negative delta) legitimately increases the values.
-func adjustDay(ctx context.Context, tx *orm.DB, day, installID string, delta int64) error {
-	if _, err := tx.Exec(ctx,
-		`UPDATE budget SET tokens_used = MAX(0, tokens_used - ?) WHERE period = ?`,
-		delta, day); err != nil {
-		return fmt.Errorf("quotastore: budget settle: %w", err)
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE usage SET tokens = MAX(0, tokens - ?) WHERE install_id = ? AND period = ?`,
-		delta, installID, day); err != nil {
-		return fmt.Errorf("quotastore: usage settle: %w", err)
+	if plan.ReservedPUSD <= 0 {
+		return fmt.Errorf("quotastore: zero-cost billing plan")
 	}
 	return nil
 }
 
-// View reads the authoritative monthly count + the day's global budget usage
-// from the read pool. Missing rows (lazy-create not yet triggered) read as 0.
-func (s *Store) View(ctx context.Context, installID string, p quota.Period) (used, budgetUsed int64, err error) {
-	err = s.reader.QueryRow(ctx,
-		`SELECT count FROM usage WHERE install_id = ? AND period = ?`,
-		installID, p.Month).Scan(&used)
-	if err != nil && err != sql.ErrNoRows {
-		return 0, 0, fmt.Errorf("quotastore: view usage: %w", err)
+// Settle commits the authoritative pUSD charge. A top-up is deliberately not
+// capped: the provider has already spent the money, so the ledger must record
+// truth and subsequent reserves will observe an exhausted/overdrawn wallet.
+func (s *Store) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int64) error {
+	if err := validateReservation(r); err != nil {
+		return err
 	}
-	err = s.reader.QueryRow(ctx,
-		`SELECT tokens_used FROM budget WHERE period = ?`, p.Day).Scan(&budgetUsed)
-	if err != nil && err != sql.ErrNoRows {
-		return 0, 0, fmt.Errorf("quotastore: view budget: %w", err)
+	if actualPUSD < 0 {
+		return fmt.Errorf("quotastore: negative settlement")
 	}
-	return used, budgetUsed, nil
+	delta := r.ReservedPUSD - actualPUSD // positive=refund, negative=top-up.
+	return s.writer.Transaction(ctx, func(tx *orm.DB) error {
+		res, err := tx.Exec(ctx,
+			`UPDATE spend_ledger
+			    SET state = ?, charged_pusd = ?, terminal_at = ?
+			  WHERE request_id = ? AND state = ?
+			    AND install_id = ? AND provider = ? AND model = ? AND rate_card_id = ?
+			    AND period_month = ? AND period_day = ? AND reserved_pusd = ?
+			    AND sublimit_applied = ?`,
+			stateSettled, actualPUSD, time.Now().UTC(), r.RequestID, stateOpen,
+			r.InstallID, string(r.Plan.Provider), r.Plan.Model, r.Plan.RateCardID,
+			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied))
+		if err != nil {
+			return fmt.Errorf("quotastore: ledger settle: %w", err)
+		}
+		if n, err := rowsAffected(res); err != nil {
+			return fmt.Errorf("quotastore: ledger settle rows: %w", err)
+		} else if n == 0 {
+			return nil // another terminal operation won.
+		} else if n != 1 {
+			return fmt.Errorf("quotastore: ledger settle affected %d rows", n)
+		}
+		return adjustSpend(ctx, tx, r, delta)
+	})
 }
 
-// ReconcileOrphans refunds budget + install-day tokens for ledger rows still
-// settled IS NULL created before `cutoff` (crash-left reservations), marking
-// settled=reserved and KEEPING the +1 month count (GW-INV-06: conservative).
-// Each orphan is its own write tx with the same `settled IS NULL` CAS, so a row
-// that raced a real settle/rollback is skipped (RowsAffected==0). Returns the
-// number actually reconciled. The candidate scan uses the read pool; only the
-// per-row mutation touches the writer (minimizing write-pool hold time).
+// Rollback exactly reverses every reservation for a definitely non-billable
+// pre-output failure. No MAX(0, ...) is used: missing rows or underflow are
+// accounting corruption and roll the entire transaction back, including CAS.
+func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
+	if err := validateReservation(r); err != nil {
+		return err
+	}
+	return s.writer.Transaction(ctx, func(tx *orm.DB) error {
+		res, err := tx.Exec(ctx,
+			`UPDATE spend_ledger
+			    SET state = ?, charged_pusd = 0, terminal_at = ?
+			  WHERE request_id = ? AND state = ?
+			    AND install_id = ? AND provider = ? AND model = ? AND rate_card_id = ?
+			    AND period_month = ? AND period_day = ? AND reserved_pusd = ?
+			    AND sublimit_applied = ?`,
+			stateRolledBack, time.Now().UTC(), r.RequestID, stateOpen,
+			r.InstallID, string(r.Plan.Provider), r.Plan.Model, r.Plan.RateCardID,
+			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied))
+		if err != nil {
+			return fmt.Errorf("quotastore: ledger rollback: %w", err)
+		}
+		if n, err := rowsAffected(res); err != nil {
+			return fmt.Errorf("quotastore: ledger rollback rows: %w", err)
+		} else if n == 0 {
+			return nil
+		} else if n != 1 {
+			return fmt.Errorf("quotastore: ledger rollback affected %d rows", n)
+		}
+
+		if r.SublimitApplied {
+			if err := execOne(ctx, tx, "install rollback",
+				`UPDATE install_spend_daily
+				    SET spend_pusd = spend_pusd - ?, requests = requests - 1
+				  WHERE install_id = ? AND period_day = ?
+				    AND spend_pusd >= ? AND requests >= 1`,
+				r.ReservedPUSD, r.InstallID, r.Period.Day, r.ReservedPUSD); err != nil {
+				return err
+			}
+		} else if err := execOne(ctx, tx, "install rollback",
+			`UPDATE install_spend_daily SET spend_pusd = spend_pusd - ?
+			  WHERE install_id = ? AND period_day = ? AND spend_pusd >= ?`,
+			r.ReservedPUSD, r.InstallID, r.Period.Day, r.ReservedPUSD); err != nil {
+			return err
+		}
+		if err := execOne(ctx, tx, "provider rollback",
+			`UPDATE provider_spend_daily
+			    SET spend_pusd = spend_pusd - ?, requests = requests - 1
+			  WHERE provider = ? AND period_day = ?
+			    AND spend_pusd >= ? AND requests >= 1`,
+			r.ReservedPUSD, string(r.Plan.Provider), r.Period.Day, r.ReservedPUSD); err != nil {
+			return err
+		}
+		if err := execOne(ctx, tx, "global rollback",
+			`UPDATE global_spend_daily
+			    SET spend_pusd = spend_pusd - ?, requests = requests - 1
+			  WHERE period_day = ? AND spend_pusd >= ? AND requests >= 1`,
+			r.ReservedPUSD, r.Period.Day, r.ReservedPUSD); err != nil {
+			return err
+		}
+		return execOne(ctx, tx, "month rollback",
+			`UPDATE quota_monthly SET requests = requests - 1
+			  WHERE install_id = ? AND period_month = ? AND requests >= 1`,
+			r.InstallID, r.Period.Month)
+	})
+}
+
+func validateReservation(r *quota.Reservation) error {
+	if r == nil || r.RequestID == "" || r.InstallID == "" || r.ReservedPUSD <= 0 {
+		return fmt.Errorf("quotastore: invalid reservation")
+	}
+	if r.ReservedPUSD != r.Plan.ReservedPUSD {
+		return fmt.Errorf("quotastore: reservation/plan amount mismatch")
+	}
+	return validatePlan(r.Plan)
+}
+
+// adjustSpend applies the settle delta to all three balances. Exact-one row
+// checks and arithmetic guards prevent silent conservation loss.
+func adjustSpend(ctx context.Context, tx *orm.DB, r *quota.Reservation, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	if delta > 0 {
+		if err := execOne(ctx, tx, "install settle refund",
+			`UPDATE install_spend_daily SET spend_pusd = spend_pusd - ?
+			  WHERE install_id = ? AND period_day = ? AND spend_pusd >= ?`,
+			delta, r.InstallID, r.Period.Day, delta); err != nil {
+			return err
+		}
+		if err := execOne(ctx, tx, "provider settle refund",
+			`UPDATE provider_spend_daily SET spend_pusd = spend_pusd - ?
+			  WHERE provider = ? AND period_day = ? AND spend_pusd >= ?`,
+			delta, string(r.Plan.Provider), r.Period.Day, delta); err != nil {
+			return err
+		}
+		return execOne(ctx, tx, "global settle refund",
+			`UPDATE global_spend_daily SET spend_pusd = spend_pusd - ?
+			  WHERE period_day = ? AND spend_pusd >= ?`,
+			delta, r.Period.Day, delta)
+	}
+
+	topUp := -delta
+	ceiling := int64(math.MaxInt64) - topUp
+	if err := execOne(ctx, tx, "install settle top-up",
+		`UPDATE install_spend_daily SET spend_pusd = spend_pusd + ?
+		  WHERE install_id = ? AND period_day = ? AND spend_pusd <= ?`,
+		topUp, r.InstallID, r.Period.Day, ceiling); err != nil {
+		return err
+	}
+	if err := execOne(ctx, tx, "provider settle top-up",
+		`UPDATE provider_spend_daily SET spend_pusd = spend_pusd + ?
+		  WHERE provider = ? AND period_day = ? AND spend_pusd <= ?`,
+		topUp, string(r.Plan.Provider), r.Period.Day, ceiling); err != nil {
+		return err
+	}
+	return execOne(ctx, tx, "global settle top-up",
+		`UPDATE global_spend_daily SET spend_pusd = spend_pusd + ?
+		  WHERE period_day = ? AND spend_pusd <= ?`,
+		topUp, r.Period.Day, ceiling)
+}
+
+// View returns the monthly request count and the provider-neutral install/global
+// daily balances. Missing lazy rows read as zero.
+func (s *Store) View(ctx context.Context, installID string, p quota.Period) (used, installSpendPUSD, globalSpendPUSD int64, err error) {
+	err = s.reader.QueryRow(ctx,
+		`SELECT requests FROM quota_monthly WHERE install_id = ? AND period_month = ?`,
+		installID, p.Month).Scan(&used)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, 0, 0, fmt.Errorf("quotastore: view monthly: %w", err)
+	}
+	err = s.reader.QueryRow(ctx,
+		`SELECT spend_pusd FROM install_spend_daily WHERE install_id = ? AND period_day = ?`,
+		installID, p.Day).Scan(&installSpendPUSD)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, 0, 0, fmt.Errorf("quotastore: view install spend: %w", err)
+	}
+	err = s.reader.QueryRow(ctx,
+		`SELECT spend_pusd FROM global_spend_daily WHERE period_day = ?`, p.Day).Scan(&globalSpendPUSD)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, 0, 0, fmt.Errorf("quotastore: view global spend: %w", err)
+	}
+	return used, installSpendPUSD, globalSpendPUSD, nil
+}
+
+// ReconcileOrphans terminalizes aged unknown outcomes at their full reserved
+// cost. It intentionally changes no balance: automatic refund would undercount
+// a request the provider may already have billed.
 func (s *Store) ReconcileOrphans(ctx context.Context, cutoff time.Time) (int, error) {
 	rows, err := s.reader.Query(ctx,
-		`SELECT request_id, install_id, period_day, reserved
-		   FROM ledger WHERE settled IS NULL AND created_at < ?`, cutoff)
+		`SELECT request_id FROM spend_ledger WHERE state = ? AND created_at < ?`, stateOpen, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("quotastore: scan orphans: %w", err)
 	}
-	type orphan struct {
-		reqID, installID, day string
-		reserved              int64
-	}
-	var list []orphan
+	var ids []string
 	for rows.Next() {
-		var o orphan
-		if err := rows.Scan(&o.reqID, &o.installID, &o.day, &o.reserved); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			_ = rows.Close()
 			return 0, fmt.Errorf("quotastore: scan orphan row: %w", err)
 		}
-		list = append(list, o)
+		ids = append(ids, id)
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
@@ -281,55 +367,83 @@ func (s *Store) ReconcileOrphans(ctx context.Context, cutoff time.Time) (int, er
 	}
 
 	n := 0
-	for _, o := range list {
-		reconciled, err := s.reconcileOne(ctx, o.reqID, o.installID, o.day, o.reserved)
+	for _, id := range ids {
+		won, err := s.reconcileOne(ctx, id)
 		if err != nil {
 			return n, err
 		}
-		if reconciled {
+		if won {
 			n++
 		}
 	}
 	return n, nil
 }
 
-// reconcileOne reconciles a single orphan in one write tx. The `settled IS NULL`
-// CAS makes it a no-op (false) when a real settle/rollback won the race.
-func (s *Store) reconcileOne(ctx context.Context, reqID, installID, day string, reserved int64) (bool, error) {
-	reconciled := false
+func (s *Store) reconcileOne(ctx context.Context, requestID string) (bool, error) {
+	won := false
 	err := s.writer.Transaction(ctx, func(tx *orm.DB) error {
 		res, err := tx.Exec(ctx,
-			`UPDATE ledger SET settled = reserved WHERE request_id = ? AND settled IS NULL`,
-			reqID)
+			`UPDATE spend_ledger
+			    SET state = ?, charged_pusd = reserved_pusd, terminal_at = ?
+			  WHERE request_id = ? AND state = ?`,
+			stateOrphaned, time.Now().UTC(), requestID, stateOpen)
 		if err != nil {
 			return fmt.Errorf("quotastore: reconcile ledger: %w", err)
 		}
-		if cnt, _ := res.RowsAffected(); cnt == 0 {
-			return nil // raced a settle/rollback — skip.
+		n, err := rowsAffected(res)
+		if err != nil {
+			return fmt.Errorf("quotastore: reconcile rows: %w", err)
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE budget SET tokens_used = MAX(0, tokens_used - ?) WHERE period = ?`,
-			reserved, day); err != nil {
-			return fmt.Errorf("quotastore: reconcile budget: %w", err)
+		if n > 1 {
+			return fmt.Errorf("quotastore: reconcile affected %d rows", n)
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE usage SET tokens = MAX(0, tokens - ?) WHERE install_id = ? AND period = ?`,
-			reserved, installID, day); err != nil {
-			return fmt.Errorf("quotastore: reconcile usage: %w", err)
-		}
-		reconciled = true
+		won = n == 1
 		return nil
 	})
-	return reconciled, err
+	return won, err
 }
 
-// OpenReservations counts settled-IS-NULL ledger rows — the missed-settle alarm
-// source (OBS-2 gateway_quota_reservations_open). Read pool.
 func (s *Store) OpenReservations(ctx context.Context) (int64, error) {
 	var n int64
 	if err := s.reader.QueryRow(ctx,
-		`SELECT COUNT(*) FROM ledger WHERE settled IS NULL`).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM spend_ledger WHERE state = ?`, stateOpen).Scan(&n); err != nil {
 		return 0, fmt.Errorf("quotastore: count open reservations: %w", err)
 	}
 	return n, nil
+}
+
+type conditionalMiss struct{ op string }
+
+func (e *conditionalMiss) Error() string { return "quotastore: " + e.op + ": condition not met" }
+
+func isConditionalMiss(err error) bool {
+	_, ok := err.(*conditionalMiss)
+	return ok
+}
+
+func execOne(ctx context.Context, tx *orm.DB, op, query string, args ...any) error {
+	res, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("quotastore: %s: %w", op, err)
+	}
+	n, err := rowsAffected(res)
+	if err != nil {
+		return fmt.Errorf("quotastore: %s rows: %w", op, err)
+	}
+	if n == 0 {
+		return &conditionalMiss{op: op}
+	}
+	if n != 1 {
+		return fmt.Errorf("quotastore: %s affected %d rows", op, n)
+	}
+	return nil
+}
+
+func rowsAffected(res sql.Result) (int64, error) { return res.RowsAffected() }
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

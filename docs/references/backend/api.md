@@ -4,68 +4,154 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-06-21
-review-due: 2026-09-19
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
 # HTTP API 契约（business / admin / dashboard 三 mux）
 
-> 与代码逐字对齐：business 来自 `internal/transport/httpapi/router/router.go`，admin 来自 `router/admin.go`，dashboard 来自 `router/dashboard.go`。路由用 Go 1.22 `method+path` `ServeMux` 模式。错误信封与码见 [error-codes.md](error-codes.md)。
-> 信封规约（`transport/httpapi/response`）：**成功裸实体（无 wrapper）**；失败 `{"error":{"code","message"[,"details"]}}`。bearer 提取统一走 `response.Bearer`（仅认 `Authorization: Bearer <token>`）。
+> Go 1.22 method+path `ServeMux`。成功默认是裸实体，失败统一 `{"error":{"code","message"[,"details"]}}`；`/v1/models` 刻意保 OpenAI list wrapper。错误逐字值见 [error-codes.md](error-codes.md)，配置边界见 [config.md](config.md)。bearer 只认 `Authorization: Bearer <token>`。
 
 ## 1. business mux（`LISTEN_ADDR`，默认 `127.0.0.1:8080`）
 
-中间件链外→内：`Recover`（X-Request-ID + scoped logger + panic→counter）→ `DenyCORS` → `MaxBody(MAX_BODY_BYTES)` → mux。每条业务路由（**非 `/healthz`**）经 `Mx.Wrap(label,…)` 包 HTTP RED，label 低基数固定。body 上限来自配置 `MAX_BODY_BYTES`（默认 256KiB，重启生效，GW-INV-34）；`/v1/install` 在 handler 内另有独立 8KiB 小上限（未鉴权面）。
+外→内中间件：`Recover → DenyCORS → MaxBody(MAX_BODY_BYTES) → mux`。除 `/healthz` 外，固定低基数 RED handler label。生产 Caddy 的 5MiB `request_body` edge cap 与部署值对齐，并将 edge-native 413 映射为同一 `400 BAD_REQUEST` JSON envelope。
 
-| 方法 + 路径 | RED label | handler | 鉴权 | 说明 |
-|---|---|---|---|---|
-| `POST /v1/install` | `install` | `business/install` | 无 | 领号：每次全新 install 行 + 全新配额池，返回**一次性**新 token；防 Sybil 闸 + PoW（默认 dormant） |
-| `GET /v1/install/challenge` | `install_challenge` | `business/challenge` | 无 | 取 PoW challenge（无状态 `base64(rand‖ts‖HMAC[:16])`，120s TTL） |
-| `POST /v1/chat/completions` | `chat_completions` | `business/chat` | bearer | 代理 DeepSeek；悲观三闸门 reserve→settle/rollback；流式透传 |
-| `GET /v1/quota` | `quota` | `business/quota` | bearer | 查当前 install 配额用量 |
-| `GET /v1/models` | `models` | `business/models` | bearer | 返回 `MODEL_ALLOWLIST` 模型目录 |
-| `GET /healthz` | （**不包**） | `business/healthz` | 无 | liveness；**绝不碰 DB**（GW-INV-13），故意不挂 RED |
-
-鉴权单点：install service 同时充当 quota/models 的 `Authenticator`（一次 bearer→install 查找，绝无第二校验器）。404/405/CORS 由链 + mux 默认行为产生；`DenyCORS` 对带 `Origin` 的 `OPTIONS` 返回 403 且**绝不发** `Access-Control-*` 头。
-
-## 2. admin mux（`ADMIN_ADDR`，默认 `127.0.0.1:9090`，loopback-only）
-
-无中间件鉴权——靠**物理回环**隔离（bootstrap 的 `requireLoopback`）。`Metrics` 为 nil 时不挂 `/metrics`。
-
-| 方法 + 路径 | 来源 | 说明 |
-|---|---|---|
-| `GET /metrics` | 注入 `deps.Metrics`（promhttp） | Prometheus 暴露 |
-| `GET /readyz` | `admin.Ready(deps.Ready)` | readiness 检查 |
-| `/debug/pprof/` | `pprof.Index`（+ 命名 profile） | 运行期画像 |
-| `/debug/pprof/cmdline` | `pprof.Cmdline` | |
-| `/debug/pprof/profile` | `pprof.Profile` | CPU profile |
-| `/debug/pprof/symbol` | `pprof.Symbol` | |
-| `/debug/pprof/trace` | `pprof.Trace` | |
-| `GET /debug/vars` | `expvar.Handler()` | 免抓取的运行期 gauge（goroutines / heap_alloc_bytes） |
-
-🔴 pprof / expvar / readyz 暴露运行期内部 + DoS 面 + 依赖状态，**必须 loopback-only、绝不反代**（GW-INV-13）。
-
-## 3. dashboard mux（`DASHBOARD_ADDR`，默认 `127.0.0.1:8081`，loopback-only）
-
-`SecurityHeaders` 包裹**所有**路由。公开：`/healthz` `/login` `/logout`；`/api/*` 全部在 `RequireSession` 之后。状态变更 POST 在 `RequireSession` 之后**再**校验 `X-CSRF-Token`（handler 内）。`/api/*`、`/login`、`/logout` 模式按 ServeMux 优先级压过 `"/"` SPA 兜底，故 SPA 永不能遮蔽鉴权路由。
-
-| 方法 + 路径 | handler | session | 说明 |
+| 方法 + 路径 | label | auth | 成功 / 说明 |
 |---|---|---|---|
-| `GET /healthz` | `Handler.Healthz` | 公开 | liveness |
-| `POST /login` | `Handler.Login` | 公开 | 建立 session（bcrypt + 常时用户名比对 + per-IP 退避，`LOGIN_LOCKED`） |
-| `POST /logout` | `Handler.Logout` | 公开 | 销毁 session |
-| `GET /api/session` | `Handler.Session` | 需 | 当前 session + CSRF token |
-| `GET /api/overview` | `Handler.Overview` | 需 | 概览指标 |
-| `GET /api/config` | `Handler.GetConfig` | 需 | 配置只读面（脱敏，机密不出现，见 [config.md](config.md)） |
-| `POST /api/config` | `Handler.PostConfig` | 需 + CSRF | 热改 runtime-hot 项（全有或全无） |
-| `GET /api/installs` | `Handler.Installs` | 需 | install 列表 |
-| `POST /api/installs/ban` | `Handler.Ban` | 需 + CSRF | 封禁 install |
-| `POST /api/installs/unban` | `Handler.Unban` | 需 + CSRF | 解封 install |
-| `GET /api/audit` | `Handler.Audit` | 需 | 审计 |
-| `GET /api/export` | `Handler.Export` | 需 | 导出 |
-| `GET /` | `Static`（nil ⇒ 最小 index shell） | 公开 | SPA + 静态资源（`infra/webassets`） |
+| `POST /v1/install` | `install` | 无 | 每次新建 install + 一次性 token；handler 独立 8KiB body cap；Sybil/PoW 默认 dormant |
+| `GET /v1/install/challenge` | `install_challenge` | 无 | 120s 无状态 HMAC PoW challenge |
+| `POST /v1/chat/completions` | `chat_completions` | bearer | OpenAI-compatible chat；按 content capability 确定性路由；stream/non-stream 透传安全 body |
+| `GET /v1/quota` | `quota` | bearer | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 install/global 日成本钱包 |
+| `GET /v1/models` | `models` | bearer | `{"object":"list","data":[{"id":PUBLIC_MODEL_ID,"object":"model","owned_by":"anselm-gateway"}]}`，恰一个逻辑模型 |
+| `GET /healthz` | 不包 RED | 无 | liveness；不碰 DB/provider |
 
-## 4. 响应头与 Retry-After
+共享 auth 决策：空/未知 bearer→401，banned→403，lookup fault→500。带 `Origin` 的 `OPTIONS` 一律 403，且不发任何 `Access-Control-*`。
 
-`response.WriteError` 渲染信封；当 `APIError.Details` 含 `retryAfterSec`（目前仅 `LOGIN_LOCKED`）时同步置 `Retry-After` 头，使头与 body lockstep。成功体 `Content-Type: application/json`，状态行前先写头。
+## 2. `POST /v1/chat/completions`
+
+### 2.1 top-level 与 message 白名单
+
+只 decode：
+
+```json
+{
+  "model": "anselm-auto",
+  "messages": [],
+  "stream": true,
+  "temperature": 0.7,
+  "max_tokens": 1024,
+  "n": 1,
+  "tools": [],
+  "tool_choice": "auto"
+}
+```
+
+未声明 top-level 字段构造性丢弃；`n>1` 拒绝。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop；其中 Gemini 3 返回在 `tool_calls[].extra_content.google.thought_signature` 的签名也原样回传，保证下一步 function call 不被 provider 以 400 拒绝。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Gemini adapter 内剥离。
+
+`messages[].content` 是关闭联合类型：
+
+| wire 形状 | 合法性 / canonical 结果 |
+|---|---|
+| JSON string | 文本 |
+| parts array | 只允许下表三种 part；纯 text parts 按顺序拼接成 string |
+| missing / `null` | 仅当 `role="assistant"` 且 `tool_calls` 是非空数组 |
+| object/number/bool/未知 part | `400 BAD_REQUEST` |
+
+message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`MAX_MESSAGE_CHARS`、`MAX_BODY_BYTES` 约束。`INPUT_TOKEN_CAP` 约束 messages 文本及 `tools` / `tool_choice` / message tool-call JSON 的 UTF-8 byte-fallback estimate（另含 provider framing 余量）；它不声称能估算 media token。
+
+### 2.2 part 逐字形状
+
+文本：
+
+```json
+{"type":"text","text":"describe this"}
+```
+
+图像：
+
+```json
+{
+  "type":"image_url",
+  "image_url": {
+    "url":"data:image/png;base64,<strict-base64>",
+    "detail":"auto"
+  }
+}
+```
+
+- URL 必须是 inline data URI；MIME 仅 `image/jpeg`、`image/png`、`image/webp`；base64 必须 canonical/strict，MIME 必须匹配 decoded magic bytes。
+- `detail` 可省略；存在时仅 `auto|low|high`。
+
+音频：
+
+```json
+{
+  "type":"input_audio",
+  "input_audio":{"data":"<strict-base64>","format":"wav"}
+}
+```
+
+- `data` 是 raw base64，不是 data URI；`format` 仅 `wav|mp3` 且必须匹配 magic bytes。
+
+message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+audio part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、video、file/file_id、未知 MIME/format/part、跨 variant 多余字段全部 400；gateway **不 fetch 客户端 URL**。
+
+### 2.3 唯一路由表
+
+路由扫描**完整 history**，与 client `model` 值无关：
+
+| 完整 content | provider | 实际模型 |
+|---|---|---|
+| 只有 string / text parts / 合法 tool-call 空内容 | DeepSeek | `TEXT_UPSTREAM_MODEL`=`deepseek-v4-flash` |
+| 任一 accepted image/audio part | Gemini | `MULTIMODAL_UPSTREAM_MODEL`=`gemini-3.1-flash-lite` |
+
+`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。Gemini adapter 强制 `reasoning_effort:"minimal"`，但成本仍按完整模型 hard limits 预留。
+
+`GEMINI_API_KEY` 未配置时不构造 Gemini backend：纯文本照常；合法多模态在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。Gemini 故障同样只返回自身归一错误，不跨 provider。
+
+### 2.4 clamp、stream 与账务可见行为
+
+- `max_tokens` 取正 client 值与 `MAX_TOKENS_CAP`/实际模型 output limit 的较小值；否则取 cap。
+- stream request 强加 `stream_options.include_usage=true`；stream/non-stream 都须在 2xx 后等到首个 body byte 才 handoff，`UPSTREAM_HEADER_TIMEOUT_SEC` 覆盖这段等待。response SSE 逐行校验后 relay（仅 data JSON object 可携带业务 payload，并结构化改写唯一的精确顶层 `model`）、写 deadline 每帧滚动；non-stream body 最大读取 8MiB，须为单一 JSON object 后作同一改写。畸形/超限 provider success body 不原样透传。流式 usage 只有在网关完整读到合法终止帧 `[DONE]` 后才可用于退款；此前 EOF、读错或断连即使已见 usage 也保留 full quote。若 `[DONE]` 已读到，随后 client 写失败不抹掉这份终局证据。
+- response 只写 gateway 白名单 header：Content-Type/Cache-Control 与 `X-Quota-Limit`、`X-Quota-Reset`；上游 header/auth 不透传。
+- upstream failure 同时携带 client-facing `APIError` 与独立 `ChargeExposure`；client code 不决定退款：
+
+| provider call 结果 | Exposure | retry / accounting |
+|---|---|---|
+| Open 前本地拒绝；明确 3xx/4xx（含 400/401/402/403/429） | `DefinitelyUnbilled` | rollback；只有 401/403 key cooldown 或 key-breaker-open 可换 sibling key，总 attempt≤3 |
+| connect/TLS/read error、timeout、5xx、call 中 client-cancel、未知 exposure | `ChargePossible` | 不 retry；full reservation settle |
+| 2xx 且首个 body byte 已到达（stream/non-stream） | charge 已可能发生 | 不 retry；non-stream 完整 object 或 stream 完整读到合法 `[DONE]` 后才按累计 usage settle；任一负数、duplicate/case-fold key 或畸形证据 sticky，提前 EOF、usage 缺失/矛盾/不可计价均 full quote |
+
+`ChargePossible` 是 fail-safe 零值。同一个 `UPSTREAM_ERROR` 可对应明确 401/402 refusal（rollback）或 connect/5xx 歧义（full settle），调用方不得从 code/status/message 推导账务。429 与其它明确 3xx/4xx 虽可退款，也不自动 retry。账本状态见 [database.md](database.md)。
+
+## 3. admin mux（`ADMIN_ADDR`，默认 `127.0.0.1:9090`）
+
+无应用鉴权，完全依赖 loopback 物理隔离；绝不反代到公网。
+
+| 方法 + 路径 | 说明 |
+|---|---|
+| `GET /metrics` | Prometheus；provider label 固定 `deepseek|gemini` |
+| `GET /readyz` | DB + disk + cached authenticated `/models` probe：DeepSeek key/固定模型永远必需；配置了 Gemini key 时 Gemini key/固定模型也必须通过；未配 Gemini 不使文本 deployment unready |
+| `/debug/pprof/`、命名 pprof 路由 | CPU/heap/trace/cmdline/symbol |
+| `GET /debug/vars` | expvar runtime gauges |
+
+## 4. dashboard mux（`DASHBOARD_ADDR`，默认 `127.0.0.1:8081`）
+
+`SecurityHeaders` 覆盖全部路由；`/api/*` 要 session，状态变更 POST 还要 `X-CSRF-Token`。`/healthz`、login/logout 公开但监听仍 loopback-only。
+
+| 方法 + 路径 | session / CSRF | 说明 |
+|---|---|---|
+| `GET /healthz` | 否 | dashboard liveness |
+| `POST /login` / `POST /logout` | 否 | 建立/销毁 session；login 有 per-IP backoff |
+| `GET /api/session` | session | session + CSRF token |
+| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`；固定带 `providers.deepseek` / `providers.gemini`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/config` | session | secret-free Dump |
+| `POST /api/config` | session + CSRF | runtime-hot batch，全有或全无 |
+| `GET /api/installs` | session | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
+| `POST /api/installs/ban` / `unban` | session + CSRF | install 状态变更 |
+| `GET /api/audit` / `GET /api/export` | session | 审计 / 一致 DB snapshot |
+| `GET /` | 否 | embedded SPA/static fallback |
+
+## 5. 错误头
+
+`APIError.Details.retryAfterSec` 存在时，renderer 同步写 `Retry-After` delta-seconds；当前用于 `LOGIN_LOCKED`。状态行前先写 Content-Type/Retry-After，message 永远是静态 client-safe 文本。

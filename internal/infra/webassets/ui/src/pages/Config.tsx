@@ -196,7 +196,7 @@ export default function Config() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="机密项（DeepSeek key / 后台口令）永不出现在此列表；标注「需重启生效」的项改后需重启网关进程方生效。"
+        message="机密项（上游 API key / 后台口令）永不出现在此列表；标注「需重启生效」的项改后需重启网关进程方生效。"
       />
 
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}

@@ -2,7 +2,6 @@ package configprovider
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 )
@@ -11,10 +10,10 @@ import (
 // whether it is editable (runtime-hot) vs restart-required, and — for a bounded
 // numeric runtime knob — the inclusive Min/Max the dashboard pre-validates against
 // (the SAME bounds ApplyOverrides enforces server-side, so a client check can
-// never diverge). Min/Max are *int64 so a non-numeric spec (MODEL_ALLOWLIST) or a
+// never diverge). Min/Max are *int64 so a non-numeric spec (PUBLIC_MODEL_ID) or a
 // read-only restart item omits them (null).
 //
-// 🔴 Dump 只含非机密项:机密(DEEPSEEK_API_KEY / DASHBOARD_* / INSTALL_POW_SECRET)
+// 🔴 Dump 只含非机密项:机密(DEEPSEEK_API_KEY / GEMINI_API_KEY / DASHBOARD_* / INSTALL_POW_SECRET)
 // 不在 config.Specs,故永不出现在 Dump,绝不泄露真值。
 type DumpItem struct {
 	Key             string `json:"key"`
@@ -50,8 +49,8 @@ func (p *Provider) Dump() []DumpItem {
 }
 
 // Snapshot returns the effective config as SECRET-SAFE, low-cardinality log attrs
-// for the startup config_snapshot line: DeepSeek key(s) → a count + a fixed
-// `sk-***` marker, the PoW secret + dashboard auth → provenance markers
+// for the startup config_snapshot line: provider keys → counts + fixed masked
+// markers, the PoW secret + dashboard auth → provenance markers
 // (configured/disabled), everything else a plain scalar. No secret byte ever
 // reaches journald (GW-INV: secret-env-only). Lives in infra (not domain) because
 // the secret VALUES live only on the env-loaded Config the provider holds.
@@ -60,15 +59,22 @@ func (p *Provider) Snapshot() []any {
 	return []any{
 		"deepseek_keys", fmt.Sprintf("sk-*** (%d configured)", len(c.DeepSeekAPIKeys)),
 		"deepseek_base_url", c.DeepSeekBaseURL,
-		"model_allowlist", strings.Join(c.ModelAllowlist, ","),
-		"default_model", c.DefaultModel,
+		"gemini_keys", fmt.Sprintf("*** (%d configured)", len(c.GeminiAPIKeys)),
+		"gemini_base_url", c.GeminiBaseURL,
+		"public_model_id", c.PublicModelID,
+		"text_upstream_model", c.TextUpstreamModel,
+		"multimodal_upstream_model", c.MultimodalUpstreamModel,
 		"monthly_quota", c.MonthlyQuota,
-		"global_daily_budget_tokens", c.GlobalDailyBudget,
-		"install_daily_token_cap", c.InstallDailyTokenCap,
+		"global_daily_spend_micro_usd", c.GlobalDailySpendPUSD / 1_000_000,
+		"install_daily_spend_micro_usd", c.InstallDailySpendPUSD / 1_000_000,
+		"deepseek_daily_spend_micro_usd", c.DeepSeekDailySpendPUSD / 1_000_000,
+		"gemini_daily_spend_micro_usd", c.GeminiDailySpendPUSD / 1_000_000,
 		"max_tokens_cap", c.MaxTokensCap,
 		"input_token_cap", c.InputTokenCap,
 		"max_messages", c.MaxMessages,
 		"max_message_chars", c.MaxMessageChars,
+		"max_media_parts", c.MaxMediaParts,
+		"max_media_decoded_bytes", c.MaxMediaDecodedBytes,
 		"max_body_bytes", c.MaxBodyBytes,
 		"n_global_concurrency", c.NGlobalConcurrency,
 		"rate_per_min", c.RatePerMin,

@@ -21,8 +21,9 @@ import {
   Button,
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
-import type { OverviewResponse, AlertState } from '../lib/types'
+import type { OverviewResponse, AlertState, ProviderStatus } from '../lib/types'
 import { getOverview, ApiError } from '../lib/api'
+import { formatMicroUsd } from '../lib/money'
 
 const { Title, Text } = Typography
 const REFRESH_MS = 10_000
@@ -40,6 +41,29 @@ function severityColor(sev: string): string {
     default:
       return 'blue'
   }
+}
+
+function ProviderCard({ name, route, state }: { name: string; route: string; state: ProviderStatus }) {
+  return (
+    <Card>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <div>
+          <Text strong>{name}</Text>
+          <Text type="secondary"> · {route}</Text>
+        </div>
+        <Space wrap>
+          {state.configured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+          {!state.configured ? (
+            <Tag>BREAKER N/A</Tag>
+          ) : state.breakerOpen ? (
+            <Tag color="red">BREAKER OPEN</Tag>
+          ) : (
+            <Tag color="green">BREAKER CLOSED</Tag>
+          )}
+        </Space>
+      </Space>
+    </Card>
+  )
 }
 
 export default function Overview() {
@@ -105,7 +129,10 @@ export default function Overview() {
     )
   }
 
-  const budgetPct = data && data.budget.limit > 0 ? Math.min(100, (data.budget.used / data.budget.limit) * 100) : 0
+  const budgetPct =
+    data && data.budget.limitMicroUsd > 0
+      ? Math.min(100, (data.budget.usedMicroUsd / data.budget.limitMicroUsd) * 100)
+      : 0
   const alerts: AlertState[] = data?.alerts ?? []
   const firing = alerts.filter((a) => a.firing)
 
@@ -127,16 +154,16 @@ export default function Overview() {
 
       {data && (
         <>
-          <Card title="今日全局预算" style={{ marginBottom: 16 }} extra={<Text type="secondary">{data.budget.day}</Text>}>
+          <Card title="今日全局支出预算" style={{ marginBottom: 16 }} extra={<Text type="secondary">{data.budget.day}</Text>}>
             <Row gutter={[24, 16]}>
               <Col xs={24} sm={8}>
-                <Statistic title="已用 (tokens)" value={fmtInt(data.budget.used)} />
+                <Statistic title="已用 (USD)" value={formatMicroUsd(data.budget.usedMicroUsd)} />
               </Col>
               <Col xs={24} sm={8}>
-                <Statistic title="剩余 (tokens)" value={fmtInt(data.budget.remaining)} />
+                <Statistic title="剩余 (USD)" value={formatMicroUsd(data.budget.remainingMicroUsd)} />
               </Col>
               <Col xs={24} sm={8}>
-                <Statistic title="上限 (tokens)" value={fmtInt(data.budget.limit)} />
+                <Statistic title="上限 (USD)" value={formatMicroUsd(data.budget.limitMicroUsd)} />
               </Col>
             </Row>
             <Progress
@@ -178,17 +205,15 @@ export default function Overview() {
           </Row>
 
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-            <Col xs={24} sm={12}>
-              <Card>
-                <Space size="large">
-                  <Text strong>上游熔断器</Text>
-                  {data.upstreamBreakerOpen ? <Tag color="red">OPEN（已熔断）</Tag> : <Tag color="green">CLOSED（正常）</Tag>}
-                </Space>
-              </Card>
+            <Col xs={24} md={8}>
+              <ProviderCard name="DeepSeek" route="纯文本" state={data.providers.deepseek} />
             </Col>
-            <Col xs={24} sm={12}>
+            <Col xs={24} md={8}>
+              <ProviderCard name="Gemini" route="图片 / 音频" state={data.providers.gemini} />
+            </Col>
+            <Col xs={24} md={8}>
               <Card>
-                <Space size="large">
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
                   <Text strong>磁盘状态</Text>
                   {data.diskDegraded ? <Tag color="red">DEGRADED（只读降级）</Tag> : <Tag color="green">OK</Tag>}
                 </Space>

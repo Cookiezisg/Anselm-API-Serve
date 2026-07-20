@@ -4,8 +4,8 @@ type: concept
 status: active
 owner: @weilin
 created: 2026-06-20
-reviewed: 2026-06-20
-review-due: 2026-09-20
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
@@ -25,7 +25,7 @@ audience: [human, ai]
 |---|---|---|
 | **① 常驻** | `CLAUDE.md`（每次会话**自动加载**、工程纪律唯一事实源）内嵌「文档纪律」节：核心条款 + §7 触发表精要 + §12 收尾清单 | 使 Claude **每次会话都已读到**这些规则——**无「不知道」借口** |
 | **② 规范** | 本文件：具体到 **if-then** 的触发表（§7）、可逐条勾的收尾清单（§12）、机械可判的门禁项（§11） | 把「文档要同步」从空泛原则变成**可机械执行**的指令 |
-| **③ 门禁** | `make docs`（§11，`cmd/docs`、并入 `make verify`）机械校验 frontmatter / 必填 / 类型·状态 / INDEX≤50 / 孤儿链接 | 捕捉人或 AI 的疏漏，**让违规无法静默通过** |
+| **③ 门禁** | `make docs`（§11，`cmd/docs`、并入 `make verify`）机械校验 frontmatter / 必填 / 类型·状态·目录 / review-due / working 90 天 / INDEX≤50 / 孤儿链接 | 捕捉人或 AI 的疏漏，**让违规无法静默通过** |
 
 **三条铁律（违反 = 严重 Bug，与编译失败同级）：**
 
@@ -40,7 +40,7 @@ audience: [human, ai]
 1. **文档-代码物理同步（doc-code parity）**：`reference` 类文档必须与代码**逐字**对得上——端点 / 配置键 / 表列 / wire code / GW-INV 编号一一吻合。代码是事实，文档是其精确投影。
 2. **单一事实源**：每个事实只在**一处**权威记录（见 §10 权威层级）；他处引用、不复制。本网关的硬契约（API / config / DB / error-code / 不变量 / 行为）各有唯一权威文档，互不重叠。
 3. **零历史包袱**：这是 from-scratch 重写。文档**只描述当前物理事实**，禁止「旧 `internal/` 树曾如何、后来拆成」的演化叙述（历史在 git 与 `archive/`；新旧映射只活在 ADR 的「取舍」节）。
-4. **写 Why 不写 What**：What 看代码 / 结构即知；文档的价值在解释**为什么这样设计**、有哪些取舍与边界（如悲观三闸门、崩溃永远多计、admin 免鉴权靠物理回环）。
+4. **写 Why 不写 What**：What 看代码 / 结构即知；文档的价值在解释**为什么这样设计**、有哪些取舍与边界（如 provider rate card 先换算 pUSD 再四闸预留、崩溃永远多计、admin 免鉴权靠物理回环）。
 5. **高密度**：表格优先、要点优先、删一切 fluff（「本节将介绍…」之类）。本规范自身即范例。
 6. **中文**：所有文档正文用**中文**；代码标识符、路径、wire code、frontmatter 字段名、GW-INV / ADR 编号保持原文。
 7. **状态即重述（state 文档整体重述、非追加）**：描述「当前状态」的 `concept` 文档（`concepts/architecture.md` / `CLAUDE.md` / 本规范）每次变更**必须整体重述到当前事实**——改一个状态 = 重写相关部分，使全文读起来像「一直如此」，旧状态**不留痕迹**（历史在 git）。**绝不在旧内容旁追加**；只增不删 = 文档腐烂之源。两种更新 mode 不混：`reference` 文档按 **§1.1 精确同步**（投影代码），`concept` / state 文档按**本条整体重述**。
@@ -56,7 +56,7 @@ audience: [human, ai]
 | `concept` | 架构解释、设计理念、心智模型 | 随系统演进 | 季度 | `concepts/` |
 | `reference` | 必须与代码精确一致的契约 / 规格 | **每次代码改动即同步** | 每次代码改动 | `references/` |
 | `how-to` | 分步操作手册（部署 / 运维 / 本地起服务） | 流程变更时更新 | 半年 | `how-to/` |
-| `decision` | ADR——为何选 X 不选 Y | **不可变**（只新建 supersede、绝不编辑） | 永不 | `decisions/` |
+| `decision` | ADR——为何选 X 不选 Y | **正文不可变**（只新建 supersede；旧篇只改 lifecycle metadata） | 永不 | `decisions/` |
 | `log` | 时间序进度 / 决策日志 | **仅追加** | 永不 | `references/changelog.md` |
 | `working` | 在研、临时、过程性（如本轮重写 SPEC） | 落地前活跃 | **90 天上限** | `working/` |
 
@@ -89,7 +89,7 @@ landed-into:          # 仅 working：结论提取进哪篇 concepts/references 
 
 - **ID**：`DOC-NNN`，三位递增、全仓唯一、创建即分配、**永不复用**。`DOC-000` = 本规范。
 - **文件名**：`kebab-case.md`。
-  - `reference` 域文档名 = 其对应代码资源域（如 `domains/quota.md` 对应 quota 关注点、`domains/install.md` 对应 install/identity/PoW），便于 1:1 对照。
+  - `reference` 文档名 = 其对应的契约面（如 `references/backend/config.md` 对应全配置契约），便于 1:1 对照。
   - `decision` 文档：`NNNN-简短标题.md`（如 `0001-pessimistic-three-guardrail-reservation.md`），`NNNN` = ADR 序号、与 `DOC-NNN` 独立、与 SPEC 的 `ADR-NNN` 对齐。
 - **目录归属由 `type` 决定**（§2 表末列），不得错放。
 
@@ -97,33 +97,33 @@ landed-into:          # 仅 working：结论提取进哪篇 concepts/references 
 
 ## 5. 目录地图（canonical）
 
-网关是**薄代理**：约 6 个域关注点（quota / install / chat / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。目录据此本地化，无 Foryx 的 28 服务扇出、无 Quadrinity / durable 引擎域。
+网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持媒体路由 Gemini，两 provider 以 pUSD 成本账本统一护栏；共 6 个业务关注点（quota / install / chat / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
 
 ```
 docs/
-├── INDEX.md              ← AI 会话入口（≤50 行，§11 强制）
-├── GOVERNANCE.md         ← 本规范
-├── concepts/             ← 稳定的架构解释（concept）
-│   └── architecture.md   ← 6 域 + 4 层 Clean Arch + 3 监听器 + 悲观记账心智模型
-├── references/           ← 必须与代码同步的契约（reference）
-│   ├── api.md            ← 全 HTTP 端点契约（business/admin/dashboard 三 mux）
-│   ├── config.md         ← 全配置面：三层级（runtime-hot / secret-env-only / startup-hard）+ 边界
-│   ├── database.md       ← SQLite schema（8 表 + idx_ledger_open + schema_migrations + 迁移框架）
-│   ├── error-codes.md    ← 全 wire code（UPPER_SNAKE）→ status/message 表
-│   ├── invariants.md     ← GW-INV-NN 不变量登记册（验收准绳）
-│   ├── behaviors.md      ← 动态行为 / 状态机（闸门序、熔断、PoW 三态、节流）
-│   ├── frontend-contract.md ← React 仪表盘契约：DTO / envelope / error.code 映射 / rates 字段
-│   ├── changelog.md      ← 时间序日志（log，仅追加）
-│   └── domains/          ← 每个域关注点一篇 <domain>.md（quota · install · chat · model · health · dashboard）
-├── decisions/            ← ADR，仅追加、不可变（decision）；NNNN 对齐 SPEC 的 ADR-NNN
-├── how-to/               ← 操作手册（how-to）：本地起服务 · 部署（Caddy + systemd socket-activation）· 前端构建
-├── working/             ← 在研，≤90 天（working）：本轮重写 SPEC 落地前活跃
-└── archive/              ← 只读墓地（被取代 / 终止的文档，豁免 frontmatter）
+├── INDEX.md                 ← AI 会话入口（≤50 行，§11 强制）
+├── GOVERNANCE.md            ← 本规范
+├── concepts/
+│   └── architecture.md      ← 双 provider + 4 层 + 3 监听器 + pUSD 记账心智模型
+├── references/
+│   ├── backend/             ← 现行硬契约（reference）
+│   │   ├── overview.md     ← 后端总览与契约导航
+│   │   ├── api.md          ← 三 mux HTTP + chat content/route
+│   │   ├── config.md       ← 全配置层级与边界
+│   │   ├── database.md     ← 13 张应用表（0001 的 8 表 + 0002 的 5 表）+ schema_migrations
+│   │   ├── error-codes.md  ← 全 wire code → status/message
+│   │   └── invariants.md   ← GW-INV-NN 验收准绳
+│   └── domains/             ← 保留的 reference 扩展位（当前仅 .gitkeep）
+├── decisions/               ← ADR 正文仅追加；新 ADR supersede 旧 ADR
+├── how-to/                  ← 操作手册（当前仅 .gitkeep）
+├── working/                 ← 重写期 SPEC（已 landed/superseded，非现行事实源）
+├── assets/                  ← 文档图片/图表资产
+└── archive/                 ← 只读墓地（被取代 / 终止，豁免 frontmatter）
 ```
 
 - 每个文件夹放且仅放其声明类型的文档；空文件夹用 `.gitkeep`（内含一行职责说明）占位。
 - 新增类别 = 先在本 §5 + §2 登记，再建目录。
-- `references/` 的 8 篇硬契约（api / config / database / error-codes / invariants / behaviors / frontend-contract + domains/*）是 doc-code parity 的承重墙，§7 触发表逐条钉住它们。
+- `references/backend/` 的 6 篇现行硬契约（overview / api / config / database / error-codes / invariants）是 doc-code parity 的承重墙，§7 触发表逐条钉住它们。`database.md` 所述 13 张应用表中，v1 accounting 三表只读保留供审计/迁移，v2 五表是当前 provider-aware pUSD 账本。
 
 ---
 
@@ -138,27 +138,28 @@ draft → active → superseded → archived
 |---|---|---|
 | `draft` | 起草中、未生效 | 非权威，不得被他处依赖 |
 | `active` | 权威、单一事实源 | 唯一可被依赖的状态 |
-| `superseded` | 被更新文档取代 | 填 `superseded-by`，随后移 `archive/` |
+| `superseded` | 被更新文档取代 | 填 `superseded-by`；通常移 `archive/`，仍被 `INDEX.md` 列为历史指针的 working 文档按 §9 处理 |
 | `deprecated` | 主动淘汰中 | 标记后移 `archive/` |
 | `archived` | 只读，住 `archive/` | **不可再改**；历史 / 参考用 |
 
-`decision` 不走「superseded→改」——ADR 不可变，被推翻时**新建**一篇 ADR 并把旧篇 `status` 置 `superseded`、`superseded-by` 指向新篇。本网关的 ADR-001..011 一旦写定即冻结。
+`decision` 不走「superseded→改正文」——ADR 的决策内容不可变，被推翻时**新建**一篇 ADR，旧篇只更新 `status: superseded` 与 `superseded-by`。当前 ADR-0001..0012 均已写定；ADR-0012 整体取代 ADR-0001 的 raw-token 账本，并定向取代 ADR-0005/0006 的过时表数/`MODEL_ALLOWLIST` 结论，未被取代的其余决策继续有效。
 
 ---
 
 ## 7. 同步触发表（★ doc-code parity 的执行点）
 
-**改了左列代码 → 必须在同一提交更新右列文档。** 这是「文档=代码精确投影」落地为可机械执行的 if-then，已本地化到本网关的关注点（API / config / DB / error-code / 不变量 / 行为 / ADR / 前端契约）：
+**改了左列代码 → 必须在同一提交更新右列文档。** 这是「文档=代码精确投影」落地为可机械执行的 if-then，已本地化到本网关的关注点（API / config / DB / error-code / 不变量 / 动态行为 / ADR / 前端 wire）：
 
 | 代码改动 | 必须同步的文档 |
 |---|---|
-| 新增 / 改 HTTP 端点（business / admin / dashboard 任一 mux） | `references/api.md` + 对应 `domains/<域>.md` |
-| 新增 / 改配置键或其边界 / 层级（runtime-hot / secret-env-only / startup-hard） | `references/config.md` + 对应 `domains/<域>.md` |
-| 新增 / 改 DB 表、列、索引、迁移 | `references/database.md` + 对应 `domains/<域>.md` |
-| 新增 / 改 error wire code（UPPER_SNAKE）或其 status/message | `references/error-codes.md` + 对应 `domains/<域>.md` |
-| 新增 / 改一条不变量（记账原子性 / 鉴权 / 隔离 / 物理回环…） | `references/invariants.md`（GW-INV-NN）+ 对应 `domains/<域>.md` |
-| 改动态行为 / 状态机（闸门序、reserve→settle→rollback、熔断、PoW 三态、节流、磁盘退化） | `references/behaviors.md` + 对应 `domains/<域>.md` |
-| 改前端契约（DTO / envelope / `error.code` 分支 / rates 字段 / CSRF·session） | `references/frontend-contract.md` + 对应 `domains/dashboard.md` |
+| 新增 / 改 HTTP 端点（business / admin / dashboard 任一 mux） | `references/backend/api.md`；若改契约导航/面边界，同步 `references/backend/overview.md` |
+| 新增 / 改配置键或其边界 / 层级（runtime-hot / secret-env-only / startup-hard） | `references/backend/config.md` |
+| 新增 / 改 DB 表、列、索引、迁移 | `references/backend/database.md` |
+| 新增 / 改 error wire code（UPPER_SNAKE）或其 status/message | `references/backend/error-codes.md` |
+| 新增 / 改一条不变量（记账原子性 / 鉴权 / provider 隔离 / 物理回环…） | `references/backend/invariants.md`（GW-INV-NN） |
+| 改 capability 路由、provider/model/rate card、fallback 规则或 pUSD 账务边界 | 按投影面同步 `api.md` / `config.md` / `database.md` / `invariants.md`；新决策另建 ADR |
+| 改动态行为 / 状态机（四闸 reserve→settle/rollback、provider breaker、PoW、节流、磁盘退化） | 同步承载该行为的 `references/backend/{overview,api,config,database,invariants}.md` 子集 |
+| 改前端 wire（DTO / envelope / `error.code` 分支 / 金额字段 / CSRF·session） | `references/backend/api.md` + 被影响的 `config.md` / `database.md` / `error-codes.md` |
 | 架构决策（选型 / 取舍 / 新增一条契约规则） | `decisions/` 新建一篇 ADR（NNNN 续号，对齐 SPEC 的 ADR-NNN） |
 | 架构 / 分层 / 域 / 监听器 / 路线状态变更 | **整体重述** `concepts/architecture.md` 相关节（§1.7，非追加） |
 | 工程规则 / 设计原则 / 依赖方向纪律变更 | **整体重述** `CLAUDE.md` 相关节（§1.7，非追加） |
@@ -171,9 +172,9 @@ draft → active → superseded → archived
 
 - **语言**：正文中文；标识符 / 路径 / wire code / frontmatter 键 / GW-INV / ADR 编号保持原文。
 - **密度**：表格 > 列表 > 段落。删除 meta 废话、礼貌性过渡、「显然」「众所周知」。
-- **只写 Why**：解释设计动机、取舍、边界、坑（如「为何 reserve = promptEst + clampedMaxTokens」「为何 admin 监听器不鉴权」）。What（有哪些字段 / 端点 / 码）让结构自述或链向 reference。
+- **只写 Why**：解释设计动机、取舍、边界、坑（如「为何跨 provider 只能合并 pUSD」「为何 admin 监听器不鉴权」）。What（有哪些字段 / 端点 / 码）让结构自述或链向 reference。
 - **零历史叙述 + 重述维护**：不写「旧 `internal/proxy` 原来…后来拆成…」，当前事实 only（演化进 git / `decisions/` / `archive/`；旧→新映射只在 ADR 取舍节）。维护 state 文档（architecture.md / CLAUDE.md / 本规范）时**整体重述、非追加**（§1.7）。
-- **交叉引用**：用相对链接指向权威源（`[api.md](references/api.md)`），**不复制**内容——复制即制造第二事实源、必然 drift。
+- **交叉引用**：用相对链接指向权威源（`[api.md](references/backend/api.md)`），**不复制**内容——复制即制造第二事实源、必然 drift。
 - **删 / 移文档**：必须同时修掉所有指向它的链接（`INDEX.md` 及他处），不留孤儿链接（§11 校验）。
 
 ---
@@ -182,10 +183,10 @@ draft → active → superseded → archived
 
 `working/` 文档**最长 90 天**。本轮 from-scratch 重写 SPEC 即 working 文档的典型——它驱动 slice plan，落地后须沉淀进权威契约。落地时：
 
-1. 把结论提取进对应的 `concepts/` 或 `references/` 文档（那才是权威源；契约提取进 `references/*`，架构心智模型进 `concepts/architecture.md`，选型进 `decisions/`）。
+1. 把结论提取进对应的 `concepts/` 或 `references/` 文档（那才是权威源；后端契约提取进 `references/backend/*`，架构心智模型进 `concepts/architecture.md`，选型进 `decisions/`）。
 2. frontmatter 填 `landed-into:` = 目标文档路径。
-3. `git mv` 该文件到 `archive/`。
-4. 若 `INDEX.md` 引用过它（如指向 rewrite-spec 的指针），更新 `INDEX.md`。
+3. 置 `status: superseded`；若仍被 `INDEX.md` 显式列为历史参考，可暂留 `working/`，但不得再作现行事实源。
+4. 不再需要历史指针时，先修正 `INDEX.md` 及所有链接，再 `git mv` 到 `archive/`。
 
 超过 90 天且 `landed-into` 为空的 working 文档由 `make docs` 标记为错误。
 
@@ -208,14 +209,13 @@ CLAUDE.md  >  references/  >  concepts/  >  working/  >  archive/
 `make docs`（跑 `cmd/docs`）是 `make verify` 的一环，机械强制：
 
 1. 所有非 `archive/`、非 `INDEX.md` 的 `.md` 都有合法 frontmatter，且必填字段齐。
-2. `type` ∈ §2 六类；`status` ∈ §6 五态。
+2. `type` ∈ §2 六类；`status` ∈ §6 五态；除豁免项外的 type↔目录归属与 §2/§5 一致。
 3. `review-due` 已过期 → **警告**（不阻断）。
 4. `working/` 文档 >90 天且 `landed-into` 空 → **失败**。
-5. `decisions/` 文档创建后被改（git blame）→ **失败**（ADR 不可变）。
-6. `INDEX.md` ≤ 50 行。
-7. 无孤儿链接（文档内相对链接指向的文件都存在）。
+5. `INDEX.md` ≤ 50 行。
+6. 无孤儿链接（文档内相对链接指向的文件都存在）。
 
-> **覆盖**：门禁实现为 `cmd/docs`（`make docs`，并入 `make verify`），机械强制上列 1–4、6、7；唯 #5（ADR 不可变，需比对 git 历史）暂未纳入门禁，靠 §12 收尾清单 #6 + `decisions/` 目录纪律守。§12 收尾清单是 Claude 的人肉前置层，与门禁并行。
+> **覆盖**：`cmd/docs`（`make docs`，并入 `make verify`）机械强制上列 1–6。ADR 正文不可变需比对 git 历史，尚未机械化，靠 §12 收尾清单 #6 + `decisions/` 目录纪律守。§12 是人工前置层，与门禁并行。
 
 ---
 
@@ -223,13 +223,13 @@ CLAUDE.md  >  references/  >  concepts/  >  working/  >  archive/
 
 声明任何代码改动**完成**之前，逐条自检——任一项未过 = 改动**未完成**，回去补：
 
-1. ☐ 这次改动碰了 §7 触发表里的东西吗（API / config / DB / error-code / 不变量 / 行为 / 前端契约 / 架构决策 / 架构·域·监听器状态 / 工程规则）？→ 对应文档**同一提交**更新了吗？
+1. ☐ 这次改动碰了 §7 触发表里的东西吗（API / config / DB / error-code / 不变量 / 行为 / provider·rate-card·pUSD 账务 / 前端 wire / 架构决策 / 架构·域·监听器状态 / 工程规则）？→ 对应文档**同一提交**更新了吗？
 2. ☐ 改的是 `reference` 文档吗？它和代码**逐字**对得上吗（端点 / 配置键 / 表列 / wire code / GW-INV 编号 一一吻合）？
 3. ☐ 改的是**状态文档**（`concepts/architecture.md` / `CLAUDE.md` / 本规范）吗？→ 是**整体重述到当前状态**吗（没在旧内容旁追加、没留旧状态痕迹，§1.7）？
 4. ☐ 新建文档有合法 frontmatter（§3）吗？`type` / `status` / `id` 对吗？放对目录（§5）了吗？
 5. ☐ 删 / 移过文档吗？→ 所有指向它的链接（`INDEX.md` 及他处）都修了吗（无孤儿链接）？
-6. ☐ 动过 `decisions/` 里的 ADR 吗？→ **禁止**（只能新建 supersede）。
-7. ☐ working 文档（含重写 SPEC）落地了吗（提取进 concepts/references + 填 `landed-into` + 移 `archive/`）？
+6. ☐ 动过 `decisions/` 里的 ADR 正文吗？→ **禁止**（只能新建 ADR supersede；旧 ADR 只可更新 lifecycle metadata）。
+7. ☐ working 文档（含重写 SPEC）落地了吗（提取进 concepts/references + 填 `landed-into` + 置 `superseded`；无历史指针后移 `archive/`）？
 
 ---
 

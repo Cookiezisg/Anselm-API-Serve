@@ -4,84 +4,88 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-06-21
-review-due: 2026-09-19
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
 # 不变量登记册（GW-INV-NN）
 
-> 验收准绳。每条 GW-INV 是一条硬契约；编号**永不复用**。本篇与代码对齐，详尽语句沉淀自 `docs/working/spec-invariants.md`（已 landed-into 本篇）。配套契约：记账→[database.md](database.md)，码→[error-codes.md](error-codes.md)，配置→[config.md](config.md)，端点→[api.md](api.md)。
+> 验收准绳；编号永不复用。金额一律为整数 pico-US dollar（`1 USD=10^12 pUSD`），请求在冻结 rate card 下换算后才进入共享钱包。逐字 schema 见 [database.md](database.md)，wire code 见 [error-codes.md](error-codes.md)，输入/路由见 [api.md](api.md)，选型见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
 
 ## A. 财务正确性
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-01 | 三闸门（月次数 `usage.count<MonthlyQuota`、install 日 token `usage.tokens+est≤InstallDailyTokenCap`、全局日预算 `budget.tokens_used+est≤GlobalDailyBudget`）在写池单 `BeginTx` 内悲观预留，各为条件 `UPDATE…WHERE…`；任一 `RowsAffected()==0` 返对应 `APIError` 并整 tx 回滚 | 并发尖峰超卖配额 / 抽干钱包 |
-| GW-INV-02 | 输出前失败（retry 耗尽 / breaker open / 全 key down / marshal 错 / 队列超时 / 排队中 client cancel）经单一 REL-5 防御点 `outputStarted` + `defer` 回滚全部三预留 + 日请求计数 `requests-1`（+ 启用时日子限额 `count-1`） | 失败请求永久虚占当日钱包；部分回滚破坏守恒 |
-| GW-INV-03 | 计费恰一次于首字节：流式 `br.Peek(1)` 成功后才 arm `outputStarted`，非流式 2xx header 后；输出已起 → 中途断连仍保计、永不 retry | 重试流双计费 / 故意断连逃费 |
-| GW-INV-04 | Settle/Rollback/Reconcile 经 `ledger.settled IS NULL` 守卫互斥幂等（CAS：`settled=?` / `=0` / `=reserved`），`RowsAffected()==0` ⇒ no-op commit | 双退款 / 双补记，守恒破坏 |
-| GW-INV-05 | `Period{Month,Day}` 请求入口快照一次并贯穿 Reserve/Settle/Rollback，settle/rollback **绝不重算** | 跨午夜并发结算落到错误 period_day 行 |
-| GW-INV-06 | 崩溃只会 OVER-count（保守）：`settled IS NULL` 行由 `ReconcileOrphans(older=10m)` 退全额 + 标 `settled=reserved`；+1 月计数有意保留 | 无 reconcile 则崩溃预留长期钉死当日预算 |
-| GW-INV-07 | 全局预算桶**按日** `budget.period='YYYY-MM-DD'`，日预算是唯一钱包护栏（`GLOBAL_DAILY_BUDGET_TOKENS>0`） | 月初尖峰烧光整月钱包 |
-| GW-INV-08 | `est = estimatePromptTokens(messages) + clampMaxTokens(client, MaxTokensCap)`，保证 `est≥count×8` 且 `est≥真实 tokenizer`；per-message +8 防 OWASP-API4 多小消息放大 | 欠预留 → 静默超支 |
-| GW-INV-09 | Settle 对齐真实用量（流式读 `total_tokens` final frame，非流式读 body；不可得则全额 `est` 兜底）；`delta=Reserved-actual` 调 `budget` + install 日 `usage` | 长期过收（永不退）/ 欠收（actual>est 不补） |
-| GW-INV-10 | SEC-2 跨字段保证子配额有意义：`InstallDailyTokenCap>GlobalDailyBudget` 或 `InputTokenCap+MaxTokensCap>InstallDailyTokenCap` fail-fast（`INPUT_TOKEN_CAP=0` 禁用输入闸时退化为 `MaxTokensCap>InstallDailyTokenCap`）；输入闸禁用后逐请求上界由 app/chat 运行时预检兜底：`est>InstallDailyTokenCap → 400 BAD_REQUEST`（不落到误导性 RATE_LIMITED） | 单 install 抽干钱包 / 每日首请求恒被拒 |
+| GW-INV-01 | 四道闸门（月请求 `quota_monthly.requests<MonthlyQuota`、install 日 pUSD、所选 provider 日 pUSD、global 日 pUSD）与 `spend_ledger(state='open')` 在写池单个 `BEGIN IMMEDIATE` 内原子悲观预留；任一条件 `UPDATE` 未命中则整 tx 回滚 | 并发尖峰超卖额度或运营者钱包 |
+| GW-INV-02 | 只有 `CallFailure.Exposure==DefinitelyUnbilled` 可 rollback：Open 前本地拒绝或 provider 明确 pre-generation 3xx/4xx（400/401/402/403/429 等）；rollback 原子反转月额度、install/provider/global 三钱包及实际启用的日子限次数 | 从 wire code 猜退款形成可刷欠扣通道；部分退款破坏守恒 |
+| GW-INV-03 | `ChargeExposure` 与 `APIError`/breaker/retry 正交：零值及未知值均 `ChargePossible`，connect/TLS/read/timeout/5xx/call 中 cancel/nil stream 立即 full settle；同一 `UPSTREAM_ERROR` 可对应 rollback 或 full settle，app 只能调用 `MayHaveCharged()` | provider 已收费却因错误码退款，或 adapter 漏字段静默欠扣 |
+| GW-INV-04 | `spend_ledger` 终态转换都以 `WHERE state='open'` 做单赢家 CAS：`open→settled|rolled_back|orphaned`；`RowsAffected()==0` 为幂等 no-op | 双退款、双补记或状态/余额分裂 |
+| GW-INV-05 | `Period{Month,Day}` 在请求入口按 `RESET_TZ` 快照一次并贯穿 Reserve/Settle/Rollback；任何终态操作都绝不重算日期 | 跨午夜结算落错月/日行 |
+| GW-INV-06 | aged `open` 孤儿原子转为 `orphaned(charged_pusd=reserved_pusd)`，余额和请求计数均不退款；崩溃与未知外部结果只能多扣、不能少扣。0002 对 legacy ledger 同样保守：open 取 reserved、positive settled 取 settled、zero rollback 排除，三钱包 floor=`max(v1 balance, chargeable ledger aggregate×rate)`，聚合溢出则整迁移失败 | 自动退款或迁移漏掉一个 provider 可能已收费的请求，形成永久欠账 |
+| GW-INV-07 | 三个金额钱包都按 `period_day='YYYY-MM-DD'`：install/provider/global cap 均须为正，install/provider cap 均不得超过 global cap；global 是共享最终护栏 | 单 install/provider 抽干共享钱包，或日边界漂移 |
+| GW-INV-08 | Reserve 只接受由精确 provider/model rate card 构造且可自校验的冻结 `billing.Plan`；跨 provider raw token 绝不相加，只有 pUSD 可进入余额 | 伪造零价 plan 或把不同价格 token 当同一金额导致超卖 |
+| GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up 三个 pUSD 钱包；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Gemini 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
+| GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Gemini compatibility 因不能证明 thinking 上界而 reserve 完整 `1,048,576` input + `65,536` output hard limits，含 audio 时按较高 audio input rate；任一请求 quote 必须能装入 install 日 cap，否则配置 fail-fast/请求 pre-reserve 400 | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Gemini hidden thinking 造成欠预留 |
 
 ## B. 安全
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-11 | DeepSeek key 绝不离开服务器：`Authorization` 注入在 `req.Clone()`、上游 body/header 绝不透传（4xx 拒绝仅从 ≤4KiB body 解析出闭集 `reason` 枚举，原文丢弃）、`Recover` 绝不记 panic 值、key 事件仅按 `key_index` 审计 | key 经日志/panic dump/透传外泄 = 上游账户全失陷 |
-| GW-INV-12 | install token 仅存 `SHA-256(token)`：发放返一次性 `gwk_`+32B token，存 `installs.token_sha256`（UNIQUE），`/v1/install` 永不重显旧 token（每次全新行 + 全新配额池，无 get-or-create、无 fp merge） | DB 泄露出可用 token / token 回显给错 client |
-| GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars`(`ADMIN_ADDR`)与管理后台(`DASHBOARD_ADDR`)均 LOOPBACK-only：`requireLoopback` 对二者 fail-fast（拒空 host、IP 字面判 `IsLoopback`、hostname 要求每个 `LookupIP` 均回环）；`/healthz` liveness 绝不碰 DB | 公网 pprof = 远程 DoS + 内部结构泄露；后台裸登录页上公网 = 钓鱼黑名单/盗号面 |
-| GW-INV-14 | 机密 env-only、绝不持久化/dump：三件套只读 env、绝不写 `settings`、`Snapshot()`/`Dump()` 掩码；`INSTALL_POW_SECRET` 绝不自动生成 | 机密经 config snapshot / 导出 / settings 行泄露 |
-| GW-INV-15 | metric/audit 标签严格低基数：仅 `outcome` / `handler`（`install`/`install_challenge`/`chat_completions`/`quota`/`models`）/ `result`；绝无 `install_id`/`token`/`prompt`/`ip` 入标签 | Prometheus 基数爆炸 OOM / PII 入时序 |
-| GW-INV-16 | XFF 仅当直连对端为回环（Caddy hop）时才信：取最右 XFF 段且 `isLoopback(RemoteAddr)`，否则回退 `RemoteAddr`（绝不信左/可伪造段） | 攻击者伪造左 XFF 绕过 per-IP Sybil 限速 |
-| GW-INV-17 | redaction 底线抹掉每条日志每个属性的机密/PII：`redactKeys` 命中即 `[REDACTED]`，非 allowlist key 下的复合值（struct/map/slice）整体抹除 | `slog.Any` 嵌套机密静默序列化外泄 |
-| GW-INV-18 | TLS 仅 Caddy 终结；Go 进程绑 `127.0.0.1`；三监听 `LISTEN_ADDR`/`ADMIN_ADDR`/`DASHBOARD_ADDR` 必须物理互异，否则 `LoadBase` 指名 fail-fast | 误绑公网端口 / 运行期端口冲突 |
-| GW-INV-19 | dashboard 独立 loopback server，仅当 `DASHBOARD_USER`+`DASHBOARD_PASSWORD` 同设才启（半配 fail-fast）；bcrypt + 常时用户名比对 + `crypto/rand` session（rand 错则 panic 绝不弱值）+ `HttpOnly;Secure;SameSite=Strict` cookie（Secure 恒 true，除 dev-only flag）+ `X-CSRF-Token` + per-IP 登录退避（`LOGIN_LOCKED`+`Retry-After`）+ 除 `/healthz` 外全过 `requireSession` | session 劫持 / CSRF / 暴破；ban/export 被滥用 |
-| GW-INV-20 | `/install`(+challenge) reject 用 DISTINCT wire code 审计分离 + 不采样 WARN `install_audit` 仅携 `ip_key`(/64) + `gate` + `error_code`，绝不携 fp 明文/机密；fp 仅存 `SHA-256` 于 `install_fp_rate.fp_sha256` | Sybil 洪流无法区分；raw fp 入日志/DB |
+| GW-INV-11 | DeepSeek/Gemini key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index` | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
+| GW-INV-12 | install token 仅存 `SHA-256(token)`：发放返一次性 `gwk_`+32B token，`installs.token_sha256` UNIQUE；`/v1/install` 每次创建全新身份/额度池，绝不重显旧 token | DB 泄露可用 token 或 token 回显给错客户端 |
+| GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars` 与 dashboard 均 loopback-only；`requireLoopback` 拒空 host/IP 非回环/解析到任一非回环地址；`/healthz` 不碰 DB | 管理/画像面公网暴露，远程 DoS 或凭证攻击 |
+| GW-INV-14 | `DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_*`、`INSTALL_POW_SECRET` 均 secret-env-only，不进 `Specs`/settings/Dump；Snapshot 只给安全状态/数量，日志 redaction 覆盖 auth、media data 与 provider key 字段 | secret 或 inline media 经配置/日志/导出泄露 |
+| GW-INV-15 | metric/audit 标签严格低基数：provider 仅 `deepseek|gemini`，另仅固定 `outcome`/`handler`/`result`；禁止 model、install_id、token、prompt、media、ip 入 label | Prometheus 基数爆炸或 PII/内容入时序 |
+| GW-INV-16 | business XFF 仅当直连对端为 loopback Caddy 时可信并取最右段，否则回退 `RemoteAddr`；dashboard 直连/SSH tunnel 的 login bucket **永远忽略 XFF**，只取 direct peer | 攻击者伪造 XFF 绕过 install 或 dashboard per-IP 限速 |
+| GW-INV-17 | redaction 对 auth/cookie/provider-key/password/secret 精确名及 `*_api_key|*_password|*_secret` 后缀（大小写不敏感）直接 `[REDACTED]`，非 allowlist key 下 struct/map/slice 整体抹除；`image_url`、`input_audio`、inline/file data 在红线内 | 新 provider key、`slog.Any` 或 base64 media 被静默序列化 |
+| GW-INV-18 | TLS 仅由 Caddy 终结；Go 三监听默认 loopback、地址必须两两不同，否则 `LoadBase` fail-fast | 误绑公网或运行时端口冲突 |
+| GW-INV-19 | dashboard 仅在 user+password 同设时启；bcrypt、常时用户名比较、CSPRNG session、Secure/HttpOnly/SameSite=Strict cookie、CSRF、per-IP 登录退避全启用 | session 劫持、CSRF、暴破或管理操作滥用 |
+| GW-INV-20 | `/install` 各拒绝路径用 DISTINCT wire code + 不采样 `install_audit`；只记 `/64 ip_key`/gate/error_code，fp 仅以 SHA-256 进入 `install_fp_rate` | Sybil 洪流不可区分，raw fp/ip/secret 入日志或 DB |
 
 ## C. 可靠性
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-21 | gateway→上游在飞 `≤ N_GLOBAL_CONCURRENCY` 且永不放大：固定容量 `sem`（热改不 resize、重启生效），多 key failover 只换用哪个 key、绝不加在飞槽位 | 超上游账户并发上限 / 带宽饱和 / 被上游封 |
-| GW-INV-22 | 进程级 breaker **排除** client-cancel、429 与上游 4xx 请求拒绝（ADR-011 修订）：`ConsecutiveFailures≥5` 或（`Requests≥10` 且失败率 `>0.5`）才跳，仅计真上游故障（5xx/timeout/connect），每 attempt-set 恰记一次失败；排队后 client cancel → `499 CLIENT_CANCELED` 全回滚、不计 busy/不计 breaker | breaker 因 client/上游 busy 误开，对健康上游断流 |
-| GW-INV-23 | 上游 429 独立类 `UPSTREAM_BUSY`(429)：不 retry、不计 breaker、不误判为输出前错误；per-key transport 平 429 不跳 key（仅 `Retry-After>5s` 设 per-key cooldown） | 上游 429 retry 风暴 / breaker 误开 |
-| GW-INV-24 | 关机最后关 DB（REL-4）：所有 detached settle/rollback + reconciler + prober + diskguard + metrics loop 由 `bgWG` 跟踪，顺序严格 ① `scanCancel()` ② `srv.Shutdown`+`adminSrv.Shutdown` ③ `waitWithTimeout(&bgWG,30s)` ④ `st.Close()`；`st.Close` 故意不 `defer` | 结算中关 DB → 账本损坏 / 预留永不结算 |
-| GW-INV-25 | 流式用滚动 per-frame 写 deadline，绝无全局 `WriteTimeout`：每帧 `SetWriteDeadline(now+30s)`，`http.Server` 不设 `WriteTimeout`（仅 ReadHeader/Read/Idle） | 全局写超时截断长 LLM 流 |
-| GW-INV-26 | retry 仅限 connect→首字节窗口（REL-1）：`{maxAttempts:3, base:200ms, cap:3s}` 指数退避 + full jitter，仅重试瞬态故障（connect/TLS reset/502·503·504，**非** 429、**非** 400/413/422 请求拒绝），复用同一预留（est 不变），`outputStarted` 后绝不 retry | 已产出输出被重试 → 重复计费 + 重复字节 |
-| GW-INV-27 | connect→header 阶段由 `UPSTREAM_HEADER_TIMEOUT_SEC`(默认 60) per-attempt 首字节计时（`time.AfterFunc`→`cancelUp`，每 attempt 从 `cfg.Load()` 读 LIVE），输出一起即停表（不盖流式 body） | 卡住上游钉死并发槽 + 永久虚占预算 |
-| GW-INV-28 | REL-7 过载背压是有界等待非二元拒绝且永不放大：`acquireSlot` 快路径空槽否则等 `QUEUE_WAIT_MS`(默认 1500，0=二元拒绝)，超时→`429 UPSTREAM_BUSY`+回滚，client-cancel→不占槽放弃；sem 容量恒 `=N_global` | 尖峰硬拒 / 队列诱发并发放大 |
-| GW-INV-29 | REL-6 低磁盘只读降级在任何预留**之前** shed：diskguard 每 30s 探数据盘，free `<DISK_MIN_MB`(默认 500) 或 `<DISK_MIN_PERCENT`(默认 5) 原子翻 `degraded`，proxy 预留前查 `h.degraded()` 返 `503 DISK_LOW`，启动同步预热，探测失败 FAIL-OPEN，恢复自动清；WAL 由 `wal_autocheckpoint`(4000) 限增长 | 磁盘满中途写损坏账本 / 探测抖动卡死只读 |
-| GW-INV-30 | 多 key failover（REL-3）隔离 per-key 健康而不放大并发：`[]*keyState` 各带 gobreaker+cooldown，401/403→10min cooldown+换 key、持续 5xx→per-key breaker、平 429→非 key 故障，`pickKey` round-robin 健康 key，仅按 `key_index` 审计，单 key 配置行为不变 | 单坏 key 拖垮整上游 / key 轮换放大在飞并发 |
-| GW-INV-41 | 上游请求拒绝（输出前 400/413/422）独立类 `UPSTREAM_REJECTED`(400)：不 retry、不计进程 breaker、不计 per-key 故障、预留经 REL-5 全回滚；仅从上游错误 body（≤4KiB）解析闭集 `details.reason ∈ {context_length, max_tokens, invalid_request}`，上游原文绝不透传（GW-INV-11） | 超长 prompt 连发误开 breaker 全站断流 / 客户端把自身输入错误误读为 502 上游故障 |
+| GW-INV-21 | 两个 provider 共享一个固定容量 `N_GLOBAL_CONCURRENCY` 信号量，gateway→全部上游总在飞 ≤ N；provider 内换 key/retry 绝不新增 slot | 双上游把总并发翻倍、带宽/账户被打满 |
+| GW-INV-22 | 每个 provider 有独立 process breaker；fault health 与 charge/retry 分开判：client-cancel、429、401/403 key signal、key-open、400/413/422 不计 process fault；5xx/timeout/connect 与其它被 typed health class 归为 upstream fault 的明确 refusal 可计一次。`DefinitelyUnbilled` 不推出“不计 breaker”，“计 breaker”也不推出“可 retry” | 一个 provider/客户端错误误熔断另一 provider，或把 health policy 当财务证明 |
+| GW-INV-23 | provider 429 独立归一 `UPSTREAM_BUSY`、`DefinitelyUnbilled`：不 retry、不计 process/per-key breaker；`Retry-After>5s` 只给当前 key cooldown，当前请求仍 rollback | 429 retry 风暴、误熔断或已知拒绝仍收费 |
+| GW-INV-24 | 关停严格 ①取消扫描 loop ②关闭三 HTTP server ③等待 bgWG≤30s ④最后关 DB；所有 detached settle/rollback/reconcile 均挂 bgWG | 结算中关 DB 留 open/半写账本 |
+| GW-INV-25 | 流式每帧滚动 `SetWriteDeadline(now+30s)`；server 不设全局 `WriteTimeout` | 长回答被固定墙钟截断 |
+| GW-INV-26 | 自动 retry 总 attempt≤3，且只重试可证明未收费并能绕过当前 key 的 401/403 cooldown 或 key-breaker-open；connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、终止并 full settle，429/其它 3xx/4xx虽可退款也不 retry；始终同 provider/plan/slot | 一份 reservation 隐藏多次可能 provider charge，账本无法守恒 |
+| GW-INV-27 | `UPSTREAM_HEADER_TIMEOUT_SEC` per attempt 界定 connect→header→first body byte；stream/non-stream 都必须成功 `Peek(1)` 才 handoff，2xx header 不提前停表；handoff 后 timer 已幂等 disarm，且不覆盖其余 body/stream。timeout 是 ChargePossible，不 retry、保留 full quote | non-stream headers-only stall 钉死 slot；timer race 截断已返回 stream；timeout retry 造成多次潜在收费 |
+| GW-INV-28 | `QUEUE_WAIT_MS` 是共享信号量的有界等待：0=立即拒绝，超时→429，排队取消→499 审计；三者都在 Open 前 rollback 且不占/放大 slot | 无界排队、并发放大或取消请求虚占钱包 |
+| GW-INV-29 | diskguard 每 30s 探测数据盘，低于 MB 或百分比阈值时在任何 reserve 前返回 `503 DISK_LOW`；启动同步预热、探测失败 fail-open、恢复自动清 | 磁盘满时中途写坏账本或探测抖动永久只读 |
+| GW-INV-30 | DeepSeek 与 Gemini 各自固定 endpoint、API key pool、per-key breaker/cooldown、process breaker；选定 provider 后禁止 fallback、禁止跨池取 key；单 key 配置行为不变 | 单 provider 故障污染另一 provider，或实际费用与冻结 plan 不一致 |
+| GW-INV-41 | provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`，只暴露 `details.reason∈{context_length,max_tokens,invalid_request}`；Exposure=DefinitelyUnbilled，不 retry/不计 breaker并 rollback；其它明确 3xx/4xx也 DefinitelyUnbilled，但可归一成不同 APIError/fault class | 恶意超长输入触发全站 breaker、上游原文泄露或用 code 代替 exposure |
 
-## D. 输入校验
+## D. 输入、能力与模型路由
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-31 | chat body 严格白名单：`DecodeInbound` 仅解 `model`/`messages`/`stream`/`temperature`/`max_tokens`/`n`/`tools`/`tool_choice`，`SanitizeUpstream` 仅转发 `model`(改写)/`messages`/`stream`/`temperature`/clamp 后 `max_tokens`/`tools`/`tool_choice`(verbatim) + 网关强加 `stream_options.include_usage`，其余字段构造性丢弃 | client 注入上游字段（tools/logprobs/raw key 走私 / 成本放大） |
-| GW-INV-32 | `n>1` 经 raw `json.Unmarshal` 探针 **和** 类型检查 `*in.N>1` 双重 → `400 BAD_REQUEST` | 单请求扇出 N 补全，成本翻倍 + 计费假设破坏 |
-| GW-INV-33 | SEC-1 深度护栏（预留前、估算前）：`len(messages)>MAX_MESSAGES`(256) 或单条 `RuneCount>MAX_MESSAGE_CHARS`(131072) 或空 messages → `400`（`checkMessageShape`） | 消息数/单消息体积放大 DoS |
-| GW-INV-34 | body 上限 `MAX_BODY_BYTES`（默认 256KiB，界 [4KiB, 8MiB]，重启生效）：中间件 `MaxBody` 与 chat handler 防御性 `MaxBytesReader` 用同一配置值；`/v1/install` 独立 8KiB 小上限（未鉴权面不给 chat 级缓冲）；超限读错 → `400 BAD_REQUEST` | 无界 body 耗内存 / 放大成本 |
-| GW-INV-35 | client `model` 强改写到白名单：成员则保留，否则 `DefaultModel`(=`ModelAllowlist[0]`)；用 `ServeHTTP` 内取一次的同一 `cfg.Load()` 快照（白名单热改不会单请求内半旧半新） | 调用未批准/昂贵模型 / 热改半旧半新 |
-| GW-INV-36 | message `content` 仅 string：`{Role string; Content string}`，非 string（数组/对象）严格解码失败 → `400` | 多部分 content 绕过估算 / 走私 payload |
-| GW-INV-37 | `max_tokens` clamp 到 `MaxTokensCap`(4096)：`client!=nil && *client>0 && *client<cap` 时取 client，否则 cap；clamp 值既转发又入 `est` | 无界输出 → 成本爆 + 欠预留 |
+| GW-INV-31 | 入站 JSON transport 必须是合法 UTF-8；top-level chat 白名单只有 `model/messages/stream/temperature/max_tokens/n/tools/tool_choice`；canonical request 只有 messages/stream/temperature/clamped max_tokens/tools/tool_choice + streaming usage；真实 model 仅由选中 provider adapter 附加 | invalid byte 经 RawMessage/字符串产生不同解释或膨胀报价；client 走私 provider 参数、key、价格或高成本输出 |
+| GW-INV-32 | `n>1` 经 raw probe 与 typed decode 双重拒绝为 `400 BAD_REQUEST` | 单请求扇出多个 completion、破坏报价上界 |
+| GW-INV-33 | pre-reserve shape guard：messages 非空且 `len≤MAX_MESSAGES`；每 message 文本 rune 数≤`MAX_MESSAGE_CHARS`；body≤`MAX_BODY_BYTES` | 多小消息或单大文本造成内存/估算放大 |
+| GW-INV-34 | business middleware 与 chat handler 共享 `MAX_BODY_BYTES`（默认 256KiB，范围 4KiB..8MiB，重启生效）；`/v1/install` 独立 8KiB | 未鉴权或 chat body 无界缓冲 |
+| GW-INV-35 | 路由只由完整 history 的已验证 content 决定：全 string/文本 parts→DeepSeek V4 Flash；任一受支持 media→Gemini 3.1 Flash-Lite。client `model` 永不选择 provider/实际模型；`/v1/models` 及 stream/non-stream 成功响应顶层 `model` 都只给 `PUBLIC_MODEL_ID`，且 duplicate/case-fold 等价 model key fail closed。non-stream 只放行单一 UTF-8 object；SSE 只放行 object data、精确 DONE/blank 与归一 bare-comment；只有完整读到合法 DONE 才允许按 stream usage 退款，提前 EOF/读错即 full quote | 客户端绕过成本/能力策略、只看最后一条消息而误路由，公开 alias 被真实 provider/version 漂移击穿，duplicate key 放大输出，或未完成 stream 用中途 usage 错误退款 |
+| GW-INV-36 | message role 是闭集 `system|user|assistant|tool`（tool 必须有非空 `tool_call_id`）；`content` 是关闭联合类型：missing/null/string/parts；missing/null 仅合法 assistant tool-call；part 仅 `text`、`image_url`、`input_audio` 且未知/交叉字段拒绝；文本-only parts canonicalize 为 string；opaque `tool_calls`（含 Gemini 3 必需的 nested thought signature）原样保留 | 未知 role/多部分走私、provider 对同一 body 产生不同解释，或 Gemini function loop 第二步被 400 拒绝 |
+| GW-INV-37 | `max_tokens` 先取正的较小 client 值，否则 `MAX_TOKENS_CAP`，再受所选模型 output limit 限制；同一 clamp 值进入 payload，DeepSeek 也进入 quote | payload 与账本上界漂移，输出成本失控 |
+| GW-INV-42 | media 只允许 user role：image 必须 inline strict-base64 `data:image/{jpeg|png|webp};base64,...` 且 MIME=magic；audio 必须 raw strict base64、format `wav|mp3` 且 format=magic；remote URL/PDF/video/file/未知 part 一律 400，网关永不 fetch URL | SSRF/下载放大/MIME 欺骗，或 compatibility 未定义输入进入上游 |
+| GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；`INPUT_TOKEN_CAP` 约束文本及所有透传 tool JSON（含 `tools`/`tool_choice`/message tool calls）的 estimate，媒体由 parts/decoded-byte 闸限制并交 Gemini 判定实际 media token，但账本仍按 Gemini full hard limits 预留 | base64 解码 OOM、tool JSON 绕过输入/报价护栏，或把文本估算误称为可证明的媒体 token 上限 |
+| GW-INV-44 | `GEMINI_API_KEY` 可选：缺失时 Gemini backend 不构造，文本 readiness/DeepSeek 路由正常，合法多模态在任何 reserve/Open 前固定返回 `503 MULTIMODAL_UNAVAILABLE`；配置 key 后 readiness 的 cached authenticated `/models` probe 必须同时确认 Gemini 固定模型，DeepSeek 固定模型始终必需；绝无静默 fallback | 未配 key 导致全站不 ready、已配坏 key 却错误放行部署，或媒体被错误送到文本模型 |
+| GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
 
 ## E. 跨切配置 / 可观测
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-38 | `RESET_TZ` 内嵌（`import _ "time/tzdata"`）且 fail-fast：`LoadLocation` 失败 **PANIC**（绝无静默 UTC 回退），period 边界在 `cfg.Location` 算 | 所有 period 边界静默偏移（如 8h），误重置配额/预算 |
-| GW-INV-39 | 每个 runtime 数值旋钮都有 floor + per-spec ceiling，env `Load` 与 overlay `ApplyOverrides` 路径**同一套**边界，多 key 单 tx 全或无持久化 + 越界指名 fail-fast；`N_GLOBAL_CONCURRENCY` 可改但容量重启才换 | 一次后台/settings 编辑使护栏失效或 OOM |
-| GW-INV-40 | store 分池（`W` MaxOpenConns=1 + `_txlock=immediate`；有界读池 `READ_POOL_MAX_CONNS=4`），两 DSN 均 `journal_mode=WAL`/`foreign_keys=ON`/`synchronous=NORMAL` + PERF-2 pragma（`cache_size=-32768`KiB/conn、`mmap_size=256MiB`、`wal_autocheckpoint=4000`）；`Close` 幂等；PERF-2 自检：最坏 RSS = `GOMEMLIMIT + cache×(1+READ_POOL) + mmap` 超 `MEM_BUDGET_MIB − MEM_SAFETY_MARGIN_MIB` 则 fail-fast | 丢失写序列化破坏原子 reserve / 误算 cache×readpool OOM |
+| GW-INV-38 | `RESET_TZ` 内嵌 tzdata 且 `LoadLocation` 失败 panic，period 统一在 `cfg.Location` 算，绝无 UTC fallback | 月/日额度边界静默偏移 |
+| GW-INV-39 | 每个 runtime 数值 knob 在 env 与 overlay 共用 floor/ceiling；multi-key hot apply 先 clone→全量语义校验→单 tx persist→atomic swap；startup-hard/secret 指名拒绝 | 热改绕过 rate card、钱包、媒体或 OOM 护栏 |
+| GW-INV-40 | SQLite 写池单连接 + `_txlock=immediate`，读池有界；两池 WAL/foreign_keys/synchronous 与 PERF-2 pragma 一致；最坏 RSS 超预算时按 GOMEMLIMIT 规则 warn/fail-fast | 丢写序列化破坏 atomic reserve，或 per-conn cache 使进程 OOM |
 
 ## 备注
 
-- wire-code 契约逐字保留见 [error-codes.md](error-codes.md)（外加内部审计码 `CLIENT_CANCELED`(499)）。
-- schema 前向 only、表清单与 `ledger.settled` 幂等支点见 [database.md](database.md)。
-- 中间件链单一事实源（main + e2e 共用）：`Recover → DenyCORS → MaxBody(MAX_BODY_BYTES，默认 256KiB) → mux`；`DenyCORS` 对带 `Origin` 的 `OPTIONS` 返 403 且绝不发 `Access-Control-*`。
-- Sybil/PoW dormancy（GW-INV-20 族）：M2 全闸默认 0=禁用、DB 工作前短路；`INSTALL_POW_MODE` 三态 `off`/`shadow`/`enforce`（零值≡off，逐字不变 `/install`），challenge 无状态 + 120s TTL + nonce-once；生效 shadow/enforce 须非空 env `INSTALL_POW_SECRET`（`CONFIG_POW_SECRET_REQUIRED` fail-fast）。
+- wire error 只描述客户端结果；是否 rollback 由 `CallFailure.ChargeExposure` 决定。尤其 `UPSTREAM_ERROR` 既可 DefinitelyUnbilled（明确 3xx/4xx）也可 ChargePossible（connect/5xx）。
+- readiness 以 DeepSeek + DB + disk 为必需基线；可选 Gemini 缺 key 不使文本服务失活，配置 key 后则必须和 DeepSeek 一样通过 cached authenticated exact-model probe。
+- 中间件链：`Recover → DenyCORS → MaxBody → mux`；带 `Origin` 的 `OPTIONS` 为 403 且不发 `Access-Control-*`。
+- Sybil/PoW 旋钮默认 dormant：`INSTALL_POW_MODE=off`，其余 M2 cap 为 0 时在 DB 工作前短路。

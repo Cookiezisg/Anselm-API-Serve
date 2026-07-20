@@ -33,10 +33,8 @@ type Handler struct {
 	user     string
 	passHash []byte
 
-	// breakerOpen / diskDegraded are cheap in-process accessors transport already
-	// holds (the proxy breaker + diskguard); passed to Overview so the use case
-	// needn't declare a port for a single bool each. nil ⇒ false.
-	breakerOpen  func() bool
+	// diskDegraded is a cheap in-process diskguard accessor transport already
+	// holds. Provider state is supplied to the use case through its narrow port.
 	diskDegraded func() bool
 }
 
@@ -49,7 +47,6 @@ type Config struct {
 	Logins       *mwdash.LoginLimiter
 	User         string
 	Password     string
-	BreakerOpen  func() bool
 	DiskDegraded func() bool
 }
 
@@ -69,7 +66,6 @@ func New(c Config) (*Handler, error) {
 		logins:       c.Logins,
 		user:         c.User,
 		passHash:     hash,
-		breakerOpen:  c.BreakerOpen,
 		diskDegraded: c.DiskDegraded,
 	}
 	return h, nil
@@ -169,7 +165,7 @@ func (h *Handler) Session(w http.ResponseWriter, r *http.Request) {
 
 // Overview returns the live operational snapshot.
 func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
-	o := h.svc.Overview(r.Context(), call(h.breakerOpen), call(h.diskDegraded))
+	o := h.svc.Overview(r.Context(), call(h.diskDegraded))
 	response.WriteJSON(w, http.StatusOK, o)
 }
 
@@ -345,12 +341,13 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 
 // --- small net/http helpers ---
 
-// loginIP derives the per-IP lockout key. The dashboard binds loopback, so Caddy
-// is the only direct peer and appends the real client IP to the RIGHTMOST of XFF;
-// clientip.ClientIP trusts XFF only when the peer is loopback (the same trust
-// boundary as proxy/install), so a direct attacker cannot spoof a left-side XFF.
+// loginIP derives the lockout key exclusively from the direct TCP peer. Dashboard
+// traffic reaches this loopback listener directly (including through an SSH
+// tunnel), not through the business listener's trusted Caddy hop, so every
+// X-Forwarded-For value is attacker-controlled here and must be ignored. Key
+// removes the ephemeral source port and applies the shared IPv6 /64 bucketing.
 func loginIP(r *http.Request) string {
-	return clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"))
+	return clientip.Key(r.RemoteAddr)
 }
 
 // actor returns the audited operator handle from the session (empty if absent).

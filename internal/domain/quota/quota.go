@@ -11,6 +11,8 @@ package quota
 import (
 	"errors"
 	"time"
+
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 )
 
 // Typed denial sentinels for the four conditional-UPDATE gates in Reserve. They
@@ -21,12 +23,17 @@ import (
 var (
 	// ErrMonthlyExhausted — usage.count would reach MonthlyQuota (gate 1).
 	ErrMonthlyExhausted = errors.New("quota: monthly count exhausted")
-	// ErrDayTokensExceeded — usage.tokens+est would exceed InstallDailyTokenCap (gate 2).
-	ErrDayTokensExceeded = errors.New("quota: install daily token cap exceeded")
+	// ErrInstallSpendExceeded — the install's daily pUSD sub-wallet would be exceeded.
+	ErrInstallSpendExceeded = errors.New("quota: install daily spend cap exceeded")
+	// ErrProviderSpendExceeded — the selected provider's daily pUSD wallet would be exceeded.
+	ErrProviderSpendExceeded = errors.New("quota: provider daily spend cap exceeded")
 	// ErrSublimitExceeded — day-row count would reach DailySublimit (gate 2b).
 	ErrSublimitExceeded = errors.New("quota: daily request sublimit exceeded")
-	// ErrBudgetExceeded — budget.tokens_used+est would exceed GlobalDailyBudget (gate 3).
-	ErrBudgetExceeded = errors.New("quota: global daily budget exceeded")
+	// ErrBudgetExceeded — the shared daily pUSD wallet would be exceeded.
+	ErrBudgetExceeded = errors.New("quota: global daily spend budget exceeded")
+	// ErrProviderLimitMissing is a fail-closed configuration error, not a denial:
+	// every routable provider must have an explicit positive daily cap.
+	ErrProviderLimitMissing = errors.New("quota: provider daily spend cap missing")
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -43,10 +50,11 @@ type Period struct {
 // settle/rollback need: the request id, the install, the entry-snapshot period,
 // the reserved est, and the B1 flag.
 type Reservation struct {
-	RequestID string
-	InstallID string
-	Period    Period
-	Reserved  int64
+	RequestID    string
+	InstallID    string
+	Period       Period
+	Plan         billing.Plan
+	ReservedPUSD int64
 
 	// SublimitApplied records whether the optional daily-sublimit +1 actually
 	// fired at reserve time (B1). Rollback reverses that +1 IFF this flag is set,
@@ -63,10 +71,19 @@ type Reservation struct {
 // so the app port and the infra store agree on the type without infra importing
 // app.
 type Limits struct {
-	MonthlyQuota         int64
-	InstallDailyTokenCap int64
-	GlobalDailyBudget    int64
-	DailySublimit        int64 // 0 disables the per-install daily request sublimit.
+	MonthlyQuota           int64
+	InstallDailySpendPUSD  int64
+	ProviderDailySpendPUSD map[billing.Provider]int64
+	GlobalDailySpendPUSD   int64
+	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
+}
+
+// ProviderDailyLimit returns the explicit cap for provider. Missing and
+// non-positive values fail closed in Reserve; zero never means "unlimited" for
+// a wallet that spends operator money.
+func (l Limits) ProviderDailyLimit(provider billing.Provider) (int64, bool) {
+	cap, ok := l.ProviderDailySpendPUSD[provider]
+	return cap, ok && cap > 0
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller

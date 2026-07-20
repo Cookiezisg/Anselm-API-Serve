@@ -12,12 +12,15 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/orm"
 )
@@ -29,9 +32,10 @@ type dashStore struct {
 	loc *time.Location
 }
 
-// GlobalBudget (BudgetSource): today's RESET_TZ window day + the GLOBAL budget
-// limit (read off the live cap) + tokens used today. A missing budget row reads
-// used=0. limit is supplied by the caller via a closure (live config) — see build.
+// GlobalBudget (BudgetSource): today's RESET_TZ window day plus global spend
+// limit and usage in integer micro-USD. The database and live config retain exact
+// pUSD; this adapter is the single conversion boundary for the dashboard wire.
+// A missing spend row reads used=0. The limit closure is wired from live config.
 type budgetSource struct {
 	ds       dashStore
 	getLimit func() int64
@@ -39,26 +43,29 @@ type budgetSource struct {
 
 func (b budgetSource) GlobalBudget(ctx context.Context) (day string, limit, used int64, err error) {
 	day = time.Now().In(b.ds.loc).Format("2006-01-02")
-	limit = b.getLimit()
-	row := b.ds.r.QueryRow(ctx, `SELECT tokens_used FROM budget WHERE period = ?`, day)
-	switch err = row.Scan(&used); err {
-	case nil:
-		return day, limit, used, nil
+	limit = b.getLimit() / billing.PicoUSDPerMicroUSD
+	var usedPUSD int64
+	err = b.ds.r.QueryRow(ctx,
+		`SELECT spend_pusd FROM global_spend_daily WHERE period_day = ?`, day).Scan(&usedPUSD)
+	switch {
+	case err == nil:
+		return day, limit, usedPUSD / billing.PicoUSDPerMicroUSD, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return day, limit, 0, nil
 	default:
-		// A missing row is "used 0 today", not an error.
-		return day, limit, 0, nil //nolint:nilerr // no-row ⇒ zero usage, surfaced as success
+		return day, limit, 0, fmt.Errorf("read global spend: %w", err)
 	}
 }
 
-// ListInstalls (InstallLister): newest-first, offset-paged, plus today's reserved
-// tokens for each install (sum of the day usage row). NEVER returns token/fp/ip.
+// ListInstalls (InstallLister): newest-first, offset-paged, plus today's spend
+// for each install in integer micro-USD. NEVER returns token/fingerprint/IP.
 func (d dashStore) ListInstalls(ctx context.Context, cursor, limit int) ([]appdash.InstallRow, error) {
 	day := time.Now().In(d.loc).Format("2006-01-02")
 	rows, err := d.r.Query(ctx, `
 		SELECT i.id, i.status, i.created_at, COALESCE(i.last_seen_at, ''),
-		       COALESCE(u.tokens, 0)
+		       COALESCE(s.spend_pusd, 0)
 		FROM installs i
-		LEFT JOIN usage u ON u.install_id = i.id AND u.period = ?
+		LEFT JOIN install_spend_daily s ON s.install_id = i.id AND s.period_day = ?
 		ORDER BY i.created_at DESC, i.id DESC
 		LIMIT ? OFFSET ?`, day, limit, cursor)
 	if err != nil {
@@ -69,9 +76,11 @@ func (d dashStore) ListInstalls(ctx context.Context, cursor, limit int) ([]appda
 	var out []appdash.InstallRow
 	for rows.Next() {
 		var r appdash.InstallRow
-		if err := rows.Scan(&r.ID, &r.Status, &r.CreatedAt, &r.LastSeenAt, &r.TodayTokens); err != nil {
+		var spendPUSD int64
+		if err := rows.Scan(&r.ID, &r.Status, &r.CreatedAt, &r.LastSeenAt, &spendPUSD); err != nil {
 			return nil, fmt.Errorf("scan install row: %w", err)
 		}
+		r.TodaySpendMicroUSD = spendPUSD / billing.PicoUSDPerMicroUSD
 		out = append(out, r)
 	}
 	return out, rows.Err()

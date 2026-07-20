@@ -36,14 +36,15 @@ func TestRegistrationSmoke(t *testing.T) {
 	wrapped := m.Wrap("chat_completions", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	wrapped.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 	// Touch every collector so each appears in the exposition.
-	m.UpstreamRequests.WithLabelValues("success").Inc()
-	m.UpstreamLatency.Observe(0.5)
+	m.UpstreamRequests.WithLabelValues("deepseek", "success").Inc()
+	m.UpstreamLatency.WithLabelValues("deepseek").Observe(0.5)
 	m.InflightConc.Set(2)
 	m.BudgetUsed.Set(123)
 	m.BudgetLimit.Set(1000)
 	m.ReservationsOpen.Set(1)
-	m.BreakerState.Set(0)
-	m.KeyCooldowns.Inc()
+	m.BreakerState.WithLabelValues("deepseek").Set(0)
+	m.BillingDrifts.WithLabelValues("gemini").Inc()
+	m.KeyCooldowns.WithLabelValues("deepseek").Inc()
 	m.RateLimiterEvictions.Inc()
 	m.Panics.Inc()
 	m.InstallsCreated.Inc()
@@ -61,10 +62,11 @@ func TestRegistrationSmoke(t *testing.T) {
 		"gateway_upstream_requests_total",
 		"gateway_upstream_latency_seconds",
 		"gateway_inflight_concurrency",
-		"gateway_budget_tokens_used",
-		"gateway_budget_tokens_limit",
+		"gateway_budget_spend_usd",
+		"gateway_budget_limit_usd",
 		"gateway_quota_reservations_open",
 		"gateway_breaker_state",
+		"gateway_billing_drift_total",
 		"gateway_key_cooldowns_total",
 		"gateway_ratelimiter_evictions_total",
 		"gateway_panics_total",
@@ -89,7 +91,7 @@ func TestNoHighCardinalityLabels(t *testing.T) {
 	m := New()
 	// Observe at least one series on each labeled vec so the families gather.
 	m.httpRequests.WithLabelValues("chat_completions", "POST", "200").Inc()
-	m.UpstreamRequests.WithLabelValues("success").Inc()
+	m.UpstreamRequests.WithLabelValues("deepseek", "success").Inc()
 	m.InstallPoW.WithLabelValues("verified").Inc()
 
 	families, err := m.reg.Gather()

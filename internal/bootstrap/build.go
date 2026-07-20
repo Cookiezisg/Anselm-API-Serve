@@ -22,6 +22,8 @@ import (
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
 	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
@@ -58,9 +60,10 @@ type App struct {
 
 	// Background-loop collaborators.
 	quota            *appquota.Service
-	upstream         upstream.Client
+	providers        *chatprovider.Registry
 	disk             *diskguard.Guard
 	prober           *upstreamProber
+	dailyBudget      budgetSource
 	mx               *metrics.Metrics
 	alerter          *alert.Alerter
 	rate             *ratesample.Sampler
@@ -150,7 +153,9 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 
 	// 6) Metrics bundle (RED + golden signals). Mounted loopback-only on admin.
 	mx := metrics.New()
-	mx.BudgetLimit.Set(float64(effective.GlobalDailyBudget))
+	mx.BudgetLimit.Set(float64(effective.GlobalDailySpendPUSD) / float64(billing.PicoUSDPerUSD))
+	mx.BreakerState.WithLabelValues(string(billing.ProviderDeepSeek)).Set(0)
+	mx.BreakerState.WithLabelValues(string(billing.ProviderGemini)).Set(0)
 	inflight := &atomic.Int64{} // shared mirror: chat writes, dashboard reads.
 
 	// 7) App services over their PORTS (adapters in adapters.go).
@@ -160,10 +165,32 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		installsCreatedCounter{m: mx}, powCounter{m: mx})
 	modelCat := appmodel.New(cfgP)
 
-	// 8) Upstream client + breaker, fed the metrics hook (key cooldown + breaker
-	// gauge). Wrapped in the covariance adapter so chat sees chat.UpstreamStream.
-	upClient := upstream.New(effective.DeepSeekAPIKeys, effective.UpstreamHeaderTimeout,
-		log, upstreamHook{m: mx})
+	// 8) Two provider-local upstream clients. Endpoint, key pool, transport and
+	// breaker are frozen together so auth material can never cross providers.
+	// Gemini is an optional capability: omitting its key leaves the DeepSeek text
+	// path fully operational while multimodal requests fail explicitly in app/chat.
+	deepSeekClient := upstream.NewBackend(upstream.Options{
+		Backend:            upstream.BackendDeepSeek,
+		ChatCompletionsURL: effective.DeepSeekBaseURL + "/chat/completions",
+		APIKeys:            effective.DeepSeekAPIKeys,
+		HeaderTimeout:      effective.UpstreamHeaderTimeout,
+		Logger:             log,
+		Hook:               upstreamHook{m: mx, provider: billing.ProviderDeepSeek},
+	})
+	var geminiClient upstream.BackendClient
+	if len(effective.GeminiAPIKeys) > 0 {
+		geminiClient = upstream.NewBackend(upstream.Options{
+			Backend:            upstream.BackendGemini,
+			ChatCompletionsURL: effective.GeminiBaseURL + "/chat/completions",
+			APIKeys:            effective.GeminiAPIKeys,
+			HeaderTimeout:      effective.UpstreamHeaderTimeout,
+			Logger:             log,
+			Hook:               upstreamHook{m: mx, provider: billing.ProviderGemini},
+		})
+	} else {
+		log.Info("multimodal_upstream_disabled", "reason", "GEMINI_API_KEY not configured")
+	}
+	providers := chatprovider.New(deepSeekClient, geminiClient)
 
 	// 9) Shared rate limiter: the SAME bucket the chat RL gate AND the M2 throttle
 	// reach through, so SetKeyLimit tightens the bucket Allow meters (B1). An LRU
@@ -186,7 +213,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	chatSvc := appchat.New(appchat.Deps{
 		Auth:     installSvc,
 		Quota:    quotaSvc,
-		Upstream: upstreamAdapter{c: upClient},
+		Upstream: upstreamAdapter{r: providers},
 		RL:       rl,
 		Throttle: throttle,
 		Disk:     dg,
@@ -197,9 +224,10 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		BgWG:     bgWG,
 	})
 
-	// 12) Health checker (DB writable + cached upstream probe + disk). freshFor
-	// defaults to 90s (3× the 30s prober).
-	prober := newUpstreamProber(upClient, effective.DeepSeekBaseURL)
+	// 12) Health checker (DB writable + cached authenticated provider/model probe
+	// + disk). DeepSeek is required; Gemini joins the aggregate only when its
+	// optional key is configured. freshFor defaults to 90s (3× the 30s prober).
+	prober := newUpstreamProber(effective)
 	health := apphealth.New(dbChecker{w: db.Writer}, prober, dg, 0)
 
 	// 13) Alert state tracker + recent-window QPS sampler (dashboard reads both).
@@ -239,12 +267,17 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 15) Dashboard — only when BOTH auth secrets are set (a half-config already
 	// fails fast in LoadBase). The Static SPA handler is the embedded React build
 	// (infra/webassets), serving /static/ assets + the SPA shell for non-API GETs.
+	dailyBudget := budgetSource{
+		ds:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
+		getLimit: func() int64 { return cfgP.Load().GlobalDailySpendPUSD },
+	}
 	var dashSrv *http.Server
 	if effective.DashboardUser != "" && effective.DashboardPassword != "" {
 		dashSvc := appdash.New(appdash.Deps{
-			Budget:       budgetSource{ds: dashStore{w: db.Writer, r: db.Reader, loc: effective.Location}, getLimit: func() int64 { return cfgP.Load().GlobalDailyBudget }},
+			Budget:       dailyBudget,
 			Reservations: quotaStore,
 			Inflight:     inflightSource{v: inflight},
+			Providers:    providers,
 			Rate:         sampler,
 			Alerts:       alerter,
 			Installs:     installSvc,
@@ -265,7 +298,6 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 			Logins:       logins,
 			User:         effective.DashboardUser,
 			Password:     effective.DashboardPassword,
-			BreakerOpen:  upClient.BreakerOpen,
 			DiskDegraded: dg.Degraded,
 		})
 		if derr != nil {
@@ -302,9 +334,10 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		loopCtx:          loopCtx,
 		loopCancel:       loopCancel,
 		quota:            quotaSvc,
-		upstream:         upClient,
+		providers:        providers,
 		disk:             dg,
 		prober:           prober,
+		dailyBudget:      dailyBudget,
 		mx:               mx,
 		alerter:          alerter,
 		rate:             sampler,

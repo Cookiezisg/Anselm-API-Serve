@@ -14,8 +14,9 @@ import (
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
-	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
+	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/settingsstore"
@@ -26,22 +27,25 @@ import (
 
 // --- upstream covariance adapter (deliverable 1) -----------------------------
 
-// upstreamAdapter wraps the concrete *upstream.Client so Do returns the *Stream
-// as the app's infra-free chat.UpstreamStream. Go has no return-type covariance,
-// so a returned *upstream.Stream cannot directly satisfy a method declared to
+// upstreamAdapter wraps the provider registry so Open returns its concrete
+// stream as the app's infra-free chat.UpstreamStream. Go has no return-type
+// covariance, so a returned concrete stream cannot directly satisfy a method declared to
 // return chat.UpstreamStream — this thin wrap performs the widening (and maps the
 // nil-stream case so a nil *Stream never becomes a non-nil interface).
-type upstreamAdapter struct{ c upstream.Client }
+type upstreamAdapter struct{ r *chatprovider.Registry }
 
-func (a upstreamAdapter) Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (appchat.UpstreamStream, *apierr.APIError) {
-	s, e := a.c.Do(ctx, payload, stream, cfg)
-	if e != nil {
-		return nil, e
+func (a upstreamAdapter) Open(ctx context.Context, provider billing.Provider, model string, req domchat.CompletionRequest, firstByteTimeout time.Duration) (appchat.UpstreamStream, *appchat.UpstreamFailure) {
+	s, failure := a.r.Open(ctx, provider, model, req, firstByteTimeout)
+	if failure != nil {
+		return nil, &appchat.UpstreamFailure{APIError: failure.APIError, Exposure: failure.Exposure}
 	}
 	return s, nil // *upstream.Stream satisfies chat.UpstreamStream via Read+Close.
 }
 
-func (a upstreamAdapter) BreakerOpen() bool { return a.c.BreakerOpen() }
+func (a upstreamAdapter) Available(provider billing.Provider) bool { return a.r.Available(provider) }
+func (a upstreamAdapter) BreakerOpen(provider billing.Provider) bool {
+	return a.r.BreakerOpen(provider)
+}
 
 // --- quota ConfigSource adapter ----------------------------------------------
 
@@ -53,9 +57,13 @@ type quotaCfgSource struct{ p *configprovider.Provider }
 func (q quotaCfgSource) Limits() appquota.Limits {
 	c := q.p.Load()
 	return appquota.Limits{
-		MonthlyQuota:         c.MonthlyQuota,
-		InstallDailyTokenCap: c.InstallDailyTokenCap,
-		GlobalDailyBudget:    c.GlobalDailyBudget,
+		MonthlyQuota:          c.MonthlyQuota,
+		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
+		ProviderDailySpendPUSD: map[billing.Provider]int64{
+			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
+			billing.ProviderGemini:   c.GeminiDailySpendPUSD,
+		},
+		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
 		DailySublimit:        c.DailySublimit,
 	}
 }
@@ -90,9 +98,14 @@ func (c chatMetrics) Inflight(n int) {
 	c.m.InflightConc.Set(float64(n))
 	c.inflight.Store(int64(n))
 }
-func (c chatMetrics) Upstream(outcome string) { c.m.UpstreamRequests.WithLabelValues(outcome).Inc() }
-func (c chatMetrics) SettleFailure()          { c.m.SettleFailures.Inc() }
-func (c chatMetrics) RollbackFailure()        { c.m.RollbackFailures.Inc() }
+func (c chatMetrics) Upstream(provider billing.Provider, outcome string) {
+	c.m.UpstreamRequests.WithLabelValues(string(provider), outcome).Inc()
+}
+func (c chatMetrics) BillingDrift(provider billing.Provider) {
+	c.m.BillingDrifts.WithLabelValues(string(provider)).Inc()
+}
+func (c chatMetrics) SettleFailure()   { c.m.SettleFailures.Inc() }
+func (c chatMetrics) RollbackFailure() { c.m.RollbackFailures.Inc() }
 
 // inflightSource satisfies dashboard.InflightSource by reading the atomic mirror
 // chatMetrics keeps in lock-step with the prometheus gauge.
@@ -162,16 +175,19 @@ func (d dbChecker) Writable(ctx context.Context) error {
 
 // upstreamHook adapts the metrics bundle into upstream.MetricsHook (key cooldown
 // counter + breaker-state gauge), so upstream needn't import the metrics package.
-type upstreamHook struct{ m *metrics.Metrics }
+type upstreamHook struct {
+	m        *metrics.Metrics
+	provider billing.Provider
+}
 
-func (h upstreamHook) KeyCooldown() { h.m.KeyCooldowns.Inc() }
+func (h upstreamHook) KeyCooldown() { h.m.KeyCooldowns.WithLabelValues(string(h.provider)).Inc() }
 
-func (h upstreamHook) BreakerStateChange(open bool) {
-	if open {
-		h.m.BreakerState.Set(2) // 0=closed 1=half-open 2=open
-	} else {
-		h.m.BreakerState.Set(0)
-	}
+func (h upstreamHook) BreakerStateChange(state upstream.BreakerState) {
+	h.m.BreakerState.WithLabelValues(string(h.provider)).Set(float64(state))
+}
+
+func (h upstreamHook) CallLatency(elapsed time.Duration) {
+	h.m.UpstreamLatency.WithLabelValues(string(h.provider)).Observe(elapsed.Seconds())
 }
 
 // --- install counter adapters ------------------------------------------------

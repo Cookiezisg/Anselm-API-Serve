@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/install"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/alert"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
@@ -27,6 +28,7 @@ type Deps struct {
 	Budget       BudgetSource
 	Reservations ReservationsSource
 	Inflight     InflightSource
+	Providers    ProviderSource
 	Rate         RateSource
 	Alerts       AlertSource
 	Installs     InstallsToday
@@ -62,13 +64,15 @@ func New(d Deps) *Service {
 // leaves its field at zero rather than failing the whole snapshot.
 type Overview struct {
 	Budget struct {
-		Day       string `json:"day"`
-		Used      int64  `json:"used"`
-		Limit     int64  `json:"limit"`
-		Remaining int64  `json:"remaining"`
+		Day               string `json:"day"`
+		UsedMicroUSD      int64  `json:"usedMicroUsd"`
+		LimitMicroUSD     int64  `json:"limitMicroUsd"`
+		RemainingMicroUSD int64  `json:"remainingMicroUsd"`
+		Unit              string `json:"unit"`
 	} `json:"budget"`
 	InflightConcurrency int64               `json:"inflightConcurrency"`
 	OpenReservations    int64               `json:"openReservations"`
+	Providers           ProviderStatuses    `json:"providers"`
 	UpstreamBreakerOpen bool                `json:"upstreamBreakerOpen"`
 	DiskDegraded        bool                `json:"diskDegraded"`
 	Alerts              []alert.AlertState  `json:"alerts"`
@@ -77,18 +81,38 @@ type Overview struct {
 	InstallGlobalCap    int64               `json:"installGlobalCap"`
 }
 
-// Overview assembles the live snapshot. breakerOpen/diskDegraded are passed by
-// the caller (cheap in-process accessors transport already holds) so the use case
-// needn't declare a port for a single bool each.
-func (s *Service) Overview(ctx context.Context, breakerOpen, diskDegraded bool) Overview {
+// ProviderStatus is the deliberately small, secret-free operational view for a
+// fixed provider. Configured means a backend was constructed; it does not expose
+// key count, key material, endpoint, model/account metadata, or probe details.
+type ProviderStatus struct {
+	Configured  bool `json:"configured"`
+	BreakerOpen bool `json:"breakerOpen"`
+}
+
+// ProviderStatuses is a closed wire shape, not an open-ended map. Both stable
+// keys are always serialized so operators and the SPA never infer capability
+// from a field being absent.
+type ProviderStatuses struct {
+	DeepSeek ProviderStatus `json:"deepseek"`
+	Gemini   ProviderStatus `json:"gemini"`
+}
+
+// Overview assembles the live snapshot. Provider state comes through the
+// ProviderSource port; diskDegraded is passed by transport as the one remaining
+// cheap in-process accessor it already holds.
+func (s *Service) Overview(ctx context.Context, diskDegraded bool) Overview {
 	var o Overview
+	o.Budget.Unit = "micro_usd"
 	if s.d.Budget != nil {
 		if day, limit, used, err := s.d.Budget.GlobalBudget(ctx); err == nil {
 			remaining := limit - used
 			if remaining < 0 {
 				remaining = 0
 			}
-			o.Budget.Day, o.Budget.Limit, o.Budget.Used, o.Budget.Remaining = day, limit, used, remaining
+			o.Budget.Day = day
+			o.Budget.LimitMicroUSD = limit
+			o.Budget.UsedMicroUSD = used
+			o.Budget.RemainingMicroUSD = remaining
 		}
 	}
 	if s.d.Reservations != nil {
@@ -99,7 +123,11 @@ func (s *Service) Overview(ctx context.Context, breakerOpen, diskDegraded bool) 
 	if s.d.Inflight != nil {
 		o.InflightConcurrency = s.d.Inflight.InflightConcurrency()
 	}
-	o.UpstreamBreakerOpen = breakerOpen
+	o.Providers.DeepSeek = s.providerStatus(billing.ProviderDeepSeek)
+	o.Providers.Gemini = s.providerStatus(billing.ProviderGemini)
+	// Kept as a compatibility aggregate for older dashboard/API consumers. New
+	// consumers use the provider-specific states above.
+	o.UpstreamBreakerOpen = o.Providers.DeepSeek.BreakerOpen || o.Providers.Gemini.BreakerOpen
 	o.DiskDegraded = diskDegraded
 	if s.d.Alerts != nil {
 		o.Alerts = s.d.Alerts.CurrentStatus()
@@ -119,6 +147,13 @@ func (s *Service) Overview(ctx context.Context, breakerOpen, diskDegraded bool) 
 		o.Alerts = []alert.AlertState{}
 	}
 	return o
+}
+
+func (s *Service) providerStatus(provider billing.Provider) ProviderStatus {
+	if s.d.Providers == nil || !s.d.Providers.Available(provider) {
+		return ProviderStatus{}
+	}
+	return ProviderStatus{Configured: true, BreakerOpen: s.d.Providers.BreakerOpen(provider)}
 }
 
 // ConfigDump returns the secret-free config read model (GET /api/config).

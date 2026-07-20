@@ -4,14 +4,14 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-06-21
-review-due: 2026-09-19
+reviewed: 2026-07-20
+review-due: 2026-10-18
 audience: [human, ai]
 ---
 
 # 后端总览（backend overview）
 
-> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。本篇是 `references/backend/` 的**导航 + 物理事实索引**：三监听器、四层依赖方向、六域、运行期形态。深入查同目录五篇硬契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。架构心智模型见 [../../concepts/architecture.md](../../concepts/architecture.md)。
+> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持媒体→Gemini 3.1 Flash-Lite；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、六域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
 
 ## 1. 三个物理隔离监听器（ADR-004 / GW-INV-13/18）
 
@@ -35,10 +35,10 @@ bootstrap 在最外层装配全部
 
 | 层 | 包根 | 纪律 |
 |---|---|---|
-| domain | `internal/domain/*` | 纯类型 + 规则，零 I/O（无 `os` / `net/http` / `database/sql`）。`config`、`apierr` 在此 |
+| domain | `internal/domain/*` | 纯类型 + 规则，零 I/O；含 strict chat union、billing rate cards/Plan、quota/config/apierr |
 | app | `internal/app/*` | 用例服务（`chat` / `install` / `quota` / `model` …），依赖 domain + port 接口 |
 | transport | `internal/transport/httpapi/*` | HTTP 装配、中间件、handler；可依赖 app，**绝不 import infra** |
-| infra | `internal/infra/*` | port 的具体实现（`sqlite`、`configprovider`、`metrics`、`webassets`） |
+| infra | `internal/infra/*` | port 实现：SQLite、provider-local upstream、chatprovider registry、config/metrics/disk/webassets |
 
 transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口注入。例：`router.Wrapper`（RED 度量）由 `*infra/metrics.Metrics` 结构化满足；admin mux 的 `Metrics http.Handler` 由 bootstrap 传入。
 
@@ -46,11 +46,11 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 
 | 域 | app 包 | 入口端点 | 权威契约 |
 |---|---|---|---|
-| quota | `app/quota` | `GET /v1/quota` | [invariants.md](invariants.md) A 组（悲观三闸门记账） |
+| quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 四闸预留与显式 ledger 状态（A 组） |
 | install | `app/install` | `POST /v1/install` · `GET /v1/install/challenge` | GW-INV-12/16/20、防 Sybil + PoW 三态 |
-| chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..37 输入护栏、GW-INV-01..09 记账 |
-| model | `app/model` | `GET /v1/models` | GW-INV-35 白名单强改写 |
-| health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB） |
+| chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
+| model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |
+| health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB）；cached authenticated provider/model probe |
 | dashboard | `app/dashboard` | dashboard `/api/*` | GW-INV-19 session/CSRF/backoff |
 
 ## 4. 错误线缆契约（ADR-002/003）
@@ -59,8 +59,8 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 
 ## 5. 持久化
 
-单文件 SQLite，WAL；写池 `MaxOpenConns=1`（单写者，悲观原子 reserve 的地基）+ 有界只读池。schema 前向 only、版本化迁移（`schema_migrations`）。表与列见 [database.md](database.md)。
+单文件 SQLite，WAL；写池 `MaxOpenConns=1` + 有界只读池。v2 在单 `BEGIN IMMEDIATE` 原子预留月额度与 install/provider/global 三个 pUSD 钱包；`spend_ledger` 显式 `open→settled|rolled_back|orphaned`。v1 token accounting 表只读保留供审计。schema 见 [database.md](database.md)。
 
 ## 6. 配置三层级
 
-runtime-hot（后台可改、存 `settings` 表、原子热生效）/ secret-env-only（机密：env only、绝不入库、dump 掩码）/ startup-hard（监听 / tz / DB 路径 / 内存预算项：env only，改需重启）。全表与边界见 [config.md](config.md)。
+runtime-hot / secret-env-only / startup-hard 三层。DeepSeek key 必填；Gemini key 可选，缺失只使合法多模态返回 `503 MULTIMODAL_UNAVAILABLE`，文本/readiness 正常。provider model/URL 启动冻结，成本/media caps 可按 registry 热改。全表见 [config.md](config.md)。

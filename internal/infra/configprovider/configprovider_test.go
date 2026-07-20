@@ -15,15 +15,15 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// minimalEnv is the smallest env that LoadBase accepts: the two required keys
-// plus a daily cap/budget that satisfy the SEC-2 cross-field semantics under the
-// defaults (INPUT_TOKEN_CAP 16384 + MAX_TOKENS_CAP 4096 = 20480 ≤ cap ≤ budget).
+// minimalEnv supplies the sole required secret plus explicit spend-wallet values
+// that satisfy the compiled model quotes. PUBLIC_MODEL_ID is included so its
+// default/override behavior remains visible in fixtures even though it is optional.
 func minimalEnv() map[string]string {
 	return map[string]string{
-		"DEEPSEEK_API_KEY":           "sk-a,sk-b",
-		"MODEL_ALLOWLIST":            "deepseek-chat,deepseek-coder",
-		"GLOBAL_DAILY_BUDGET_TOKENS": "1000000",
-		"INSTALL_DAILY_TOKEN_CAP":    "100000",
+		"DEEPSEEK_API_KEY":              "sk-a,sk-b",
+		"PUBLIC_MODEL_ID":               "anselm-auto",
+		"GLOBAL_DAILY_SPEND_MICRO_USD":  "14000000",
+		"INSTALL_DAILY_SPEND_MICRO_USD": "5600000",
 	}
 }
 
@@ -81,8 +81,8 @@ func TestLoadBaseDefaults(t *testing.T) {
 	if len(c.DeepSeekAPIKeys) != 2 || c.DeepSeekAPIKeys[0] != "sk-a" {
 		t.Fatalf("DeepSeekAPIKeys = %v", c.DeepSeekAPIKeys)
 	}
-	if c.DefaultModel != "deepseek-chat" {
-		t.Fatalf("DefaultModel = %q, want deepseek-chat", c.DefaultModel)
+	if c.PublicModelID != "anselm-auto" {
+		t.Fatalf("logical model = %q, want anselm-auto", c.PublicModelID)
 	}
 	if c.DeepSeekBaseURL != "https://api.deepseek.com" {
 		t.Fatalf("DeepSeekBaseURL = %q", c.DeepSeekBaseURL)
@@ -127,7 +127,7 @@ func TestLoadBaseMaxBodyBytesExplicit(t *testing.T) {
 
 func TestLoadBaseInputTokenCapZeroDisables(t *testing.T) {
 	// INPUT_TOKEN_CAP=0 disables the input estimate gate — must load without error
-	// (SEC-2 rule ② degrades to MAX_TOKENS_CAP <= INSTALL_DAILY_TOKEN_CAP) and land 0.
+	// The text model's own context limit becomes the request-time guard; land 0.
 	env := minimalEnv()
 	env["INPUT_TOKEN_CAP"] = "0"
 	c := mustLoad(t, env)
@@ -149,6 +149,19 @@ func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	}
 }
 
+func TestLoadBaseGeminiKeyIsOptionalAndTrimmed(t *testing.T) {
+	env := minimalEnv()
+	c := mustLoad(t, env)
+	if len(c.GeminiAPIKeys) != 0 {
+		t.Fatalf("unset Gemini key must keep multimodal disabled, got %d keys", len(c.GeminiAPIKeys))
+	}
+	env["GEMINI_API_KEY"] = " gem-a, ,gem-b "
+	c = mustLoad(t, env)
+	if len(c.GeminiAPIKeys) != 2 || c.GeminiAPIKeys[1] != "gem-b" {
+		t.Fatalf("Gemini keys=%v", c.GeminiAPIKeys)
+	}
+}
+
 func TestLoadBaseFailFast(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -158,9 +171,12 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}{
 		{"missing key", func(m map[string]string) { delete(m, "DEEPSEEK_API_KEY") }, ErrDeepSeekKeyRequired, ""},
 		{"blank key", func(m map[string]string) { m["DEEPSEEK_API_KEY"] = "  , " }, ErrDeepSeekKeyRequired, ""},
-		{"missing allowlist", func(m map[string]string) { delete(m, "MODEL_ALLOWLIST") }, ErrModelAllowlistMissing, ""},
-		{"budget zero", func(m map[string]string) { m["GLOBAL_DAILY_BUDGET_TOKENS"] = "0" }, nil, "GLOBAL_DAILY_BUDGET_TOKENS must be > 0"},
-		{"cap zero", func(m map[string]string) { m["INSTALL_DAILY_TOKEN_CAP"] = "0" }, nil, "INSTALL_DAILY_TOKEN_CAP must be > 0"},
+		{"base URL userinfo", func(m map[string]string) { m["GEMINI_BASE_URL"] = "https://secret@example.com/v1beta/openai" }, nil, "absolute HTTPS base URL"},
+		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
+		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
+		{"unknown priced model", func(m map[string]string) { m["TEXT_UPSTREAM_MODEL"] = "deepseek-latest" }, nil, "no exact rate card"},
+		{"budget zero", func(m map[string]string) { m["GLOBAL_DAILY_SPEND_MICRO_USD"] = "0" }, nil, "GLOBAL_DAILY_SPEND_MICRO_USD must be >= 1"},
+		{"cap zero", func(m map[string]string) { m["INSTALL_DAILY_SPEND_MICRO_USD"] = "0" }, nil, "INSTALL_DAILY_SPEND_MICRO_USD must be >= 1"},
 		{"bad int", func(m map[string]string) { m["MONTHLY_QUOTA"] = "abc" }, nil, "invalid int"},
 		{"over ceiling", func(m map[string]string) { m["MAX_TOKENS_CAP"] = "9999999" }, nil, "MAX_TOKENS_CAP must be <="},
 		{"body cap under floor", func(m map[string]string) { m["MAX_BODY_BYTES"] = "4095" }, nil, "MAX_BODY_BYTES must be >= 4096"},
@@ -168,12 +184,13 @@ func TestLoadBaseFailFast(t *testing.T) {
 		{"pow mode typo", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enabled" }, nil, "INSTALL_POW_MODE"},
 		{"pow secret required", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enforce" }, nil, "CONFIG_POW_SECRET_REQUIRED"},
 		{"cap exceeds budget", func(m map[string]string) {
-			m["GLOBAL_DAILY_BUDGET_TOKENS"] = "50000"
-			m["INSTALL_DAILY_TOKEN_CAP"] = "60000"
-		}, nil, "must be <= GLOBAL_DAILY_BUDGET_TOKENS"},
+			m["GLOBAL_DAILY_SPEND_MICRO_USD"] = "700000"
+			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "800000"
+		}, nil, "must be <= GLOBAL_DAILY_SPEND_MICRO_USD"},
 		{"per-req exceeds cap", func(m map[string]string) {
-			m["INSTALL_DAILY_TOKEN_CAP"] = "10000" // < 16384+4096
-		}, nil, "must be <= INSTALL_DAILY_TOKEN_CAP"},
+			m["GEMINI_API_KEY"] = "gem-key"
+			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
+		}, nil, "multimodal hard-limit quote"},
 		{"dashboard half auth", func(m map[string]string) { m["DASHBOARD_USER"] = "admin" }, nil, "must be set together"},
 		{"listeners collide", func(m map[string]string) { m["DASHBOARD_ADDR"] = "127.0.0.1:8080" }, nil, "must not equal LISTEN_ADDR"},
 		{"mem budget exceeded", func(m map[string]string) {
@@ -196,6 +213,46 @@ func TestLoadBaseFailFast(t *testing.T) {
 				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantSub)
 			}
 		})
+	}
+}
+
+func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveGemini(t *testing.T) {
+	env := minimalEnv()
+	env["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
+	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
+	env["GEMINI_DAILY_SPEND_MICRO_USD"] = "15000000"
+	if _, err := LoadBase(envMap(env)); err != nil {
+		t.Fatalf("Gemini-disabled deployment should validate only active text cost: %v", err)
+	}
+
+	env["GEMINI_API_KEY"] = "gem-key"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "GEMINI_DAILY_SPEND_MICRO_USD") {
+		t.Fatalf("enabling Gemini must activate its wallet/model checks, got %v", err)
+	}
+}
+
+func TestLoadBaseAllowsExplicitLoopbackHTTP(t *testing.T) {
+	t.Parallel()
+	for _, baseURL := range []string{
+		"http://127.0.0.1:18080",
+		"http://[::1]:18080",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			env := minimalEnv()
+			env["DEEPSEEK_BASE_URL"] = baseURL
+			if got := mustLoad(t, env).DeepSeekBaseURL; got != baseURL {
+				t.Fatalf("DeepSeekBaseURL = %q, want %q", got, baseURL)
+			}
+		})
+	}
+}
+
+func TestLoadBaseRejectsHostnameHTTPEvenForLocalhost(t *testing.T) {
+	t.Parallel()
+	env := minimalEnv()
+	env["DEEPSEEK_BASE_URL"] = "http://localhost:18080"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "literal loopback IP") {
+		t.Fatalf("localhost HTTP must not be trusted for credential transport: %v", err)
 	}
 }
 
@@ -376,7 +433,7 @@ func TestDumpMasksSecretsAndCarriesBounds(t *testing.T) {
 		byKey[it.Key] = it
 		// No secret key may ever surface in Dump.
 		switch it.Key {
-		case "DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
+		case "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
 			t.Fatalf("secret %q leaked into Dump", it.Key)
 		}
 	}
@@ -410,6 +467,7 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	env["INSTALL_POW_SECRET"] = "supersecretvalue"
 	env["DASHBOARD_USER"] = "admin"
 	env["DASHBOARD_PASSWORD"] = "hunter2pw"
+	env["GEMINI_API_KEY"] = "gemini-supersecret"
 	p := New(mustLoad(t, env))
 
 	attrs := p.Snapshot()
@@ -425,13 +483,16 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 		kv[k] = attrs[i+1]
 		vals += valStr(attrs[i+1]) + ";"
 	}
-	for _, leak := range []string{"sk-a", "sk-b", "supersecretvalue", "hunter2pw"} {
+	for _, leak := range []string{"sk-a", "sk-b", "gemini-supersecret", "supersecretvalue", "hunter2pw"} {
 		if strings.Contains(vals, leak) {
 			t.Fatalf("secret %q leaked into Snapshot values: %s", leak, vals)
 		}
 	}
 	if kv["deepseek_keys"] != "sk-*** (2 configured)" {
 		t.Fatalf("deepseek_keys mask = %v", kv["deepseek_keys"])
+	}
+	if kv["gemini_keys"] != "*** (1 configured)" {
+		t.Fatalf("gemini_keys mask = %v", kv["gemini_keys"])
 	}
 	if kv["install_pow_secret"] != "configured" {
 		t.Fatalf("pow secret mask = %v", kv["install_pow_secret"])

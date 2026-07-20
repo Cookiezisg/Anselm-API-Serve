@@ -19,7 +19,8 @@ import (
 )
 
 // classifyStatus is the single status→class map (ADR-011): 400/413/422 are
-// request rejections; 402 and any unknown non-2xx stay terminal upstream faults.
+// request rejections; other explicit 3xx/4xx are terminal refusals, while 5xx
+// statuses that are not retryable remain terminal ambiguous upstream faults.
 func TestClassifyStatusTable(t *testing.T) {
 	cases := []struct {
 		code int
@@ -34,8 +35,8 @@ func TestClassifyStatusTable(t *testing.T) {
 		{504, classTimeout},
 		{502, classUpstream},
 		{503, classUpstream},
-		{402, classUpstreamFinal},
-		{418, classUpstreamFinal},
+		{402, classUpstreamRefused},
+		{418, classUpstreamRefused},
 		{500, classUpstreamFinal},
 	}
 	for _, tc := range cases {
@@ -63,6 +64,21 @@ func TestRejectionReason(t *testing.T) {
 			name: "deepseek max_tokens range",
 			body: `{"error":{"message":"Invalid max_tokens value, the valid range of max_tokens is [1, 8192]","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`,
 			want: apierr.RejectedMaxTokens,
+		},
+		{
+			name: "gemini array context overflow",
+			body: `[{"error":{"code":400,"message":"The request exceeds this model's context length.","status":"INVALID_ARGUMENT"}}]`,
+			want: apierr.RejectedContextLength,
+		},
+		{
+			name: "gemini array max_tokens range",
+			body: `[{"error":{"code":400,"message":"Invalid max_tokens for this model.","status":"INVALID_ARGUMENT"}}]`,
+			want: apierr.RejectedMaxTokens,
+		},
+		{
+			name: "gemini empty array",
+			body: `[]`,
+			want: apierr.RejectedInvalid,
 		},
 		{
 			name: "case-insensitive match",
@@ -127,7 +143,7 @@ func TestResolveRejectedOutcome(t *testing.T) {
 	}
 }
 
-// End-to-end through Client.Do: a DeepSeek-style 400 body normalizes to 400
+// End-to-end through Client.Do: an OpenAI-compatible 400 body normalizes to 400
 // UPSTREAM_REJECTED with details.reason=context_length, the server is hit
 // EXACTLY once (no retry), and the upstream text never leaks (GW-INV-11).
 func TestUpstreamRejected400EndToEnd(t *testing.T) {

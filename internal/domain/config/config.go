@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 )
 
 // errMsg is a tiny constructor for static-message errors (keeps spec.go's
@@ -37,13 +39,18 @@ func errMsg(msg string) error { return errors.New(msg) }
 // 每个运行时可改数值项都设合理上界(不止下界):防 OOM 与「天文数字=护栏形同虚设」。
 // env 与 overlay 两路共用同一套天花板,绝不分歧。
 const (
-	MaxMonthlyQuota         int64 = 1_000_000_000
-	MaxGlobalDailyBudget    int64 = 1_000_000_000_000
-	MaxInstallDailyTokenCap int64 = 1_000_000_000_000
-	MaxTokensCap            int64 = 1_000_000
-	MaxInputTokenCap        int64 = 10_000_000
-	MaxMessages             int   = 100_000
-	MaxMessageChars         int   = 16 * 1024 * 1024
+	MaxMonthlyQuota       int64 = 1_000_000_000
+	MaxPublicModelIDBytes int   = 128
+	// Spend knobs are entered as integer micro-USD and converted exactly to the
+	// pico-USD accounting unit. $9M/day is already far beyond this gateway's
+	// intended envelope while leaving multiplication headroom in int64.
+	MaxDailySpendMicroUSD int64 = 9_000_000_000_000
+	MaxTokensCap          int64 = 1_000_000
+	MaxInputTokenCap      int64 = 10_000_000
+	MaxMessages           int   = 100_000
+	MaxMessageChars       int   = 16 * 1024 * 1024
+	MaxMediaParts         int   = 64
+	MaxMediaDecodedBytes  int64 = 8 * 1024 * 1024
 	// MaxBodyBytesCeiling bounds MAX_BODY_BYTES: bodies are fully buffered (~3.5×
 	// peak per in-flight request incl. decode + upstream re-marshal), so the
 	// ceiling is what the reference 2G box tolerates at N_GLOBAL — never higher.
@@ -75,29 +82,41 @@ const (
 	PowModeEnforce = "enforce"
 )
 
-// Config is the immutable, validated runtime configuration. Field names mirror
-// the legacy struct so consumers (env-load, overlay, dashboard) bind cleanly.
+// Config is the immutable, validated runtime configuration. Client-facing model
+// identity, provider targets, and fixed-point spend wallets are explicit facts;
+// there are no token-budget or model-allowlist compatibility mirrors.
 //
-// 全配置启动期一次性读入并校验,运行期只读。字段名沿用旧结构,消费方零改动绑定。
+// 全配置启动期一次性读入并校验,运行期只读。客户端逻辑模型、上游目标与定点金额
+// 钱包各自显式表达,不存在旧白名单/令牌预算镜像。
 type Config struct {
 	DeepSeekAPIKeys []string // DEEPSEEK_API_KEY(逗号分隔多 key,第一个为主)
 	DeepSeekBaseURL string   // DEEPSEEK_BASE_URL
+	GeminiAPIKeys   []string // GEMINI_API_KEY(可选;未配置则多模态能力明确不可用)
+	GeminiBaseURL   string   // GEMINI_BASE_URL(OpenAI compatibility base)
 
-	ModelAllowlist []string // MODEL_ALLOWLIST(真实 deepseek model id)
-	DefaultModel   string   // 白名单首项,client model 强制改写到此
+	// PublicModelID is the single client-facing logical model. Actual upstream
+	// models are construction/config facts selected solely by content capability;
+	// a client model string never selects a provider or a price tier.
+	PublicModelID           string // PUBLIC_MODEL_ID(default anselm-auto)
+	TextUpstreamModel       string // TEXT_UPSTREAM_MODEL(exact priced DeepSeek id)
+	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Gemini id)
 
-	MonthlyQuota         int64 // MONTHLY_QUOTA(次数,用户可见额度)
-	GlobalDailyBudget    int64 // GLOBAL_DAILY_BUDGET_TOKENS(每日全局预算)
-	InstallDailyTokenCap int64 // INSTALL_DAILY_TOKEN_CAP(单 install 日 token 子配额)
-	MaxTokensCap         int64 // MAX_TOKENS_CAP(单请求输出上限,clamp;兼预留额输出分量)
-	InputTokenCap        int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
-	MaxMessages          int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
-	MaxMessageChars      int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)
-	MaxBodyBytes         int64 // MAX_BODY_BYTES(请求体字节上限;内存保护,重启生效)
-	NGlobalConcurrency   int   // N_GLOBAL_CONCURRENCY(全局在飞并发)
-	RatePerMin           int   // RATE_PER_MIN(每 install 分钟令牌桶)
-	DailySublimit        int64 // DAILY_SUBLIMIT(每 install 日次数子限额;0=禁用)
-	InstallPerIPHour     int   // INSTALL_PER_IP_HOUR(/install 单 IP 时频控)
+	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
+	GlobalDailySpendPUSD   int64 // GLOBAL_DAILY_SPEND_MICRO_USD converted to pUSD
+	InstallDailySpendPUSD  int64 // INSTALL_DAILY_SPEND_MICRO_USD converted to pUSD
+	DeepSeekDailySpendPUSD int64 // DEEPSEEK_DAILY_SPEND_MICRO_USD provider wallet
+	GeminiDailySpendPUSD   int64 // GEMINI_DAILY_SPEND_MICRO_USD provider wallet
+	MaxTokensCap           int64 // MAX_TOKENS_CAP(单请求输出上限,clamp;兼预留额输出分量)
+	InputTokenCap          int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
+	MaxMessages            int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
+	MaxMessageChars        int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)
+	MaxMediaParts          int   // MAX_MEDIA_PARTS(整请求媒体 part 数上限)
+	MaxMediaDecodedBytes   int64 // MAX_MEDIA_DECODED_BYTES(base64 解码后总字节)
+	MaxBodyBytes           int64 // MAX_BODY_BYTES(请求体字节上限;内存保护,重启生效)
+	NGlobalConcurrency     int   // N_GLOBAL_CONCURRENCY(全局在飞并发)
+	RatePerMin             int   // RATE_PER_MIN(每 install 分钟令牌桶)
+	DailySublimit          int64 // DAILY_SUBLIMIT(每 install 日次数子限额;0=禁用)
+	InstallPerIPHour       int   // INSTALL_PER_IP_HOUR(/install 单 IP 时频控)
 
 	// M2 防 Sybil 领号闸(全部默认 0=禁用,默认配置下 /v1/install 行为逐字不变):
 	InstallGlobalDailyCap   int64 // INSTALL_GLOBAL_DAILY_CAP(全局每日领号粗阀;0=禁用,须远高于真实日活)
@@ -222,40 +241,91 @@ func validatePowSecretPresent(mode string, secret []byte) error {
 // named explicitly on failure. Run on the env-load path, the startup overlay
 // assembly, AND every hot override batch — the single source of cross-field truth.
 //
-// 跨字段语义:① 单 install 日 token cap ≤ 全局日预算;② INPUT+MAX_TOKENS ≤
-// INSTALL_DAILY_TOKEN_CAP(INPUT_TOKEN_CAP=0 禁用输入闸时退化为 MAX_TOKENS ≤
-// INSTALL_DAILY_TOKEN_CAP,逐请求上界由 app/chat 的运行时预检兜底);③ 生效 PoW
-// mode≠off 必须有 secret。
+// Cross-field rules: install/active-provider cost caps fit under the shared
+// wallet; every active upstream model has a compiled immutable rate card; one
+// request's provable worst-case quote fits the install cap; media cannot exceed
+// the body memory envelope; effective PoW modes have a secret. Gemini-dependent
+// checks are conditional on its optional credential: an intentionally text-only
+// deployment must not fail startup because of an inactive media wallet/model.
 func (c *Config) ValidateSemantics() error {
-	if c.InstallDailyTokenCap > c.GlobalDailyBudget {
-		return fmt.Errorf(
-			"SEC-2 config: INSTALL_DAILY_TOKEN_CAP %d must be <= GLOBAL_DAILY_BUDGET_TOKENS %d "+
-				"(a single install must not be able to drain the whole daily wallet — the sub-cap would be meaningless)",
-			c.InstallDailyTokenCap, c.GlobalDailyBudget)
+	if c.GlobalDailySpendPUSD <= 0 || c.InstallDailySpendPUSD <= 0 {
+		return fmt.Errorf("SEC-2 config: daily spend limits must be > 0")
 	}
-	// Worst-case per-request reservation = promptEst + clampedMaxTokens ≤
-	// INPUT_TOKEN_CAP + MAX_TOKENS_CAP; if that exceeds the daily sub-cap even the
-	// day's FIRST request always trips RATE_LIMITED and no call can ever succeed.
-	// INPUT_TOKEN_CAP=0 disables the input gate (the upstream model is the judge),
-	// so the static bound degrades to the output component alone; the per-request
-	// est is then bounded at runtime by app/chat's pre-reserve check.
-	if c.InputTokenCap > 0 {
-		if maxPerReq := c.InputTokenCap + c.MaxTokensCap; maxPerReq > c.InstallDailyTokenCap {
-			return fmt.Errorf(
-				"SEC-2 config: INPUT_TOKEN_CAP %d + MAX_TOKENS_CAP %d = %d must be <= INSTALL_DAILY_TOKEN_CAP %d "+
-					"(else a single request's worst-case reservation always exceeds the install daily sub-cap and no call can ever succeed)",
-				c.InputTokenCap, c.MaxTokensCap, maxPerReq, c.InstallDailyTokenCap)
-		}
-	} else if c.MaxTokensCap > c.InstallDailyTokenCap {
+	if c.InstallDailySpendPUSD > c.GlobalDailySpendPUSD {
 		return fmt.Errorf(
-			"SEC-2 config: MAX_TOKENS_CAP %d must be <= INSTALL_DAILY_TOKEN_CAP %d when INPUT_TOKEN_CAP=0 "+
-				"(else even an empty-prompt request's reservation always exceeds the install daily sub-cap)",
-			c.MaxTokensCap, c.InstallDailyTokenCap)
+			"SEC-2 config: INSTALL_DAILY_SPEND_MICRO_USD must be <= GLOBAL_DAILY_SPEND_MICRO_USD")
+	}
+	providerCaps := []struct {
+		name string
+		cap  int64
+	}{
+		{"DEEPSEEK_DAILY_SPEND_MICRO_USD", c.DeepSeekDailySpendPUSD},
+	}
+	if len(c.GeminiAPIKeys) > 0 {
+		providerCaps = append(providerCaps, struct {
+			name string
+			cap  int64
+		}{"GEMINI_DAILY_SPEND_MICRO_USD", c.GeminiDailySpendPUSD})
+	}
+	for _, item := range providerCaps {
+		if item.cap <= 0 || item.cap > c.GlobalDailySpendPUSD {
+			return fmt.Errorf("SEC-2 config: %s must be > 0 and <= GLOBAL_DAILY_SPEND_MICRO_USD", item.name)
+		}
+	}
+	if !validPublicModelID(c.PublicModelID) {
+		return fmt.Errorf("SEC-2 config: PUBLIC_MODEL_ID must be 1..%d ASCII bytes using letters, digits, '.', '_', '-', ':', or '/'", MaxPublicModelIDBytes)
+	}
+	textOutput := min(c.MaxTokensCap, billing.DeepSeekOutputLimit)
+	textPrompt := c.InputTokenCap
+	if textPrompt > billing.DeepSeekInputLimit {
+		return fmt.Errorf("SEC-2 config: INPUT_TOKEN_CAP exceeds the text model input limit")
+	}
+	textPlan, err := billing.NewPlan(billing.ProviderDeepSeek, c.TextUpstreamModel,
+		billing.InputStandard, textPrompt, textOutput)
+	if err != nil {
+		return fmt.Errorf("SEC-2 config: TEXT_UPSTREAM_MODEL has no exact rate card: %w", err)
+	}
+	if textPlan.ReservedPUSD > c.InstallDailySpendPUSD {
+		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds INSTALL_DAILY_SPEND_MICRO_USD")
+	}
+	if len(c.GeminiAPIKeys) > 0 {
+		// Gemini compatibility does not formally promise a thinking-token sub-cap.
+		// Reserve its full model input+output hard limits at the highest accepted
+		// input modality rate (audio), then refund from authoritative usage.
+		mediaPlan, err := billing.NewPlan(billing.ProviderGemini, c.MultimodalUpstreamModel,
+			billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+		if err != nil {
+			return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
+		}
+		if mediaPlan.ReservedPUSD > c.InstallDailySpendPUSD {
+			return fmt.Errorf("SEC-2 config: multimodal hard-limit quote exceeds INSTALL_DAILY_SPEND_MICRO_USD")
+		}
+	}
+	if c.MaxMediaParts < 1 || c.MaxMediaParts > MaxMediaParts {
+		return fmt.Errorf("SEC-2 config: MAX_MEDIA_PARTS out of range")
+	}
+	if c.MaxMediaDecodedBytes < 1 || c.MaxMediaDecodedBytes > c.MaxBodyBytes {
+		return fmt.Errorf("SEC-2 config: MAX_MEDIA_DECODED_BYTES must be > 0 and <= MAX_BODY_BYTES")
 	}
 	if err := validatePowSecretPresent(c.InstallPowMode, c.InstallPowSecret); err != nil {
 		return err
 	}
 	return nil
+}
+
+func validPublicModelID(id string) bool {
+	if len(id) == 0 || len(id) > MaxPublicModelIDBytes {
+		return false
+	}
+	for i := range len(id) {
+		b := id[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9') || strings.ContainsRune("._-:/", rune(b)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // WorstCaseMemoryMiB estimates peak RSS in MiB: the Go heap soft limit, plus the
@@ -326,14 +396,12 @@ func (c *Config) ValidateMemoryBudget() (advisory bool, err error) {
 	}
 }
 
-// Clone returns a deep-enough copy: scalars are value-copied by the struct copy;
-// the only reference field overrides replace is ModelAllowlist (replaced
-// wholesale, never appended). DeepSeekAPIKeys / InstallPowSecret are secret slices
-// overrides never touch (PoW secret is env-only, absent from the registry), and
-// Location is never overridden. So a shallow struct copy is race-safe once the
-// pointer is atomically swapped.
+// Clone returns a deep-enough copy. Runtime overrides mutate only scalar fields;
+// the API-key and PoW-secret slices are env-only and Location is startup-only, so
+// none is mutated after publication. A shallow struct copy is therefore race-safe
+// once the pointer is atomically swapped.
 //
-// 浅拷贝即足够:override 只整体替换 ModelAllowlist,机密 slice / Location 从不被改。
+// 浅拷贝即足够:热更新只改标量;机密 slice 与 Location 发布后永不修改。
 func (c *Config) Clone() *Config {
 	cp := *c
 	return &cp

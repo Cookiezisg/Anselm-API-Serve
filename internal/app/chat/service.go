@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
+	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 )
@@ -104,7 +106,7 @@ type HandleInput struct {
 // work (DB reserve, upstream call) is reached only after the cheap gates pass.
 // Method (POST) is already enforced by the handler. Returns nothing: every
 // outcome is written to the sink. The single config snapshot is taken once and
-// reused for all guardrails + model resolution (GW-INV-08).
+// reused for all guardrails + provider selection + response headers (GW-INV-08).
 func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	// 1) Auth — bearer present, then token→install lookup.
 	if in.Token == "" {
@@ -168,45 +170,63 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
-	// 4) Input-token cap: conservative prompt estimate (incl tools) ≤ cap.
-	// INPUT_TOKEN_CAP=0 disables this gate — the upstream model's own context
-	// limit judges instead (its 4xx comes back as 400 UPSTREAM_REJECTED); the
-	// estimate below still feeds the reservation either way.
+	// 4) Validate the strict content union and deterministically route from the
+	// COMPLETE history. A client model string is never consulted: any accepted
+	// media selects Gemini; string/text-only content selects DeepSeek.
+	modality, contentErr := req.ValidateAndClassify(domchat.MediaLimits{
+		MaxParts:        cfg.MaxMediaParts,
+		MaxDecodedBytes: cfg.MaxMediaDecodedBytes,
+	})
+	if contentErr != nil {
+		writeErr(sink, contentErr)
+		return
+	}
+	provider, model, modelOutputLimit := routeFor(modality, cfg)
+	if !s.upstream.Available(provider) {
+		if provider == billing.ProviderGemini {
+			writeErr(sink, apierr.ErrMultimodalUnavailable)
+		} else {
+			writeErr(sink, apierr.ErrUpstreamBusy)
+		}
+		return
+	}
+
+	// 5) Input-token cap. Text requests count their whole body. Multimodal
+	// requests count text + tool schemas but not base64 bytes: Gemini tokenizes
+	// decoded image/audio rather than their transport encoding, while media size
+	// is already bounded by the strict cumulative MediaLimits above. A provider
+	// media-context rejection remains an explicit 400 UPSTREAM_REJECTED.
 	promptEst := req.PromptEstimate()
+	if modality == domchat.ModalityMultimodal {
+		promptEst = req.TextPromptEstimate()
+	}
 	if cfg.InputTokenCap > 0 && promptEst > cfg.InputTokenCap {
 		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large"))
 		return
 	}
 
-	// 5) Build sanitized upstream body: model rewrite, max_tokens clamp, tools
-	// passthrough, forced include_usage on stream. est = promptEst + clamped max.
-	model := domchat.ResolveModel(cfg.ModelAllowlist, cfg.DefaultModel, req.Model)
-	maxTok := domchat.ClampMaxTokens(maxTokensOf(req), cfg.MaxTokensCap)
-	out := domchat.SanitizeUpstream(req, model, maxTok)
-	est := promptEst + maxTok
-
-	// 4b) A request whose worst-case reservation exceeds the install-day sub-cap
-	// can NEVER succeed — today or any other day — so it is a 400, not a
-	// misleading RATE_LIMITED from the reserve gate. This is the runtime
-	// replacement for the SEC-2 static INPUT+MAX_TOKENS bound once
-	// INPUT_TOKEN_CAP=0 leaves promptEst statically unbounded. The >0 guard only
-	// shields zero-value configs (production validates the cap >0 at load).
-	if cfg.InstallDailyTokenCap > 0 && est > cfg.InstallDailyTokenCap {
+	// 6) Clamp the payload to this exact model's output limit, then freeze a
+	// provider-aware pUSD plan. Gemini's compatibility usage cannot prove a
+	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
+	// input/output hard limits. DeepSeek can use the request prompt estimate and
+	// clamped output bound. Audio selects Gemini's higher input rate.
+	maxTok := domchat.ClampMaxTokens(maxTokensOf(req), min64(cfg.MaxTokensCap, modelOutputLimit))
+	plan, planAPIError := billingPlan(provider, model, req, promptEst, maxTok)
+	if planAPIError != nil {
+		writeErr(sink, planAPIError)
+		return
+	}
+	if cfg.InstallDailySpendPUSD > 0 && plan.ReservedPUSD > cfg.InstallDailySpendPUSD {
 		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST",
-			"request exceeds the per-install daily token capacity"))
+			"request exceeds the per-install daily spend capacity"))
 		return
 	}
+	out := domchat.Sanitize(req, maxTok)
 
-	payload, err := json.Marshal(out)
-	if err != nil {
-		writeErr(sink, apierr.Internal())
-		return
-	}
-
-	// 6) Reserve atomically (count / install-day-tokens / global-day-budget). The
+	// 7) Reserve atomically (count / install/provider/global pUSD wallets). The
 	// period is snapshotted ONCE and threaded unchanged through settle/rollback.
 	period := s.quota.SnapshotPeriod(s.clock.Now())
-	resv, rerr := s.quota.Reserve(ctx, installID, est, period)
+	resv, rerr := s.quota.Reserve(ctx, installID, plan, period)
 	if rerr != nil {
 		// app/quota maps denials to apierr sentinels (returned as error); any other
 		// error normalizes to INTERNAL — never leak an internal detail.
@@ -214,17 +234,17 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
-	// 6b) Breaker fast-path (REL-2): an already-open breaker sheds to UPSTREAM_BUSY
-	// WITHOUT taking an N_global slot (red-line: breaker-shed never occupies the
-	// account-level concurrency cap). Roll the reservation back first.
-	if s.upstream.BreakerOpen() {
+	// 7b) Provider-local breaker fast-path (REL-2): one provider's outage must not
+	// shed the other provider or occupy an N_global slot. Roll the reservation
+	// back first because no provider request was attempted.
+	if s.upstream.BreakerOpen(provider) {
 		s.rollback(ctx, resv)
-		s.mx.Upstream("busy")
+		s.mx.Upstream(provider, "busy")
 		writeErr(sink, apierr.ErrUpstreamBusy)
 		return
 	}
 
-	// 7) Acquire an N_global slot with REL-7 bounded queue-wait. ctx-cancel ⇒ 499
+	// 8) Acquire an N_global slot with REL-7 bounded queue-wait. ctx-cancel ⇒ 499
 	// (no busy charge), timeout/full ⇒ UPSTREAM_BUSY; both roll back. The slot is
 	// released on the defer once acquired so forward owns it for the whole relay.
 	if !s.acquireSlot(ctx, cfg.QueueWait) {
@@ -233,14 +253,58 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 			// Client gave up while queued: nothing to write, just release quota.
 			return
 		}
-		s.mx.Upstream("busy")
+		s.mx.Upstream(provider, "busy")
 		writeErr(sink, apierr.ErrUpstreamBusy)
 		return
 	}
 	s.mx.Inflight(len(s.sem))
 	defer func() { <-s.sem; s.mx.Inflight(len(s.sem)) }()
 
-	s.forward(ctx, sink, payload, req.Stream, cfg, resv)
+	s.forward(ctx, sink, provider, model, out, cfg, resv)
+}
+
+// routeFor is the entire model-routing policy. It is intentionally a closed,
+// deterministic two-way mapping and never accepts the client's model field.
+func routeFor(modality domchat.Modality, cfg *config.Config) (billing.Provider, string, int64) {
+	if modality == domchat.ModalityMultimodal {
+		return billing.ProviderGemini, cfg.MultimodalUpstreamModel, billing.GeminiOutputLimit
+	}
+	return billing.ProviderDeepSeek, cfg.TextUpstreamModel, billing.DeepSeekOutputLimit
+}
+
+func billingPlan(provider billing.Provider, model string, req domchat.InboundRequest, promptEst, maxTok int64) (billing.Plan, *apierr.APIError) {
+	card, err := billing.Lookup(provider, model)
+	if err != nil {
+		// Models are operator-owned exact ids. An unknown card is a deployment
+		// fault, never something a client's model string can repair.
+		return billing.Plan{}, apierr.Internal()
+	}
+	if promptEst > card.InputLimit {
+		return billing.Plan{}, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large")
+	}
+	if provider == billing.ProviderGemini {
+		inputClass := billing.InputStandard
+		if req.HasAudio() {
+			inputClass = billing.InputAudio
+		}
+		plan, err := billing.NewPlan(provider, model, inputClass, card.InputLimit, card.OutputLimit)
+		if err != nil {
+			return billing.Plan{}, apierr.Internal()
+		}
+		return plan, nil
+	}
+	plan, err := billing.NewPlan(provider, model, billing.InputStandard, promptEst, maxTok)
+	if err != nil {
+		return billing.Plan{}, apierr.Internal()
+	}
+	return plan, nil
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // acquireSlot takes an N_global slot with REL-7 bounded backpressure: grab a free
@@ -271,19 +335,18 @@ func (s *Service) acquireSlot(ctx context.Context, queueWait time.Duration) bool
 	}
 }
 
-// maxTokensOf returns the inbound max_tokens pointer for clamping. Kept tiny so
-// the domain type's field stays unexported while the app can clamp it.
+// maxTokensOf returns the inbound max_tokens pointer for clamping.
 func maxTokensOf(in domchat.InboundRequest) *int64 { return in.MaxTokens }
 
 // settle runs Settle on a detached context (REL-4), tracked by bgWG so shutdown
 // awaits accounting before DB close. A non-nil error is COUNTED + WARNed (B2):
 // it is never swallowed, so a failed settle is observable rather than silently
-// left for the orphan scanner to refund full.
-func (s *Service) settle(parent context.Context, r *domquota.Reservation, actual int64) {
+// left for the orphan scanner to finalize at the full reservation.
+func (s *Service) settle(parent context.Context, r *domquota.Reservation, actualPUSD int64) {
 	s.bgWG.Add(1)
 	go func() {
 		defer s.bgWG.Done()
-		if err := s.quota.Settle(detach(parent), r, actual); err != nil {
+		if err := s.quota.Settle(detach(parent), r, actualPUSD); err != nil {
 			s.mx.SettleFailure()
 			s.log.Warn(parent, "settle_failed", "event", "accounting_settle_failed",
 				"request_id", r.RequestID, "install_id", r.InstallID,
@@ -292,7 +355,8 @@ func (s *Service) settle(parent context.Context, r *domquota.Reservation, actual
 	}()
 }
 
-// rollback mirrors settle for a pre-output failure (REL-5), with B2 observability.
+// rollback mirrors settle for a definitely-unbilled failure (REL-5), with B2
+// observability. Ambiguous outcomes after Open use settle(full quote) instead.
 func (s *Service) rollback(parent context.Context, r *domquota.Reservation) {
 	s.bgWG.Add(1)
 	go func() {

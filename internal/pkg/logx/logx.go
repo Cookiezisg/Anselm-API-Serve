@@ -33,18 +33,35 @@ var loggerKey = ctxKey{}
 // redactKeys are attribute keys whose VALUE is always dropped regardless of
 // caller intent — the last line of defense against logging a secret/PII.
 var redactKeys = map[string]struct{}{
-	"authorization": {},
-	"api_key":       {},
-	"apikey":        {},
-	"key":           {},
-	"token":         {},
-	"prompt":        {},
-	"completion":    {},
-	"content":       {},
-	"messages":      {},
-	"body":          {},
-	"upstream_body": {},
-	"raw":           {},
+	"auth":                {},
+	"authorization":       {},
+	"proxy-authorization": {},
+	"api_key":             {},
+	"deepseek_api_key":    {},
+	"gemini_api_key":      {},
+	"x-api-key":           {},
+	"x-goog-api-key":      {},
+	"apikey":              {},
+	"key":                 {},
+	"token":               {},
+	"password":            {},
+	"secret":              {},
+	"credential":          {},
+	"credentials":         {},
+	"cookie":              {},
+	"set-cookie":          {},
+	"dashboard_user":      {},
+	"prompt":              {},
+	"completion":          {},
+	"content":             {},
+	"messages":            {},
+	"image_url":           {},
+	"input_audio":         {},
+	"inline_data":         {},
+	"file_data":           {},
+	"body":                {},
+	"upstream_body":       {},
+	"raw":                 {},
 }
 
 // redactValue is the marker substituted for any redacted attribute.
@@ -103,18 +120,33 @@ func parseLevel(s string) slog.Level {
 // re-invoked on the inner fields of such a value, so a nested secret under a
 // benign key would otherwise be JSON-encoded verbatim.
 func redactAttr(_ []string, a slog.Attr) slog.Attr {
-	if _, hit := redactKeys[strings.ToLower(a.Key)]; hit {
+	key := strings.ToLower(strings.TrimSpace(a.Key))
+	if isSensitiveKey(key) {
 		a.Value = slog.StringValue(redactValue)
 		return a
 	}
 	// slog.Group members recurse back through ReplaceAttr, so leave them be;
 	// only guard composite *values* (KindAny from slog.Any).
 	if a.Value.Kind() == slog.KindAny && isComposite(a.Value.Any()) {
-		if _, ok := compositeAllowlist[strings.ToLower(a.Key)]; !ok {
+		if _, ok := compositeAllowlist[key]; !ok {
 			a.Value = slog.StringValue(redactValue)
 		}
 	}
 	return a
+}
+
+// isSensitiveKey combines pinned protocol/env names with conservative suffixes
+// for provider-specific credentials. New providers commonly add a new
+// FOO_API_KEY, while subsystems add FOO_PASSWORD / FOO_SECRET; requiring every
+// caller to remember to extend an exact-name list would make the hard floor
+// silently weaker over time.
+func isSensitiveKey(key string) bool {
+	if _, hit := redactKeys[key]; hit {
+		return true
+	}
+	return strings.HasSuffix(key, "_api_key") ||
+		strings.HasSuffix(key, "_password") ||
+		strings.HasSuffix(key, "_secret")
 }
 
 // isComposite reports whether v renders field-by-field via the JSON encoder

@@ -1,6 +1,10 @@
 package chat
 
-import "context"
+import (
+	"context"
+
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+)
 
 // No-op port defaults so optional collaborators can be omitted at wiring without
 // the hot path nil-checking. Each is the inert form of its port (the
@@ -21,10 +25,11 @@ func (noopLogger) Warn(context.Context, string, ...any) {}
 
 type noopMetrics struct{}
 
-func (noopMetrics) Inflight(int)     {}
-func (noopMetrics) Upstream(string)  {}
-func (noopMetrics) SettleFailure()   {}
-func (noopMetrics) RollbackFailure() {}
+func (noopMetrics) Inflight(int)                      {}
+func (noopMetrics) Upstream(billing.Provider, string) {}
+func (noopMetrics) BillingDrift(billing.Provider)     {}
+func (noopMetrics) SettleFailure()                    {}
+func (noopMetrics) RollbackFailure()                  {}
 
 type noopWG struct{}
 

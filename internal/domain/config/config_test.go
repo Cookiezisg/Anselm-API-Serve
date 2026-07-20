@@ -5,28 +5,38 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 )
 
 // validBase returns a Config that passes ValidateSemantics + the default memory
 // budget — the fixture every override/semantic test mutates from.
 func validBase() Config {
 	return Config{
-		DeepSeekAPIKeys: []string{"sk-test"},
-		DeepSeekBaseURL: "https://api.deepseek.com",
-		ModelAllowlist:  []string{"deepseek-chat"},
-		DefaultModel:    "deepseek-chat",
+		DeepSeekAPIKeys:         []string{"sk-test"},
+		DeepSeekBaseURL:         "https://api.deepseek.com",
+		GeminiAPIKeys:           []string{"gem-test"},
+		GeminiBaseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
+		PublicModelID:           "anselm-auto",
+		TextUpstreamModel:       billing.DeepSeekV4Flash,
+		MultimodalUpstreamModel: billing.Gemini31FlashLite,
 
-		MonthlyQuota:         5000,
-		GlobalDailyBudget:    1_000_000,
-		InstallDailyTokenCap: 100_000,
-		MaxTokensCap:         4096,
-		InputTokenCap:        16384,
-		MaxMessages:          256,
-		MaxMessageChars:      131072,
-		NGlobalConcurrency:   8,
-		RatePerMin:           20,
-		DailySublimit:        0,
-		InstallPerIPHour:     10,
+		MonthlyQuota:           5000,
+		GlobalDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
+		InstallDailySpendPUSD:  5_600_000 * billing.PicoUSDPerMicroUSD,
+		DeepSeekDailySpendPUSD: 14 * billing.PicoUSDPerUSD,
+		GeminiDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
+		MaxTokensCap:           4096,
+		InputTokenCap:          16384,
+		MaxMessages:            256,
+		MaxMessageChars:        131072,
+		MaxBodyBytes:           4 * 1024 * 1024,
+		MaxMediaParts:          8,
+		MaxMediaDecodedBytes:   3 * 1024 * 1024,
+		NGlobalConcurrency:     8,
+		RatePerMin:             20,
+		DailySublimit:          0,
+		InstallPerIPHour:       10,
 
 		InstallPowMode:       PowModeOff,
 		InstallPowDifficulty: 20,
@@ -73,60 +83,63 @@ func TestValidBaseIsValid(t *testing.T) {
 
 func TestSemanticsInstallCapVsGlobalBudget(t *testing.T) {
 	c := validBase()
-	c.InstallDailyTokenCap = c.GlobalDailyBudget + 1
+	c.InstallDailySpendPUSD = c.GlobalDailySpendPUSD + 1
 	err := c.ValidateSemantics()
-	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_TOKEN_CAP") {
+	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_SPEND_MICRO_USD") {
 		t.Fatalf("want install-cap>budget error, got %v", err)
 	}
 }
 
-func TestSemanticsInputPlusMaxVsInstallCap(t *testing.T) {
+func TestSemanticsMultimodalQuoteVsInstallCap(t *testing.T) {
 	c := validBase()
-	// Make per-request worst-case exceed the install daily sub-cap.
-	c.InstallDailyTokenCap = c.InputTokenCap + c.MaxTokensCap - 1
+	c.InstallDailySpendPUSD = 100_000_000_000 // $0.10: above text, below Gemini hard quote.
 	err := c.ValidateSemantics()
-	if err == nil || !strings.Contains(err.Error(), "must be <= INSTALL_DAILY_TOKEN_CAP") {
-		t.Fatalf("want input+max>install-cap error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
+		t.Fatalf("want quote>install-cap error, got %v", err)
 	}
 }
 
-func TestSemanticsInputPlusMaxAtBoundPasses(t *testing.T) {
+func TestSemanticsMultimodalQuoteAtBoundPasses(t *testing.T) {
 	c := validBase()
-	// Exactly at the bound: INPUT + MAX == INSTALL_DAILY_TOKEN_CAP is allowed
-	// (the rule is <=, not <) — the day's first request can just fit.
-	c.InstallDailyTokenCap = c.InputTokenCap + c.MaxTokensCap
+	p, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
+		billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.InstallDailySpendPUSD = p.ReservedPUSD
 	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("input+max == install-cap should pass, got %v", err)
+		t.Fatalf("quote == install cap should pass, got %v", err)
 	}
 }
 
-func TestSemanticsInputCapZeroDegradesToMaxTokensRule(t *testing.T) {
-	// INPUT_TOKEN_CAP=0 disables the input gate: rule ② degrades to
-	// MAX_TOKENS_CAP <= INSTALL_DAILY_TOKEN_CAP(输入闸禁用时只约束输出分量).
+func TestSemanticsGeminiDisabledDoesNotConstrainTextStartup(t *testing.T) {
+	c := validBase()
+	c.GeminiAPIKeys = nil
+	c.MultimodalUpstreamModel = "inactive-unknown-model"
+	c.GeminiDailySpendPUSD = c.GlobalDailySpendPUSD + 1
+	// $0.10 is safely above this text fixture's worst quote, but below the
+	// conservative Gemini full-model quote. With no Gemini credential, only the
+	// text route is active and startup must remain healthy.
+	c.InstallDailySpendPUSD = 100_000 * billing.PicoUSDPerMicroUSD
+	if err := c.ValidateSemantics(); err != nil {
+		t.Fatalf("inactive Gemini constrained text-only startup: %v", err)
+	}
+}
+
+func TestSemanticsInputCapZeroAccepted(t *testing.T) {
 	c := validBase()
 	c.InputTokenCap = 0
-	c.MaxTokensCap = 4096
-	c.InstallDailyTokenCap = 4096 // == is allowed
 	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("input-cap=0 with max<=daily should pass, got %v", err)
-	}
-	c.InstallDailyTokenCap = 4095 // max > daily → reject, naming MAX_TOKENS_CAP
-	err := c.ValidateSemantics()
-	if err == nil || !strings.Contains(err.Error(), "MAX_TOKENS_CAP") ||
-		!strings.Contains(err.Error(), "when INPUT_TOKEN_CAP=0") {
-		t.Fatalf("want degraded-rule error naming MAX_TOKENS_CAP, got %v", err)
+		t.Fatalf("input-cap=0 should defer text input bound to runtime, got %v", err)
 	}
 }
 
-func TestSemanticsInputCapZeroSkipsCombinedRule(t *testing.T) {
-	// With the input gate disabled the combined INPUT+MAX bound must NOT apply: a
-	// daily cap that would fail the old combined rule (16384+4096) still passes.
+func TestSemanticsUnknownPricedModelFailsClosed(t *testing.T) {
 	c := validBase()
-	c.InputTokenCap = 0
-	c.MaxTokensCap = 4096
-	c.InstallDailyTokenCap = 5000
-	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("combined rule must be skipped at input-cap=0, got %v", err)
+	c.MultimodalUpstreamModel = "gemini-latest"
+	err := c.ValidateSemantics()
+	if err == nil || !strings.Contains(err.Error(), "no exact rate card") {
+		t.Fatalf("unknown model must fail closed, got %v", err)
 	}
 }
 
@@ -208,7 +221,7 @@ func TestApplyOverrideBoundsRejectedPerKey(t *testing.T) {
 	}{
 		{"MONTHLY_QUOTA", "0", "MONTHLY_QUOTA must be >= 1"},
 		{"MONTHLY_QUOTA", "1000000001", "MONTHLY_QUOTA must be <= 1000000000"},
-		{"GLOBAL_DAILY_BUDGET_TOKENS", "0", "GLOBAL_DAILY_BUDGET_TOKENS must be >= 1"},
+		{"GLOBAL_DAILY_SPEND_MICRO_USD", "0", "GLOBAL_DAILY_SPEND_MICRO_USD must be >= 1"},
 		{"MAX_TOKENS_CAP", "0", "MAX_TOKENS_CAP must be >= 1"},
 		{"MAX_TOKENS_CAP", "1000001", "MAX_TOKENS_CAP must be <= 1000000"},
 		{"MAX_MESSAGES", "0", "MAX_MESSAGES must be >= 1"},
@@ -298,20 +311,29 @@ func TestApplyOverrideMaxBodyBytesBoundsRejected(t *testing.T) {
 	}
 }
 
-func TestApplyOverrideModelAllowlist(t *testing.T) {
-	got, err := ApplyOverrides(validBase(), map[string]string{"MODEL_ALLOWLIST": " a , b ,"})
+func TestApplyOverridePublicModelID(t *testing.T) {
+	got, err := ApplyOverrides(validBase(), map[string]string{"PUBLIC_MODEL_ID": " app-model "})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(got.ModelAllowlist) != 2 || got.DefaultModel != "a" {
-		t.Fatalf("allowlist=%v default=%q", got.ModelAllowlist, got.DefaultModel)
+	if got.PublicModelID != "app-model" {
+		t.Fatalf("public=%q", got.PublicModelID)
 	}
 }
 
-func TestApplyOverrideModelAllowlistEmptyRejected(t *testing.T) {
-	_, err := ApplyOverrides(validBase(), map[string]string{"MODEL_ALLOWLIST": " , ,"})
-	if err == nil || !strings.Contains(err.Error(), "MODEL_ALLOWLIST must not be empty") {
-		t.Fatalf("want empty-allowlist error, got %v", err)
+func TestApplyOverridePublicModelIDEmptyRejected(t *testing.T) {
+	_, err := ApplyOverrides(validBase(), map[string]string{"PUBLIC_MODEL_ID": "   "})
+	if err == nil || !strings.Contains(err.Error(), "PUBLIC_MODEL_ID must not be empty") {
+		t.Fatalf("want empty-model error, got %v", err)
+	}
+}
+
+func TestApplyOverridePublicModelIDRejectsUnsafeOrUnboundedValue(t *testing.T) {
+	for _, id := range []string{"has space", "模型", strings.Repeat("a", MaxPublicModelIDBytes+1)} {
+		_, err := ApplyOverrides(validBase(), map[string]string{"PUBLIC_MODEL_ID": id})
+		if err == nil || !strings.Contains(err.Error(), "PUBLIC_MODEL_ID") {
+			t.Fatalf("id=%q: expected named validation error, got %v", id, err)
+		}
 	}
 }
 
@@ -327,7 +349,7 @@ func TestApplyOverrideRejectsStartupHardByName(t *testing.T) {
 }
 
 func TestApplyOverrideRejectsSecretByName(t *testing.T) {
-	for _, key := range []string{"DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
+	for _, key := range []string{"DEEPSEEK_API_KEY", "GEMINI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
 		_, err := ApplyOverrides(validBase(), map[string]string{key: "x"})
 		if err == nil || !strings.Contains(err.Error(), "unknown or secret") || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s: want named secret/unknown rejection, got %v", key, err)
@@ -376,10 +398,10 @@ func TestApplyOverridePowModeInvalidValue(t *testing.T) {
 func TestApplyOverrideReRunsSemantics(t *testing.T) {
 	// Individually valid, but together they break install-cap <= global-budget.
 	_, err := ApplyOverrides(validBase(), map[string]string{
-		"GLOBAL_DAILY_BUDGET_TOKENS": "50000",
-		"INSTALL_DAILY_TOKEN_CAP":    "60000",
+		"GLOBAL_DAILY_SPEND_MICRO_USD":  "700000",
+		"INSTALL_DAILY_SPEND_MICRO_USD": "800000",
 	})
-	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_TOKEN_CAP") {
+	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_SPEND_MICRO_USD") {
 		t.Fatalf("batch must re-run semantics, got %v", err)
 	}
 }
@@ -399,7 +421,7 @@ func TestApplyOverrideAllOrNothing(t *testing.T) {
 	}
 	// On error the returned Config must be the zero value (no partial apply): the
 	// valid first key (MonthlyQuota=123) must NOT have landed.
-	if got.MonthlyQuota != 0 || got.ModelAllowlist != nil {
+	if got.MonthlyQuota != 0 || got.PublicModelID != "" {
 		t.Fatalf("on error must return zero Config, got partial: %+v", got)
 	}
 	// Base must be untouched.
@@ -477,9 +499,9 @@ func TestDumpBoundedHintsMatchApply(t *testing.T) {
 	if !mq.Bounded || mq.Min != 1 || mq.Max != MaxMonthlyQuota {
 		t.Fatalf("MONTHLY_QUOTA hints wrong: %+v", mq)
 	}
-	// MODEL_ALLOWLIST is a string list — not bounded.
-	if byKey["MODEL_ALLOWLIST"].Bounded {
-		t.Fatalf("MODEL_ALLOWLIST should not be bounded")
+	// PUBLIC_MODEL_ID is a string — not numerically bounded.
+	if byKey["PUBLIC_MODEL_ID"].Bounded {
+		t.Fatalf("PUBLIC_MODEL_ID should not be bounded")
 	}
 }
 

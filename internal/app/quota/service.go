@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 )
 
@@ -35,15 +36,16 @@ type ConfigSource interface {
 // here. Denials surface as the typed Err* sentinels above; the Reservation's
 // SublimitApplied flag is set by the store IFF the gated +1 fired (B1).
 type Repository interface {
-	Reserve(ctx context.Context, installID string, est int64, p quota.Period, lim Limits) (*quota.Reservation, error)
-	Settle(ctx context.Context, r *quota.Reservation, actual int64) error
+	Reserve(ctx context.Context, installID string, plan billing.Plan, p quota.Period, lim Limits) (*quota.Reservation, error)
+	Settle(ctx context.Context, r *quota.Reservation, actualPUSD int64) error
 	Rollback(ctx context.Context, r *quota.Reservation) error
-	// ReconcileOrphans refunds budget+day-tokens for settled-NULL ledger rows
-	// created before olderThan (now-cutoff is computed by the caller and passed as
-	// olderThan), keeping the +1 month count. Returns the number reconciled.
+	// ReconcileOrphans closes aged open rows conservatively at their full reserved
+	// spend. It never refunds an unknown provider charge and keeps request counts.
 	ReconcileOrphans(ctx context.Context, olderThan time.Time) (int, error)
-	// View reads the authoritative monthly count + the day's budget usage.
-	View(ctx context.Context, installID string, p quota.Period) (used, budgetUsed int64, err error)
+	// View reads the authoritative monthly count plus the install/global daily
+	// pUSD balances. Provider availability is request-shape dependent and is
+	// therefore enforced by Reserve rather than this provider-neutral view.
+	View(ctx context.Context, installID string, p quota.Period) (used, installSpendPUSD, globalSpendPUSD int64, err error)
 }
 
 // Service is the accounting use case over a Repository + ConfigSource.
@@ -66,8 +68,8 @@ func (s *Service) SnapshotPeriod(now time.Time) quota.Period {
 // Reserve pre-debits the guardrails atomically, mapping a typed denial to its
 // wire sentinel. The Limits snapshot is taken ONCE here and passed into the
 // store so the whole reserve sees a single consistent config view.
-func (s *Service) Reserve(ctx context.Context, installID string, est int64, p quota.Period) (*quota.Reservation, error) {
-	r, err := s.repo.Reserve(ctx, installID, est, p, s.cfg.Limits())
+func (s *Service) Reserve(ctx context.Context, installID string, plan billing.Plan, p quota.Period) (*quota.Reservation, error) {
+	r, err := s.repo.Reserve(ctx, installID, plan, p, s.cfg.Limits())
 	if err != nil {
 		return nil, mapReserveErr(err)
 	}
@@ -81,10 +83,12 @@ func mapReserveErr(err error) error {
 	switch {
 	case errors.Is(err, quota.ErrMonthlyExhausted):
 		return apierr.ErrQuotaExhausted
-	case errors.Is(err, quota.ErrDayTokensExceeded):
+	case errors.Is(err, quota.ErrInstallSpendExceeded):
 		return apierr.ErrRateLimited
 	case errors.Is(err, quota.ErrSublimitExceeded):
 		return apierr.ErrRateLimited
+	case errors.Is(err, quota.ErrProviderSpendExceeded):
+		return apierr.ErrBudgetExhausted
 	case errors.Is(err, quota.ErrBudgetExceeded):
 		return apierr.ErrBudgetExhausted
 	default:
@@ -94,9 +98,10 @@ func mapReserveErr(err error) error {
 
 // Settle reconciles a reservation against actual usage. Errors are returned (not
 // swallowed) so the caller can count SettleFailures + WARN (B2): a failed settle
-// must be observable, not silently left for the orphan scanner to refund full.
-func (s *Service) Settle(ctx context.Context, r *quota.Reservation, actual int64) error {
-	return s.repo.Settle(ctx, r, actual)
+// must be observable, not silently left for the orphan scanner to finalize at the
+// full reservation.
+func (s *Service) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int64) error {
+	return s.repo.Settle(ctx, r, actualPUSD)
 }
 
 // Rollback reverses all reservations for a pre-output failure. Returned errors
@@ -105,9 +110,8 @@ func (s *Service) Rollback(ctx context.Context, r *quota.Reservation) error {
 	return s.repo.Rollback(ctx, r)
 }
 
-// View is the read model for GET /v1/quota. The availability rule (remaining>0
-// AND budgetUsed<GlobalDailyBudget) is owned HERE, not in transport, so every
-// caller agrees on what "available" means. Reserves nothing, bills nothing.
+// View is the read model for GET /v1/quota. The wire remains monthly-count based;
+// Available additionally folds the provider-neutral install/global spend gates.
 type View struct {
 	Limit     int64
 	Used      int64 // authoritative monthly count.
@@ -118,7 +122,7 @@ type View struct {
 
 // View builds the read model from the authoritative monthly count + day budget.
 func (s *Service) View(ctx context.Context, installID string, p quota.Period) (*View, error) {
-	used, budgetUsed, err := s.repo.View(ctx, installID, p)
+	used, installSpend, globalSpend, err := s.repo.View(ctx, installID, p)
 	if err != nil {
 		return nil, err
 	}
@@ -132,14 +136,15 @@ func (s *Service) View(ctx context.Context, installID string, p quota.Period) (*
 		Used:      used,
 		Remaining: remaining,
 		ResetAt:   quota.MonthResetAt(p, s.cfg.Location()),
-		Available: remaining > 0 && budgetUsed < lim.GlobalDailyBudget,
+		Available: remaining > 0 &&
+			installSpend < lim.InstallDailySpendPUSD &&
+			globalSpend < lim.GlobalDailySpendPUSD,
 	}, nil
 }
 
-// ReconcileOrphans is the background-loop policy: refund crash-left reservations
-// older than `older` relative to `now`, so a day's budget is never chronically
-// pinned by a process that died mid-flight (GW-INV-06). The cutoff is computed
-// here (app owns the policy) and passed to the store as an absolute instant.
+// ReconcileOrphans is the background-loop policy: aged unknown outcomes are
+// closed at their full reservation. Keeping the spend is the only crash-safe
+// direction because the provider may already have billed before the process died.
 func (s *Service) ReconcileOrphans(ctx context.Context, older time.Duration, now time.Time) (int, error) {
 	return s.repo.ReconcileOrphans(ctx, now.Add(-older))
 }

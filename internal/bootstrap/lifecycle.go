@@ -19,6 +19,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/daemon"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/alert"
 )
 
@@ -44,7 +45,8 @@ func Run(app *App) error {
 	}
 	var dashLn net.Listener
 
-	// 2) Startup sweep + prime BEFORE serving: refund crash-left reservations, and
+	// 2) Startup sweep + prime BEFORE serving: finalize crash-left reservations at
+	// their full reserved spend (never refund an unknown provider charge), and
 	// prime the disk-degrade flag synchronously so the first request sees the true
 	// disk state (not the optimistic false default) on an already-full disk.
 	if n, rerr := app.quota.ReconcileOrphans(context.Background(), 10*time.Minute, time.Now()); rerr != nil {
@@ -152,8 +154,14 @@ func (app *App) startLoops() {
 func (app *App) metricsRefresh(ctx context.Context) {
 	refresh := func() {
 		c := app.cfg.Load()
-		app.mx.BudgetLimit.Set(float64(c.GlobalDailyBudget))
 		app.rl.SetRate(c.RatePerMin) // follow the RATE_PER_MIN hot-reload.
+
+		_, budgetLimit, budgetUsed, budgetErr := app.dailyBudget.GlobalBudget(ctx)
+		if budgetErr == nil {
+			const microUSDPerUSD = 1_000_000
+			app.mx.BudgetLimit.Set(float64(budgetLimit) / microUSDPerUSD)
+			app.mx.BudgetUsed.Set(float64(budgetUsed) / microUSDPerUSD)
+		}
 
 		open, haveOpen := int64(0), false
 		if o, err := app.openReservations.OpenReservations(ctx); err == nil {
@@ -163,13 +171,15 @@ func (app *App) metricsRefresh(ctx context.Context) {
 
 		throttledNow := app.throttle.TokensThrottledNow() // sweeps + republishes the gauge.
 
-		if haveOpen {
+		if haveOpen && budgetErr == nil {
 			app.alerter.Check(ctx, alert.Signals{
-				BudgetLimit:      c.GlobalDailyBudget,
+				BudgetUsed:       budgetUsed,
+				BudgetLimit:      budgetLimit,
 				ReservationsOpen: open,
-				BreakerOpen:      app.upstream.BreakerOpen(),
-				DiskDegraded:     app.disk.Degraded(),
-				TokensThrottled:  int64(throttledNow),
+				BreakerOpen: app.providers.BreakerOpen(billing.ProviderDeepSeek) ||
+					app.providers.BreakerOpen(billing.ProviderGemini),
+				DiskDegraded:    app.disk.Degraded(),
+				TokensThrottled: int64(throttledNow),
 			})
 		}
 	}
@@ -230,8 +240,8 @@ func tick(ctx context.Context, every time.Duration, f func()) {
 
 // waitWithTimeout waits for wg to reach zero or the timeout, returning whether it
 // drained. A timed-out background write is backstopped by the next startup's
-// orphan reconcile (leaving settled NULL never corrupts the ledger, just delays
-// the refund).
+// orphan reconcile (leaving state=open never corrupts the ledger; reconciliation
+// later finalizes it at the full reserved spend).
 func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()

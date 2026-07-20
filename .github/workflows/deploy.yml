@@ -1,423 +1,301 @@
-# Free-Tier Gateway — deploy (push main → 生产服务器)。
+# Production deploy: build on GitHub, transfer through a pinned SSH channel, then
+# perform a traffic-blocked, schema-aware state transition on the VPS.
 #
-# PR 质量 + 安全门在独立的 ci.yml(golangci-lint + govulncheck + 覆盖率阈值),
-# 必过且独立于本 workflow;本 workflow 只负责 main 的构建 + 部署 + 部署 gate +
-# 自动回滚(OPS-1)。
+# Required GitHub Environment (`production`) secrets:
+#   SSH_PRIVATE_KEY, SERVER_HOST, SERVER_USER, SERVER_KNOWN_HOSTS
+#   DEEPSEEK_API_KEY, GATEWAY_DOMAIN, ACME_EMAIL
+# Optional secrets:
+#   GEMINI_API_KEY (omitting it disables only multimodal requests)
+#   DASHBOARD_USER + DASHBOARD_PASSWORD (must be set together)
+#   SITE_DOMAIN (otherwise derived from api.<root>)
 #
-# 备份方案:后台一键导出 + (可选)本地 cron 快照,无异地备份。
-#
-# 机密原则:必须保密的(上游 key / 后台口令 / SSH 凭据),以及不愿在公开仓库 + Actions
-# 日志里暴露的部署目标信息(域名 / ACME 邮箱),都放 GitHub secret(secret 在日志中自动
-# 掩码);其余运营配置用下方 heredoc 的提交式明文——可见、可审、可在 PR 里 diff。
-#
-# 全部所需 GitHub repository secrets(共 9 项,缺一不可):
-#   DEEPSEEK_API_KEY   上游 key——唯一花钱的东西
-#   DASHBOARD_USER / DASHBOARD_PASSWORD  管理后台鉴权(要么都配、要么都空,写 0600)
-#   SSH_PRIVATE_KEY    部署 SSH 私钥(对应服务器 authorized_keys)
-#   SERVER_HOST        服务器 IP / 主机名 ; SERVER_USER  SSH 登录用户(需 sudo)
-#   SERVER_KNOWN_HOSTS 钉服务器 SSH 指纹,替代盲 TOFU keyscan(未配则回退 keyscan,
-#                      首连可被 MITM,仅 dev 可接受;生产应配。见 ssh setup 步与 README)
-#   GATEWAY_DOMAIN     API 对外域名(如 api.example.com);设为 secret 以免公开仓库与 Actions
-#                      日志暴露部署位置。
-#   SITE_DOMAIN        可选:根域官网(如 example.com);未设且 GATEWAY_DOMAIN 形如
-#                      api.example.com 时,部署脚本自动推导为 example.com。
-#   ACME_EMAIL         Caddy ACME 账户邮箱(证书签发 / ZeroSSL EAB)
-# 其余一切运营配置(钱包预算 / caps / 并发 / 模型 / base-url / 内存·磁盘调优)均为本文件
-# 下方 heredoc 的提交式明文——可见、可审、可在 PR 里 diff,改配置即改这里。
-# 注:运行时可改项(budget/caps/rate/disk 阈值等)亦可在管理后台在线改、存 DB 热生效;
-#   heredoc 仅给初始默认(env 默认 ← DB 覆盖)。
+# SERVER_KNOWN_HOSTS is mandatory. There is deliberately no ssh-keyscan/TOFU
+# fallback: the production host identity must be pinned out of band.
 
 name: deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
 
-# Least-privilege: this workflow only reads the repo (no PR writes, no packages).
 permissions:
   contents: read
 
-# Serialize production deploys and NEVER cancel an in-flight one — interrupting a
-# deploy mid-install could leave the symlink/binary/DB in a half-applied state.
+# Never cancel a state transition after it has started. The remote installer also
+# has an EXIT/signal trap, but serialization avoids needless rollback pressure.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 
 jobs:
   build-test-deploy:
+    # workflow_run can expose production secrets, so accept only the repository's
+    # own successful push-to-main CI run and deploy that run's immutable SHA.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    # Bind to the protected `production` environment so required reviewers /
-    # environment secrets gate this job (set up in repo Settings, see README).
     environment: production
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
-          # Read the required Go version straight from go.mod so CI never drifts
-          # behind the toolchain the module declares (a pinned mismatch fails
-          # `go vet` on step 1 with "go.mod requires go >= ...").
           go-version-file: go.mod
 
-      - name: vet
-        run: go vet ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: internal/infra/webassets/ui/package-lock.json
+
+      # CI success is the admission gate. These checks intentionally run again on
+      # the exact checked-out SHA as defense in depth before production mutation.
+      - name: gofmt (no diff)
+        run: |
+          out="$(gofmt -l .)"
+          if [[ -n "${out}" ]]; then
+            echo "::error::gofmt would reformat:"
+            echo "${out}"
+            exit 1
+          fi
+
+      - name: module checksum verification
+        run: go mod verify
+
+      - name: vet + build all packages
+        run: |
+          go vet ./...
+          go build ./...
 
       - name: test (race)
-        run: go test -race ./...
+        run: go test -race -count=1 ./...
 
-      - name: build linux/amd64 (static, no CGO; dist embedded, no Node)
+      - name: integration e2e (race)
+        run: go test -tags=integration -race -count=1 ./internal/e2e/...
+
+      - name: fuzz smoke (public parsers)
+        run: |
+          set -euo pipefail
+          go test -run '^$' -fuzz '^FuzzDecodeInbound$' -fuzztime=30s ./internal/domain/chat/
+          go test -run '^$' -fuzz '^FuzzIPKey$' -fuzztime=30s ./internal/pkg/clientip/
+          go test -run '^$' -fuzz '^FuzzVerify$' -fuzztime=30s ./internal/pkg/pow/
+
+      - name: coverage thresholds (money packages)
+        run: |
+          set -euo pipefail
+          check() {
+            local pkg="$1" min="$2" pct
+            pct="$(go test -cover "$pkg" 2>/dev/null \
+              | sed -nE 's/.*coverage: ([0-9.]+)% of statements.*/\1/p')"
+            [[ -n "${pct}" ]] || { echo "::error::could not read coverage for ${pkg}"; exit 1; }
+            echo "coverage ${pkg} = ${pct}% (min ${min}%)"
+            awk -v c="${pct}" -v m="${min}" 'BEGIN { exit (c+0 >= m+0) ? 0 : 1 }' \
+              || { echo "::error::${pkg} coverage ${pct}% below ${min}%"; exit 1; }
+          }
+          check ./internal/app/quota/... 70
+          check ./internal/app/chat/...  65
+
+      - name: docs governance
+        run: make docs
+
+      - name: deploy scripts syntax + failure propagation
+        run: |
+          bash -n deploy/*.sh
+          bash deploy/build_stage_test.sh
+          bash deploy/rollback_test.sh
+
+      - name: frontend embedded-dist drift guard
+        working-directory: internal/infra/webassets/ui
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run build
+          git diff --exit-code -- dist || {
+            echo "::error::dashboard dist drifted from source"
+            exit 1
+          }
+          status="$(git status --porcelain --untracked-files=all -- dist)"
+          if [[ -n "${status}" ]]; then
+            echo "${status}"
+            echo "::error::dashboard build produced uncommitted dist files"
+            exit 1
+          fi
+
+      - name: golangci-lint (including depguard)
+        uses: golangci/golangci-lint-action@0a35821d5c230e903fcfe077583637dea1b27b47 # v9.0.0
+        with:
+          version: v2.6.1
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+
+      - name: build linux/amd64 (static; dashboard dist embedded)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o anselm-gateway ./cmd/gateway
 
       - name: resolve version
         id: ver
-        run: echo "sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
-
-      - name: stage artifacts
-        run: |
-          mkdir -p stage
-          cp anselm-gateway stage/
-          cp Caddyfile stage/
-          cp deploy/anselm-gateway.service stage/
-          cp deploy/anselm-gateway.socket stage/
-          cp deploy/rollback.sh stage/
-          cp -R deploy/site stage/site
-
-      - name: ssh setup
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          # Host key handling. By default we TOFU via ssh-keyscan (blindly trust
-          # whatever the host presents on first contact — vulnerable to a MITM on
-          # that first connect, who could intercept the env file / artifacts we
-          # scp up). This fallback is for dev convenience ONLY — production MUST
-          # set the SERVER_KNOWN_HOSTS repo secret to the server's known_hosts
-          # line(s) (used verbatim, skipping the blind scan). See README.
-          if [ -n "${{ secrets.SERVER_KNOWN_HOSTS }}" ]; then
-            echo "${{ secrets.SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
-          fi
-
-      - name: scp artifacts
         env:
-          SHA: ${{ steps.ver.outputs.sha }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          DEST="${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}"
-          # Push the binary under its version-stamped name so OPS-1 can keep N
-          # versions side by side and the live symlink points at one of them.
-          scp -i ~/.ssh/id_deploy stage/anselm-gateway      "${DEST}:/tmp/anselm-gateway-${SHA}"
-          scp -i ~/.ssh/id_deploy stage/Caddyfile           "${DEST}:/tmp/Caddyfile"
-          scp -i ~/.ssh/id_deploy stage/anselm-gateway.service "${DEST}:/tmp/anselm-gateway.service"
-          scp -i ~/.ssh/id_deploy stage/anselm-gateway.socket  "${DEST}:/tmp/anselm-gateway.socket"
-          scp -i ~/.ssh/id_deploy stage/rollback.sh         "${DEST}:/tmp/rollback.sh"
-          scp -i ~/.ssh/id_deploy -r stage/site              "${DEST}:/tmp/anselm-site"
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'workflow_run head_sha is not a full lowercase commit SHA' >&2
+            exit 1
+          }
+          echo "sha=${DEPLOY_SHA:0:12}" >>"${GITHUB_OUTPUT}"
 
-      - name: write env + install + restart + gate (auto-rollback)
+      # A slower older CI run (or a manual rerun of one) can complete after a
+      # newer push. Never let completion order roll production back implicitly.
+      - name: verify admitted SHA is still the main tip
         env:
-          # 真·机密 = 只此几项经 GitHub secret 注入(上游 key + 后台口令)。其余全部运营
-          # 配置已下沉为下方 heredoc 的提交式明文(可见、可审、免 secret)。SSH 部署凭据
-          # (SSH_PRIVATE_KEY / SERVER_HOST / SERVER_USER / SERVER_KNOWN_HOSTS)在上面的
-          # scp/ssh 步骤单独用,亦属机密。
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          main_tip="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
+          [[ "${main_tip}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'could not resolve the current main tip' >&2
+            exit 1
+          }
+          [[ "${main_tip}" == "${DEPLOY_SHA}" ]] || {
+            echo "::notice::skipping stale CI SHA ${DEPLOY_SHA}; main is now ${main_tip}"
+            exit 1
+          }
+
+      - name: deploy through pinned SSH (schema-aware auto-rollback)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
-          # 对外域名 + ACME 邮箱:公开仓库下作为 secret 注入(GitHub 在日志中自动掩码,
-          # 不入代码、不在 Actions 日志暴露部署位置)。
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
-          # Build the gateway env file content locally (secrets only live in the
-          # action runtime), then push it and run the install steps via one SSH.
-          # 对外域名 + ACME 邮箱经 GitHub secret 注入(见上方 env:),不写进仓库;Caddy
-          # 反代业务 8080 + 健康检查用。改值在仓库 Settings → Secrets and variables →
-          # Actions → Secrets。
-          cat > /tmp/anselm.env <<EOF
-          # ── 机密(仅此三项经 GitHub secret 注入) ─────────────────────────
-          DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-          DASHBOARD_USER=${DASHBOARD_USER}
-          DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
-          # ── 运营配置:提交式明文,改这里即改生产(免 GitHub secret) ──────────
-          DEEPSEEK_BASE_URL=https://api.deepseek.com
-          MODEL_ALLOWLIST=deepseek-v4-flash
-          # 钱包闸:5000万 token/日(明文配置,改这里即改;不再是 secret)。
-          GLOBAL_DAILY_BUDGET_TOKENS=50000000
-          # 单 install 日 token 子配额:长上下文 agentic 一轮可上百万 token,放宽到 20M
-          # (仍 ≤ 全局 50M/日——真实花费上限没变,只是单号不用频繁换)。
-          INSTALL_DAILY_TOKEN_CAP=20000000
-          # ⚙️ 请求侧上限:开发期"网关不当裁判"姿态——由 DeepSeek 自己的模型限制判定,
-          # 超了会以 400 UPSTREAM_REJECTED(details.reason=context_length 等)打回:
-          #   INPUT_TOKEN_CAP=0     输入估算闸禁用(0=禁用;估算仍用于记账预留)。
-          #   MAX_TOKENS_CAP=384000 = v4-flash 官方最大输出(等效不限;兼预留额输出分量,
-          #                           不能设 0——记账"预留 ≥ 实际"不变式要求显式值)。
-          #   MAX_MESSAGES / MAX_MESSAGE_CHARS 拉到配置上限,形同虚设(body 上限兜底)。
-          # 🔴 公开上线前建议收紧回:INPUT_TOKEN_CAP=131072 / MAX_TOKENS_CAP=16384 /
-          #   MAX_MESSAGES=1024 / MAX_MESSAGE_CHARS=262144 / MAX_BODY_BYTES=262144。
-          INPUT_TOKEN_CAP=0
-          MAX_TOKENS_CAP=384000
-          MAX_MESSAGES=100000
-          MAX_MESSAGE_CHARS=16777216
-          # 请求体上限(内存保护,不能禁用;重启生效):4MiB ≈ 英文近整个 1M 上下文。
-          # 与 Caddyfile 的 request_body max_size 4MiB 对齐,改则两处同步。
-          # 已知取舍(开发期接受):4MiB body + 384k 输出预留 → 单请求最坏预留 ≈5.4M,
-          # ~10 路并发极限请求可短暂占满 50M 日预算(其他人 402,流结束即退还,自愈)。
-          MAX_BODY_BYTES=4194304
-          # 账号级并发硬上限(改后需重启;1C2G + DeepSeek 账号并发的较小者)。
-          N_GLOBAL_CONCURRENCY=16
-          # REL-7 过载背压等待窗口(ms);N_global 仍是硬上限,等待不放大并发。
-          QUEUE_WAIT_MS=1500
-          # ⚙️ 开发期:API 风控**全部关闭**(operator 频繁领号 + 高频请求时不被任何闸挡)。
-          # 0 = 禁用对应闸。🔴 这是开发期临时配置:公开上线前必须调回收紧(参考 git 历史
-          # cde6b91 的值:RATE_PER_MIN=8 / DAILY_SUBLIMIT=100 / INSTALL_GLOBAL_DAILY_CAP=100
-          # / INSTALL_PER_FP_DAILY=3 / COOLDOWN=3600 / TOKEN_ANOMALY_RPM=8)。
-          # 注:钱包/成本护栏(GLOBAL_DAILY_BUDGET_TOKENS / INSTALL_DAILY_TOKEN_CAP /
-          # MONTHLY_QUOTA / *_TOKEN_CAP)不属于风控、未动,仍是花真钱的硬上限。
-          # 每 install 分钟限速 + 每日请求子限额:关。
-          RATE_PER_MIN=0
-          DAILY_SUBLIMIT=0
-          # /v1/install 领号闸全关 → 可无限领号:全局每日 + 单指纹每日 + 相邻冷却 = 0(禁用)。
-          # 单 IP 时频控最低只能 1(不能设 0),放到上限 1_000_000 当作"不限"。
-          INSTALL_GLOBAL_DAILY_CAP=0
-          INSTALL_PER_FP_DAILY=0
-          INSTALL_PER_FP_COOLDOWN_SEC=0
-          INSTALL_PER_IP_HOUR=1000000
-          # 单 token 异常自动降速:关(RPM=0 = 禁用整套;FACTOR/COOLDOWN 此时不被读,留合法值)。
-          TOKEN_ANOMALY_RPM=0
-          TOKEN_THROTTLE_FACTOR=4
-          TOKEN_THROTTLE_COOLDOWN_SEC=600
-          # PERF-2 内存预算(2G 机最坏 RSS = GOMEMLIMIT + cache×(1+READ_POOL) + mmap < 2G;
-          # 须与 config.go 代码默认对齐:768 + 32×(1+4) + 256 = 1184MiB,留 ≈464MiB 安全垫)。
-          GOMEMLIMIT_MIB=768
-          SQLITE_CACHE_KIB=32768
-          SQLITE_MMAP_MB=256
-          READ_POOL_MAX_CONNS=4
-          # REL-6 磁盘满防护:数据盘剩余低于阈值 → 只读降级返 503 DISK_LOW。
-          DISK_MIN_MB=500
-          DISK_MIN_PERCENT=5
-          GATEWAY_DB_PATH=/var/lib/anselm-gateway/anselm-gateway.db
-          # 三个物理隔离的 loopback 监听(ADR-004,三者必须互不相同):业务 8080 经 socket
-          # activation、admin 9090 + dashboard 8081 由进程自绑。仅当 DASHBOARD_USER/PASSWORD
-          # 都配时进程才起 8081;admin 与 dashboard 都不经 Caddy / 不上公网,运维走 SSH 隧道。
-          LISTEN_ADDR=127.0.0.1:8080
-          DASHBOARD_ADDR=127.0.0.1:8081
-          LOG_LEVEL=info
-          # 🔴 admin 端口(/metrics+/readyz+/debug/pprof+/debug/vars)必须 loopback,绝不公网。
-          ADMIN_ADDR=127.0.0.1:9090
-          EOF
-          scp -i ~/.ssh/id_deploy /tmp/anselm.env \
-            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/tmp/anselm.env"
-
-          ssh -i ~/.ssh/id_deploy \
-            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "GATEWAY_DOMAIN='${GATEWAY_DOMAIN}' SITE_DOMAIN='${SITE_DOMAIN}' ACME_EMAIL='${ACME_EMAIL}' SHA='${SHA}' bash -s" <<'REMOTE'
           set -euo pipefail
-          # Fail loudly if the domain is unset: an empty value would otherwise
-          # produce a syntactically invalid Caddyfile and (with `|| true`) hide
-          # it, leaving Caddy serving nothing.
-          [ -n "${GATEWAY_DOMAIN:-}" ] || { echo 'GATEWAY_DOMAIN unset; aborting deploy'; exit 1; }
-          if [ -z "${SITE_DOMAIN:-}" ]; then
-            case "${GATEWAY_DOMAIN}" in
-              api.*) SITE_DOMAIN="${GATEWAY_DOMAIN#api.}" ;;
-              *) echo 'SITE_DOMAIN unset and GATEWAY_DOMAIN is not api.<root>; aborting deploy'; exit 1 ;;
-            esac
-          fi
-          [ -n "${ACME_EMAIL:-}" ] || { echo 'ACME_EMAIL unset; aborting deploy'; exit 1; }
-          [ -n "${SHA:-}" ] || { echo 'SHA unset; aborting deploy'; exit 1; }
+          set +x
+          umask 077
 
-          # Always shred the secret env file from /tmp on exit — even on a failed
-          # gate / aborted rollback (which `exit 1` before the normal cleanup) — so
-          # DEEPSEEK_API_KEY / DASHBOARD_* never linger in /tmp on the server.
-          trap 'rm -f /tmp/anselm.env' EXIT
+          : "${SSH_PRIVATE_KEY:?SSH_PRIVATE_KEY is required}"
+          : "${SERVER_HOST:?SERVER_HOST is required}"
+          : "${SERVER_USER:?SERVER_USER is required}"
+          : "${SERVER_KNOWN_HOSTS:?SERVER_KNOWN_HOSTS is required; pin the production host key}"
+          [[ "${SERVER_HOST}" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'invalid SERVER_HOST' >&2; exit 1; }
+          [[ "${SERVER_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'invalid SERVER_USER' >&2; exit 1; }
+          [[ "${SERVER_KNOWN_HOSTS}" != *$'\r'* ]] || { echo 'SERVER_KNOWN_HOSTS contains CR' >&2; exit 1; }
 
-          BIN_DIR=/usr/local/bin
-          LINK="${BIN_DIR}/anselm-gateway"
-          NEW="${BIN_DIR}/anselm-gateway-${SHA}"
-          ADMIN_READYZ="http://127.0.0.1:9090/readyz"
-          LOCAL_HEALTHZ="http://127.0.0.1:8080/healthz"
-          PUBLIC_HEALTHZ="https://${GATEWAY_DOMAIN}/healthz"
-          PUBLIC_SITE="https://${SITE_DOMAIN}/"
+          LOCAL_ROOT="$(mktemp -d "${RUNNER_TEMP}/anselm-deploy.XXXXXXXXXX")"
+          LOCAL_STAGE="${LOCAL_ROOT}/stage"
+          SSH_KEY="${LOCAL_ROOT}/id_deploy"
+          KNOWN_HOSTS="${LOCAL_ROOT}/known_hosts"
+          REMOTE_STAGE=''
+          DEST=''
+          SSH_OPTS=()
 
-          # Remember the version the live symlink currently points at, so we can
-          # auto-roll-back to EXACTLY this binary if the new one fails its gate.
-          PREV="$(readlink -f "${LINK}" 2>/dev/null || true)"
-
-          # 0) Snapshot the CURRENT live config/units/env BEFORE we overwrite any of
-          # them, so auto-rollback can restore the COMPLETE previous version (binary
-          # + service + socket + Caddyfile + env) — not just the binary symlink.
-          # Rolling back the binary alone but leaving the new Type=notify unit / new
-          # Caddyfile in place could keep the service from coming up, defeating the
-          # safety net. The binary itself is recovered via PREV (the symlink target),
-          # so it is NOT copied here.
-          SNAP="/tmp/prev-${SHA}"
-          rm -rf "${SNAP}"
-          mkdir -p "${SNAP}"
-          # Copy each live file we are about to clobber, if it exists (first deploy
-          # may have none). sudo cat → tee so files we cannot read as the SSH user
-          # (0600 root env files) are still snapshotted. Missing source = skipped,
-          # and restore only touches what was captured.
-          snap_save() {
-            local src="$1" name="$2"
-            if sudo test -f "${src}"; then
-              sudo cat "${src}" | sudo tee "${SNAP}/${name}" >/dev/null
-            fi
-          }
-          snap_save /etc/systemd/system/anselm-gateway.service anselm-gateway.service
-          snap_save /etc/systemd/system/anselm-gateway.socket  anselm-gateway.socket
-          snap_save /etc/caddy/Caddyfile                       Caddyfile
-          snap_save /etc/anselm-gateway.env                    anselm-gateway.env
-
-          # 1) Install the version-stamped binary (does NOT touch the live link yet).
-          sudo install -m 0755 "/tmp/anselm-gateway-${SHA}" "${NEW}"
-
-          # 1b) Static root site: no app server, no database, no upload surface.
-          # Owned by root and read-only to the gateway user; Caddy only serves files.
-          sudo mkdir -p /var/www/anselm-site
-          sudo install -m 0444 /tmp/anselm-site/index.html /var/www/anselm-site/index.html
-          sudo install -m 0444 /tmp/anselm-site/styles.css /var/www/anselm-site/styles.css
-          sudo chown -R root:root /var/www/anselm-site
-
-          # 2) Caddy: stage + substitute domain + VALIDATE before clobbering the
-          # live config. A bad Caddyfile that reaches /etc/caddy and a `reload`
-          # would take the public surface down; validating the staged file first
-          # means a syntactically broken config aborts the deploy (set -e) and we
-          # never overwrite the working live config. No `|| true` on the sed —
-          # a substitution failure must abort, never silently ship a broken config.
-          STAGED_CADDY="$(mktemp)"
-          cp /tmp/Caddyfile "${STAGED_CADDY}"
-          sed -i "s/{\$SITE_DOMAIN}/${SITE_DOMAIN}/g" "${STAGED_CADDY}"
-          sed -i "s/{\$GATEWAY_DOMAIN}/${GATEWAY_DOMAIN}/g" "${STAGED_CADDY}"
-          sed -i "s/{\$ACME_EMAIL}/${ACME_EMAIL}/g" "${STAGED_CADDY}"
-          caddy validate --config "${STAGED_CADDY}" --adapter caddyfile
-          sudo install -m 0644 "${STAGED_CADDY}" /etc/caddy/Caddyfile
-          rm -f "${STAGED_CADDY}"
-
-          # 3) System units (service Type=notify + socket activation, OPS-2).
-          sudo install -m 0644 /tmp/anselm-gateway.service /etc/systemd/system/anselm-gateway.service
-          sudo install -m 0644 /tmp/anselm-gateway.socket  /etc/systemd/system/anselm-gateway.socket
-          sudo install -m 0600 /tmp/anselm.env             /etc/anselm-gateway.env
-          sudo mkdir -p /var/lib/anselm-gateway
-          sudo id anselm >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin anselm
-          sudo chown -R anselm:anselm /var/lib/anselm-gateway
-
-          # 4) Atomic symlink flip to the NEW version (reader never sees a gap).
-          sudo ln -sfn "${NEW}" "${LINK}.tmp"
-          sudo mv -Tf "${LINK}.tmp" "${LINK}"
-
-          # 5) Reload + (re)start via socket activation. enable --now on the socket
-          # so the business-port 8080 listen fd is held across restarts (OPS-2)。
-          sudo systemctl daemon-reload
-          sudo systemctl enable --now anselm-gateway.socket
-          sudo systemctl restart anselm-gateway
-          sudo systemctl reload caddy || sudo systemctl restart caddy
-
-          # 6) Deploy GATE + AUTO-ROLLBACK.
-          #
-          # HARD gate (failure → rollback): server-LOCAL health only —
-          #   - loopback admin readyz (db + cached upstream)
-          #   - loopback business healthz on 8080 (process + Caddy upstream target).
-          # We deliberately do NOT gate on the public https URL: first-deploy/抖动
-          # ACME issuance can take >90s, so a healthy deploy would be misjudged and
-          # needlessly rolled back over a transient cert/edge issue. Local checks
-          # isolate "is the gateway actually serving?" from "is the public cert up?".
-          #
-          # BEST-EFFORT (warn only, NEVER triggers rollback): the public https
-          # /healthz, with a longer budget to ride out ACME. A miss only warns.
-          gate_ok() {
-            local rz=0 hz=0
-            for i in $(seq 1 12); do
-              curl -fsS "${ADMIN_READYZ}" >/dev/null 2>&1 && { rz=1; break; }
-              sleep 3
-            done
-            for i in $(seq 1 12); do
-              curl -fsS "${LOCAL_HEALTHZ}" 2>/dev/null | grep -q '"ok"' && { hz=1; break; }
-              sleep 3
-            done
-            [ "${rz}" = "1" ] && [ "${hz}" = "1" ]
-          }
-
-          # Restore the COMPLETE previous version from the step-0 snapshot: binary
-          # symlink + every config/unit/env we clobbered. Anything missing from the
-          # snapshot (first deploy) is left as-is. Then daemon-reload + reload/restart
-          # Caddy + restart the gateway so the recovered config is actually live —
-          # a consistent full previous version (binary + unit + socket + caddy + env).
-          restore_prev() {
-            # Binary symlink → previous target.
-            if [ -n "${PREV}" ] && [ -x "${PREV}" ] && [ "${PREV}" != "${NEW}" ]; then
-              sudo ln -sfn "${PREV}" "${LINK}.tmp"
-              sudo mv -Tf "${LINK}.tmp" "${LINK}"
-            fi
-            # Config/units/env from snapshot.
-            [ -f "${SNAP}/anselm-gateway.service" ] && sudo install -m 0644 "${SNAP}/anselm-gateway.service" /etc/systemd/system/anselm-gateway.service
-            [ -f "${SNAP}/anselm-gateway.socket" ]  && sudo install -m 0644 "${SNAP}/anselm-gateway.socket"  /etc/systemd/system/anselm-gateway.socket
-            [ -f "${SNAP}/Caddyfile" ]              && sudo install -m 0644 "${SNAP}/Caddyfile"              /etc/caddy/Caddyfile
-            [ -f "${SNAP}/anselm-gateway.env" ]     && sudo install -m 0600 "${SNAP}/anselm-gateway.env"     /etc/anselm-gateway.env
-            # Re-apply: reload unit definitions, bounce Caddy with the restored
-            # config, restart the gateway on the restored binary+unit.
-            sudo systemctl daemon-reload
-            sudo systemctl reload caddy || sudo systemctl restart caddy
-            sudo systemctl restart anselm-gateway
-          }
-
-          if gate_ok; then
-            echo "deploy gate OK on ${SHA} (local readyz + healthz green)"
-          else
-            echo "deploy gate FAILED on ${SHA} — auto-rolling back to previous full version" >&2
-            if [ -n "${PREV}" ] && [ -x "${PREV}" ] && [ "${PREV}" != "${NEW}" ]; then
-              restore_prev
-              # Re-gate the restored version (hard, local).
-              if gate_ok; then
-                echo "rolled back to $(basename "${PREV}") (full restore) — local gate green"
+          cleanup() {
+            status=$?
+            trap - EXIT HUP INT TERM
+            if [[ -n "${DEST}" && -n "${REMOTE_STAGE}" && "${REMOTE_STAGE}" =~ ^/tmp/anselm-deploy\.[A-Za-z0-9]{10}$ ]]; then
+              ssh "${SSH_OPTS[@]}" "${DEST}" bash -s -- "${REMOTE_STAGE}" <<'CLEAN_REMOTE' >/dev/null 2>&1 || true
+          set -euo pipefail
+          stage="$1"
+          [[ "${stage}" =~ ^/tmp/anselm-deploy\.[A-Za-z0-9]{10}$ ]] || exit 1
+          with_deploy_lock() {
+            sudo -n bash -c '
+              lock_dir="$1"
+              shift
+              if [[ -e "$lock_dir" || -L "$lock_dir" ]]; then
+                [[ -d "$lock_dir" && ! -L "$lock_dir" ]]
+                [[ "$(stat -c "%u:%g:%a" "$lock_dir")" == 0:0:700 ]]
               else
-                echo "rollback restored previous version but local gate still RED — manual intervention needed" >&2
+                install -d -o root -g root -m 0700 "$lock_dir"
               fi
-            else
-              echo "no previous binary to roll back to (first deploy?) — leaving ${SHA} in place" >&2
+              lock="$lock_dir/lock"
+              if [[ -e "$lock" || -L "$lock" ]]; then
+                [[ -f "$lock" && ! -L "$lock" ]]
+                [[ "$(stat -c "%u:%g:%a" "$lock")" == 0:0:600 ]]
+              else
+                install -o root -g root -m 0600 /dev/null "$lock"
+              fi
+              exec 9<>"$lock"
+              flock -n 9
+              exec "$@"
+            ' _ /run/anselm-gateway-deploy "$@"
+          }
+          if ! with_deploy_lock bash -c '
+            set -euo pipefail
+            stage="$1"
+            [[ "$stage" =~ ^/tmp/anselm-deploy\.[A-Za-z0-9]{10}$ ]]
+            [[ ! -e "$stage" || -d "$stage" && ! -L "$stage" ]]
+            chmod -R u+rwX "$stage" >/dev/null 2>&1 || true
+            rm -rf -- "$stage"
+          ' _ "${stage}"; then
+            if ! sudo -n test -e "${stage}/.installer-active"; then
+              sudo -n chmod -R u+rwX "${stage}" >/dev/null 2>&1 || true
+              sudo -n rm -rf -- "${stage}" >/dev/null 2>&1 || {
+                chmod -R u+rwX "${stage}" >/dev/null 2>&1 || true
+                rm -rf -- "${stage}" || true
+              }
             fi
+          fi
+          CLEAN_REMOTE
+            fi
+            rm -rf -- "${LOCAL_ROOT}"
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          chmod 0700 "${LOCAL_ROOT}"
+          mkdir -m 0700 "${LOCAL_STAGE}"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" >"${SSH_KEY}"
+          printf '%s\n' "${SERVER_KNOWN_HOSTS}" >"${KNOWN_HOSTS}"
+          chmod 0600 "${SSH_KEY}" "${KNOWN_HOSTS}"
+          ssh-keygen -l -f "${KNOWN_HOSTS}" >/dev/null
+          ssh-keygen -F "${SERVER_HOST}" -f "${KNOWN_HOSTS}" >/dev/null || {
+            echo 'SERVER_KNOWN_HOSTS has no entry for SERVER_HOST' >&2
             exit 1
-          fi
+          }
 
-          # Best-effort public https probe (warn only, NEVER rolls back). First
-          # deploys may still be issuing the ACME cert here; that is fine.
-          PUB_OK=0
-          for i in $(seq 1 24); do
-            curl -fsS "${PUBLIC_HEALTHZ}" 2>/dev/null | grep -q '"ok"' && { PUB_OK=1; break; }
-            sleep 5
-          done
-          if [ "${PUB_OK}" = "1" ]; then
-            echo "public ${PUBLIC_HEALTHZ} green"
-          else
-            echo "WARNING: public ${PUBLIC_HEALTHZ} not green within ~2min (ACME issuing / edge?) — deploy KEPT (local gate already passed)" >&2
-          fi
+          DEST="${SERVER_USER}@${SERVER_HOST}"
+          SSH_OPTS=(
+            -i "${SSH_KEY}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=${KNOWN_HOSTS}"
+            -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no
+            -o ConnectTimeout=15
+          )
 
-          SITE_OK=0
-          for i in $(seq 1 24); do
-            curl -fsS "${PUBLIC_SITE}" 2>/dev/null | grep -q '<title>Anselm</title>' && { SITE_OK=1; break; }
-            sleep 5
-          done
-          if [ "${SITE_OK}" = "1" ]; then
-            echo "public ${PUBLIC_SITE} green"
-          else
-            echo "WARNING: public ${PUBLIC_SITE} not green within ~2min (ACME issuing / DNS missing?) — deploy KEPT (local gate already passed)" >&2
-          fi
+          bash deploy/build-stage.sh "${LOCAL_STAGE}" "${GITHUB_WORKSPACE}/anselm-gateway" "${GITHUB_WORKSPACE}"
+          MANIFEST_SHA="$(sha256sum "${LOCAL_STAGE}/manifest.sha256" | awk '{print $1}')"
+          [[ "${MANIFEST_SHA}" =~ ^[0-9a-f]{64}$ ]]
 
-          # 7) Prune old versions: keep the newest N=5 version-stamped binaries
-          # plus whatever the live symlink points at (never delete the live one).
-          CURRENT="$(readlink -f "${LINK}")"
-          # shellcheck disable=SC2012
-          ls -t "${BIN_DIR}"/anselm-gateway-* 2>/dev/null | tail -n +6 | while read -r old; do
-            [ "$(readlink -f "$old")" = "${CURRENT}" ] && continue
-            echo "pruning old version $(basename "$old")"
-            sudo rm -f "$old"
-          done
+          REMOTE_STAGE="$(ssh "${SSH_OPTS[@]}" "${DEST}" \
+            'set -e; umask 077; d=$(mktemp -d /tmp/anselm-deploy.XXXXXXXXXX); chmod 0700 "$d"; printf "%s" "$d"')"
+          [[ "${REMOTE_STAGE}" =~ ^/tmp/anselm-deploy\.[A-Za-z0-9]{10}$ ]] || {
+            echo 'remote mktemp returned an unsafe path' >&2
+            exit 1
+          }
 
-          # Clean up the non-secret scp'd artifacts + the rollback snapshot on the
-          # happy path (secret env files are shredded by the EXIT trap above, on
-          # every path) — leave no deploy residue on the server.
-          rm -f "/tmp/anselm-gateway-${SHA}" /tmp/Caddyfile \
-                /tmp/anselm-gateway.service /tmp/anselm-gateway.socket \
-                /tmp/rollback.sh
-          rm -rf /tmp/anselm-site
-          rm -rf "${SNAP}"
-          REMOTE
+          # Every byte, including the secret EnvironmentFile, enters one
+          # unpredictable 0700 directory. The remote entrypoint checks exact file
+          # set, regular/no-symlink ownership, manifest hash, and every artifact
+          # hash before it executes the installer.
+          scp "${SSH_OPTS[@]}" -r "${LOCAL_STAGE}/." "${DEST}:${REMOTE_STAGE}/"
+          ssh "${SSH_OPTS[@]}" "${DEST}" bash -s -- "${REMOTE_STAGE}" "${MANIFEST_SHA}" \
+            <deploy/remote-entrypoint.sh

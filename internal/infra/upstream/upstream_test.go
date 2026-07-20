@@ -15,6 +15,7 @@ import (
 
 	"github.com/sony/gobreaker/v2"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 )
 
@@ -203,9 +204,9 @@ func TestClientCancelNoBreakerTrip(t *testing.T) {
 	}
 }
 
-// GW-INV-26: bounded retry on transient 503; succeeds within the budget and
-// bills only once worth of attempts.
-func TestRetryBounded_503ThenSuccess(t *testing.T) {
+// GW-INV-26: a 503 is charge-ambiguous. It must not be retried because a later
+// success could hide two provider charges behind one reservation.
+func TestChargeAmbiguous503IsNeverRetried(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&calls, 1)
@@ -219,21 +220,24 @@ func TestRetryBounded_503ThenSuccess(t *testing.T) {
 	defer srv.Close()
 
 	c := New([]string{testKey}, time.Second, nil, nil).(*client)
-	// Shrink backoff so the test is fast (still exercises the jitter path).
 	c.retry = retryPolicy{maxAttempts: 3, base: time.Millisecond, cap: 5 * time.Millisecond}
 
 	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
-	if ae != nil {
-		t.Fatalf("3rd attempt should succeed: %v", ae)
+	if s != nil {
+		_ = s.Close()
+		t.Fatal("ambiguous 503 must not retry through to a later success")
 	}
-	_ = drain(t, s)
-	if got := atomic.LoadInt32(&calls); got != 3 {
-		t.Fatalf("expected exactly 3 attempts, got %d", got)
+	if ae == nil || ae.Code != "UPSTREAM_ERROR" {
+		t.Fatalf("expected terminal UPSTREAM_ERROR, got %v", ae)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("charge-ambiguous 503 calls = %d, want exactly 1", got)
 	}
 }
 
-// GW-INV-26: persistent 503 exhausts the bounded budget (never unbounded).
-func TestRetryBounded_PersistentFailureExhausts(t *testing.T) {
+// A persistent ambiguous failure is likewise one attempt, irrespective of the
+// per-key failover budget.
+func TestPersistent503StillMakesOneBillableAttempt(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -248,13 +252,13 @@ func TestRetryBounded_PersistentFailureExhausts(t *testing.T) {
 	if ae == nil || ae.Code != "UPSTREAM_ERROR" {
 		t.Fatalf("expected UPSTREAM_ERROR after exhausting retries, got %v", ae)
 	}
-	if got := atomic.LoadInt32(&calls); got != 3 {
-		t.Fatalf("retry must be bounded to 3 attempts, got %d", got)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("ambiguous failures must not retry: calls=%d want=1", got)
 	}
 }
 
 // GW-INV-27: first-byte timeout — upstream sends headers but stalls the body;
-// the timer cancels and the attempt is a retryable timeout.
+// the timer cancels and the charge-ambiguous attempt is terminal.
 func TestFirstByteTimeout(t *testing.T) {
 	hold := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +278,63 @@ func TestFirstByteTimeout(t *testing.T) {
 	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, 30*time.Millisecond))
 	if ae == nil || ae.Code != "UPSTREAM_TIMEOUT" {
 		t.Fatalf("stalled first byte should map to UPSTREAM_TIMEOUT, got %v", ae)
+	}
+}
+
+func TestNonStreamHeadersWithoutBodyStillHitFirstByteTimeout(t *testing.T) {
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush() // headers only; JSON body never begins.
+		}
+		<-hold
+	}))
+	defer srv.Close()
+	defer close(hold)
+
+	c := NewBackend(Options{
+		Backend:            BackendGemini,
+		ChatCompletionsURL: srv.URL + "/chat/completions",
+		APIKeys:            []string{"gemini-key"},
+		HeaderTimeout:      30 * time.Millisecond,
+	}).(*client)
+	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
+
+	stream, failure := c.DoCall(context.Background(), Call{
+		Payload: []byte("{}"), Stream: false, FirstByteTimeout: 30 * time.Millisecond,
+	})
+	if stream != nil {
+		_ = stream.Close()
+		t.Fatal("headers-only non-stream response must not be handed to the app")
+	}
+	if failure == nil || failure.APIError == nil || failure.APIError.Code != "UPSTREAM_TIMEOUT" {
+		t.Fatalf("headers-only non-stream response = %#v, want UPSTREAM_TIMEOUT", failure)
+	}
+	if failure.Exposure != billing.ChargePossible {
+		t.Fatalf("headers-only timeout exposure = %v, want charge possible", failure.Exposure)
+	}
+}
+
+func TestRequestSnapshotCanIncreaseFirstByteTimeoutPastConstructorDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: ok\n\n")
+	}))
+	defer srv.Close()
+
+	// A fixed transport ResponseHeaderTimeout of 5ms would defeat the live 300ms
+	// snapshot below. The one request timer is the sole timeout authority.
+	c := New([]string{testKey}, 5*time.Millisecond, nil, nil).(*client)
+	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
+	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, 300*time.Millisecond))
+	if ae != nil {
+		t.Fatalf("live first-byte timeout increase was ignored: %v", ae)
+	}
+	if got := drain(t, s); !strings.Contains(got, "ok") {
+		t.Fatalf("body = %q", got)
 	}
 }
 
@@ -338,6 +399,42 @@ func TestPlain429DoesNotCoolKey(t *testing.T) {
 	}
 }
 
+func TestAuthCooldownIsHardGateAndNeverReusesCooledKey(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewBackend(Options{
+		Backend:            BackendGemini,
+		ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
+		APIKeys:            []string{"bad-key"},
+		HeaderTimeout:      time.Second,
+	}).(*client)
+	c.retry = retryPolicy{maxAttempts: 3, base: time.Millisecond, cap: time.Millisecond}
+
+	_, first := c.DoCall(context.Background(), Call{Payload: []byte("{}")})
+	if first == nil || first.APIError == nil || first.APIError.Code != "UPSTREAM_BUSY" {
+		t.Fatalf("all-cooled pool should shed as UPSTREAM_BUSY, got %#v", first)
+	}
+	if first.Exposure != billing.DefinitelyUnbilled {
+		t.Fatalf("auth refusal exposure = %v, want definitely unbilled", first.Exposure)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("first call reused a cooled key: upstream hits=%d want=1", got)
+	}
+
+	_, second := c.DoCall(context.Background(), Call{Payload: []byte("{}")})
+	if second == nil || second.APIError == nil || second.APIError.Code != "UPSTREAM_BUSY" {
+		t.Fatalf("cooled pool should continue shedding, got %#v", second)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("later call bypassed cooldown: upstream hits=%d want=1", got)
+	}
+}
+
 func TestBreakerTripsOnPersistent5xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(502)
@@ -361,9 +458,8 @@ func TestBreakerTripsOnPersistent5xx(t *testing.T) {
 	}
 }
 
-// REL-3: when the only key's breaker is open, the attempt is retryable (would
-// rotate keys if any existed) and NEVER charges the process breaker; with no
-// sibling it exhausts to UPSTREAM_BUSY. The process breaker must stay closed.
+// REL-3: when the only key's breaker is open, the hard gate sheds immediately
+// as UPSTREAM_BUSY and never charges the process breaker.
 func TestSingleKeyOpenIsBusyNotProcessFault(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -399,7 +495,7 @@ func TestSingleKeyOpenIsBusyNotProcessFault(t *testing.T) {
 
 // Sanity: the process breaker's IsSuccessful excludes context.Canceled.
 func TestProcessBreakerExcludesCancel(t *testing.T) {
-	b := newProcessBreaker(nil)
+	b := newProcessBreaker("test-upstream", nil)
 	for i := 0; i < 20; i++ {
 		_, _ = b.Execute(func() (struct{}, error) { return struct{}{}, context.Canceled })
 	}

@@ -2,12 +2,15 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 )
 
@@ -17,7 +20,7 @@ func okAuth() fakeAuth { return fakeAuth{id: "inst1", status: dominstall.StatusA
 func TestStreaming_RelayAndSettleOnUsage(t *testing.T) {
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
-	up := &fakeUpstream{body: "data: {\"choices\":[]}\ndata: {\"usage\":{\"total_tokens\":33}}\ndata: [DONE]\n"}
+	up := &fakeUpstream{body: "data: {\"choices\":[]}\ndata: {\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":13,\"total_tokens\":33}}\ndata: [DONE]\n"}
 	svc, wg := build(Deps{
 		Auth: okAuth(), Quota: q, Upstream: up,
 		RL: &fakeRL{allow: true}, Throttle: fakeThrottle{}, Metrics: mx,
@@ -35,17 +38,33 @@ func TestStreaming_RelayAndSettleOnUsage(t *testing.T) {
 	if !strings.Contains(sink.bodyString(), "[DONE]") {
 		t.Fatalf("frames not relayed: %q", sink.bodyString())
 	}
-	if got := q.settles(); len(got) != 1 || got[0] != 33 {
-		t.Fatalf("expected settle to actual 33, got %v", got)
+	want := int64(20*140_000 + 13*280_000)
+	if got := q.settles(); len(got) != 1 || got[0] != want {
+		t.Fatalf("expected provider-priced settle %d, got %v", want, got)
 	}
 	if q.rollbacks() != 0 {
 		t.Fatalf("no rollback on success, got %d", q.rollbacks())
+	}
+	if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 1 {
+		t.Fatalf("valid stream outcome success=%d want 1", got)
+	}
+}
+
+func TestStreamingNegativeUsageCannotBeClampedIntoARefund(t *testing.T) {
+	q := &fakeQuota{}
+	up := &fakeUpstream{body: "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":-1,\"total_tokens\":100}}\ndata: [DONE]\n"}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, newFakeSink())
+	wg.Wait()
+	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+		t.Fatalf("malformed stream usage must retain full quote %d, got %v", q.reservedPUSD, got)
 	}
 }
 
 func TestNonStream_RelayAndSettle(t *testing.T) {
 	q := &fakeQuota{}
-	up := &fakeUpstream{body: `{"id":"x","usage":{"total_tokens":12}}`}
+	const upstreamBody = `{"id":"x","usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`
+	up := &fakeUpstream{body: upstreamBody}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
@@ -54,8 +73,12 @@ func TestNonStream_RelayAndSettle(t *testing.T) {
 	if sink.statusCode() != 200 || sink.header("Content-Type") != "application/json" {
 		t.Fatalf("status=%d ct=%q", sink.statusCode(), sink.header("Content-Type"))
 	}
-	if got := q.settles(); len(got) != 1 || got[0] != 12 {
-		t.Fatalf("expected settle 12, got %v", got)
+	if got := sink.bodyString(); got != upstreamBody {
+		t.Fatalf("valid model-free object must pass byte-for-byte: got=%q want=%q", got, upstreamBody)
+	}
+	want := int64(7*140_000 + 5*280_000)
+	if got := q.settles(); len(got) != 1 || got[0] != want {
+		t.Fatalf("expected provider-priced settle %d, got %v", want, got)
 	}
 }
 
@@ -67,28 +90,183 @@ func TestNonStream_NoUsageSettlesFullEst(t *testing.T) {
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	got := q.settles()
-	if len(got) != 1 || got[0] != q.reserved {
-		t.Fatalf("absent usage must settle full est %d, got %v", q.reserved, got)
+	if len(got) != 1 || got[0] != q.reservedPUSD {
+		t.Fatalf("absent usage must settle full quote %d, got %v", q.reservedPUSD, got)
 	}
 }
 
-func TestPreOutputFailure_RollsBackAll(t *testing.T) {
+func TestNonStream_OversizedUpstreamBodyFailsClosedAndKeepsQuote(t *testing.T) {
 	q := &fakeQuota{}
-	mx := newFakeMetrics()
-	up := &fakeUpstream{aerr: apierr.ErrUpstreamError}
-	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+	up := &fakeUpstream{body: strings.Repeat("x", nonStreamBodyLimit+1)}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
-
 	if sink.statusCode() != apierr.ErrUpstreamError.Status {
-		t.Fatalf("status: %d", sink.statusCode())
+		t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
 	}
-	if q.rollbacks() != 1 {
-		t.Fatalf("pre-output failure must roll back budget, got %d", q.rollbacks())
+	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+		t.Fatalf("oversized ambiguous body must retain quote: reserved=%d settles=%v", q.reservedPUSD, got)
 	}
-	if len(q.settles()) != 0 {
-		t.Fatalf("no settle on pre-output failure, got %v", q.settles())
+}
+
+func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "truncated object", body: `{"model":"deepseek-v4-flash"`},
+		{name: "array", body: `["gemini-3.1-flash-lite"]`},
+		{name: "scalar", body: `"deepseek-v4-flash"`},
+		{name: "null", body: `null`},
+		{name: "trailing garbage", body: `{"model":"deepseek-v4-flash"} provider-debug`},
+		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"gemini-3.1-flash-lite"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			mx := newFakeMetrics()
+			up := &fakeUpstream{body: tc.body}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+			wg.Wait()
+
+			if sink.statusCode() != apierr.ErrUpstreamError.Status {
+				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+			}
+			if sink.header("Content-Type") != "application/json" || !strings.Contains(sink.bodyString(), `"code":"UPSTREAM_ERROR"`) {
+				t.Fatalf("want normalized JSON 502 envelope, headers/body=%q/%q", sink.header("Content-Type"), sink.bodyString())
+			}
+			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.Gemini31FlashLite, "provider-debug"} {
+				if strings.Contains(sink.bodyString(), providerModel) {
+					t.Fatalf("provider payload leaked through normalized failure: %q", sink.bodyString())
+				}
+			}
+			if q.rollbacks() != 0 {
+				t.Fatalf("provider 2xx exposure must never rollback, got %d", q.rollbacks())
+			}
+			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+				t.Fatalf("malformed body must retain full quote %d, got %v", q.reservedPUSD, got)
+			}
+			if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 1 {
+				t.Fatalf("malformed body outcome error=%d want 1", got)
+			}
+			if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 0 {
+				t.Fatalf("malformed body must not count success, got %d", got)
+			}
+		})
+	}
+}
+
+func TestStreamingMalformedDataFrameIsSuppressedAndKeepsFullQuote(t *testing.T) {
+	q := &fakeQuota{}
+	mx := newFakeMetrics()
+	up := &fakeUpstream{body: ": keep-alive\n" +
+		`data: {"model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n" +
+		`data: ["deepseek-v4-flash"]` + "\n" +
+		`data: {"model":"deepseek-v4-flash","choices":[{"delta":{"content":"must-not-pass"}}]}` + "\n" +
+		"data: [DONE]\n"}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 200 || sink.header("Content-Type") != "text/event-stream" {
+		t.Fatalf("stream status/content-type=%d/%q", sink.statusCode(), sink.header("Content-Type"))
+	}
+	want := ":\n" +
+		`data: {"model":"anselm-auto","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n"
+	if got := sink.bodyString(); got != want {
+		t.Fatalf("malformed frame or tail crossed public boundary\n got: %q\nwant: %q", got, want)
+	}
+	if strings.Contains(sink.bodyString(), billing.DeepSeekV4Flash) || strings.Contains(sink.bodyString(), "must-not-pass") {
+		t.Fatalf("provider-owned bytes leaked: %q", sink.bodyString())
+	}
+	if q.rollbacks() != 0 {
+		t.Fatalf("stream output/exposure must not rollback, got %d", q.rollbacks())
+	}
+	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+		t.Fatalf("malformed frame must override earlier usage and retain full quote %d, got %v", q.reservedPUSD, got)
+	}
+	if mx.upstreamCount(billing.ProviderDeepSeek, "error") != 1 || mx.upstreamCount(billing.ProviderDeepSeek, "success") != 0 {
+		t.Fatalf("malformed frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderDeepSeek, "error"), mx.upstreamCount(billing.ProviderDeepSeek, "success"))
+	}
+}
+
+func TestStreamingOversizedFrameIsNeverPartiallyRelayedAndKeepsFullQuote(t *testing.T) {
+	q := &fakeQuota{}
+	mx := newFakeMetrics()
+	up := &fakeUpstream{body: `data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n" +
+		"data: {\"model\":\"" + billing.DeepSeekV4Flash + `","padding":"` + strings.Repeat("x", 1024*1024) + `"}` + "\n"}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+	wg.Wait()
+
+	if got := sink.bodyString(); got != `data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n" {
+		t.Fatalf("oversized frame was partially relayed: len=%d tail=%q", len(got), got[max(0, len(got)-64):])
+	}
+	if strings.Contains(sink.bodyString(), billing.DeepSeekV4Flash) {
+		t.Fatalf("oversized provider model leaked: %q", sink.bodyString())
+	}
+	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+		t.Fatalf("scanner failure must retain full quote %d, got %v", q.reservedPUSD, got)
+	}
+	if mx.upstreamCount(billing.ProviderDeepSeek, "error") != 1 || mx.upstreamCount(billing.ProviderDeepSeek, "success") != 0 {
+		t.Fatalf("oversized frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderDeepSeek, "error"), mx.upstreamCount(billing.ProviderDeepSeek, "success"))
+	}
+}
+
+func TestAmbiguousOpenFailuresKeepFullReservation(t *testing.T) {
+	for _, aerr := range []*apierr.APIError{
+		apierr.ErrUpstreamError,
+		apierr.ErrUpstreamTimeout,
+		apierr.NewError(499, "CLIENT_CANCELED", "client canceled the request"),
+	} {
+		t.Run(aerr.Code, func(t *testing.T) {
+			q := &fakeQuota{}
+			up := &fakeUpstream{aerr: aerr}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+			wg.Wait()
+
+			if sink.statusCode() != aerr.Status {
+				t.Fatalf("status: %d want %d", sink.statusCode(), aerr.Status)
+			}
+			if q.rollbacks() != 0 {
+				t.Fatalf("ambiguous Open outcome must not rollback, got %d", q.rollbacks())
+			}
+			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+				t.Fatalf("ambiguous Open outcome must keep full quote %d, got %v", q.reservedPUSD, got)
+			}
+		})
+	}
+}
+
+func TestExplicitBusyFromOpenIsDefinitelyUnbilledAndRollsBack(t *testing.T) {
+	q := &fakeQuota{}
+	up := &fakeUpstream{aerr: apierr.ErrUpstreamBusy, exposure: billing.DefinitelyUnbilled}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+	wg.Wait()
+	if q.rollbacks() != 1 || len(q.settles()) != 0 {
+		t.Fatalf("explicit busy must rollback only: rollbacks=%d settles=%v", q.rollbacks(), q.settles())
+	}
+}
+
+func TestDefinitelyUnbilledExposureRollsBackEvenWithGenericErrorCode(t *testing.T) {
+	// A provider 401/402 is normalized to UPSTREAM_ERROR for the client but is an
+	// explicit pre-generation refusal for accounting. This regression proves the
+	// app consumes the independent exposure fact instead of guessing from Code.
+	q := &fakeQuota{}
+	up := &fakeUpstream{aerr: apierr.ErrUpstreamError, exposure: billing.DefinitelyUnbilled}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+	wg.Wait()
+	if q.rollbacks() != 1 || len(q.settles()) != 0 {
+		t.Fatalf("explicit refusal must rollback only: rollbacks=%d settles=%v", q.rollbacks(), q.settles())
 	}
 }
 
@@ -106,15 +284,65 @@ func TestClientDisconnectMidStream_KeepsCount(t *testing.T) {
 		t.Fatalf("mid-stream disconnect must NOT roll back (count kept), got %d rollbacks", q.rollbacks())
 	}
 	got := q.settles()
-	if len(got) != 1 || got[0] != q.reserved {
+	if len(got) != 1 || got[0] != q.reservedPUSD {
 		t.Fatalf("disconnect before usage must settle full est, got %v", got)
+	}
+}
+
+func TestStreamingUsageBeforeDONECannotRefundOnEOFOrDisconnect(t *testing.T) {
+	usageLine := `data: {"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}` + "\n"
+	for _, tc := range []struct {
+		name string
+		body string
+		sink Sink
+	}{
+		{name: "clean EOF", body: usageLine, sink: newFakeSink()},
+		{name: "client disconnect", body: usageLine + `data: {"choices":[]}` + "\n" + "data: [DONE]\n",
+			sink: (&disconnectSink{fakeSink: newFakeSink(), failAfter: 2}).appSink()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			mx := newFakeMetrics()
+			up := &fakeUpstream{body: tc.body}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, tc.sink)
+			wg.Wait()
+
+			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+				t.Fatalf("non-terminal usage must retain full quote %d, got %v", q.reservedPUSD, got)
+			}
+			if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 1 {
+				t.Fatalf("incomplete stream outcome error=%d want 1", got)
+			}
+		})
+	}
+}
+
+func TestStreamingDONEReadBeforeClientWriteFailureAllowsUsageSettle(t *testing.T) {
+	q := &fakeQuota{}
+	mx := newFakeMetrics()
+	up := &fakeUpstream{body: `data: {"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}` + "\n" +
+		"data: [DONE]\n"}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
+	// The usage line and its newline succeed; writing the already-read DONE line
+	// fails on the third Write.
+	sink := &disconnectSink{fakeSink: newFakeSink(), failAfter: 2}
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink.appSink())
+	wg.Wait()
+
+	want := int64(10*140_000 + 2*280_000)
+	if got := q.settles(); len(got) != 1 || got[0] != want {
+		t.Fatalf("terminal usage settle=%v want %d", got, want)
+	}
+	if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 1 {
+		t.Fatalf("fully read provider stream outcome success=%d want 1", got)
 	}
 }
 
 func TestBreakerOpen_ShedsWithoutSlot(t *testing.T) {
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
-	up := &fakeUpstream{breakerOpen: true}
+	up := &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderDeepSeek: true}}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
@@ -204,7 +432,11 @@ func TestDangerFieldsStripped_ToolsPassed(t *testing.T) {
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
 	wg.Wait()
-	p := string(spy.payload)
+	raw, err := json.Marshal(spy.request)
+	if err != nil {
+		t.Fatalf("marshal captured request: %v", err)
+	}
+	p := string(raw)
 	if !strings.Contains(p, `"tools"`) {
 		t.Fatalf("tools must pass through: %s", p)
 	}
@@ -277,7 +509,7 @@ func TestRateLimited_AndDiskDegrade(t *testing.T) {
 	if sink2.statusCode() != apierr.ErrDiskLow.Status {
 		t.Fatalf("disk-low status: %d", sink2.statusCode())
 	}
-	if q2.reserved != 0 {
+	if q2.reservedPUSD != 0 {
 		t.Fatalf("disk degrade must shed BEFORE reserve")
 	}
 }
@@ -306,12 +538,12 @@ func TestBodyError_400(t *testing.T) {
 func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
 	// INPUT_TOKEN_CAP=0 disables the input gate: a prompt whose estimate far
 	// exceeds any plausible nonzero cap must pass through to Reserve (the model's
-	// own context limit judges instead). InstallDailyTokenCap stays 0 in testCfg
-	// so the 4b pre-reserve gate is disabled too.
+	// own context limit judges instead). The test install spend wallet remains
+	// ample, so the pre-reserve spend-cap check stays out of the way too.
 	cfg := testCfg()
 	cfg.InputTokenCap = 0
 	q := &fakeQuota{}
-	up := &fakeUpstream{body: `{"usage":{"total_tokens":7}}`}
+	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 
 	// ~60k chars → promptEst ≈ 72k (runes ×1.2), far above e.g. a 16384 cap.
@@ -325,20 +557,19 @@ func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
 	}
 	// Reserve WAS reached, with est = promptEst + maxTok (the estimate still
 	// feeds the reservation even when the gate is off).
-	if q.reserved <= 60_000 {
-		t.Fatalf("Reserve not reached with the full estimate: reserved=%d", q.reserved)
+	if q.plan.PromptQuote <= 60_000 {
+		t.Fatalf("Reserve not reached with the full prompt quote: plan=%+v", q.plan)
 	}
 	if got := q.settles(); len(got) != 1 {
 		t.Fatalf("success path must settle once, got %v", got)
 	}
 }
 
-func TestEstOverInstallDailyTokenCap_400BeforeReserve(t *testing.T) {
-	// est = promptEst + clamped max_tokens. With MaxTokensCap=1000 the clamp
-	// yields 1000 even for a tiny prompt, so est > InstallDailyTokenCap=500 —
-	// such a request can NEVER succeed and must 400 BEFORE any reservation.
+func TestQuoteOverInstallDailySpendCap_400BeforeReserve(t *testing.T) {
+	// The provider-aware hard quote cannot ever fit this install wallet, so the
+	// request is a client-visible 400 before any DB reservation.
 	cfg := testCfg()
-	cfg.InstallDailyTokenCap = 500 // < MaxTokensCap (1000) ⇒ est always over.
+	cfg.InstallDailySpendPUSD = 1
 	q := &fakeQuota{}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
@@ -348,12 +579,12 @@ func TestEstOverInstallDailyTokenCap_400BeforeReserve(t *testing.T) {
 	if sink.statusCode() != 400 {
 		t.Fatalf("est over install-day cap must 400, got %d", sink.statusCode())
 	}
-	if !strings.Contains(sink.bodyString(), "request exceeds the per-install daily token capacity") {
-		t.Fatalf("wrong 4b message: %q", sink.bodyString())
+	if !strings.Contains(sink.bodyString(), "request exceeds the per-install daily spend capacity") {
+		t.Fatalf("wrong spend-cap message: %q", sink.bodyString())
 	}
-	if q.reserved != 0 || len(q.settles()) != 0 || q.rollbacks() != 0 {
-		t.Fatalf("4b gate must reject BEFORE Reserve: reserved=%d settles=%v rollbacks=%d",
-			q.reserved, q.settles(), q.rollbacks())
+	if q.reservedPUSD != 0 || len(q.settles()) != 0 || q.rollbacks() != 0 {
+		t.Fatalf("spend gate must reject BEFORE Reserve: reserved=%d settles=%v rollbacks=%d",
+			q.reservedPUSD, q.settles(), q.rollbacks())
 	}
 }
 
@@ -364,7 +595,10 @@ func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 	// never "error" (an oversized-prompt burst must not read as an outage).
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
-	up := &fakeUpstream{aerr: apierr.UpstreamRejected(apierr.RejectedContextLength)}
+	up := &fakeUpstream{
+		aerr:     apierr.UpstreamRejected(apierr.RejectedContextLength),
+		exposure: billing.DefinitelyUnbilled,
+	}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
@@ -383,11 +617,422 @@ func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 	if len(q.settles()) != 0 {
 		t.Fatalf("no settle on a rejection, got %v", q.settles())
 	}
-	if got := mx.upstreamCount("rejected"); got != 1 {
+	if got := mx.upstreamCount(billing.ProviderDeepSeek, "rejected"); got != 1 {
 		t.Fatalf("metric label: upstream{rejected}=%d want 1", got)
 	}
-	if got := mx.upstreamCount("error"); got != 0 {
+	if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 0 {
 		t.Fatalf("a rejection must not count as upstream{error}, got %d", got)
+	}
+}
+
+func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	mediaBody := `{"model":"deepseek-v4-flash","messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]},` +
+		`{"role":"assistant","content":"seen"},` +
+		`{"role":"user","content":"last turn is text"}` +
+		`]}`
+
+	tests := []struct {
+		name         string
+		body         string
+		wantProvider billing.Provider
+		wantModel    string
+	}{
+		{"text", `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"hello"}]}`,
+			billing.ProviderDeepSeek, billing.DeepSeekV4Flash},
+		{"media anywhere in history", mediaBody, billing.ProviderGemini, billing.Gemini31FlashLite},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			up := &fakeUpstream{body: `{"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			wg.Wait()
+			if sink.statusCode() != 200 {
+				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+			}
+			calls := up.callSnapshot()
+			if len(calls) != 1 || calls[0].Provider != tc.wantProvider || calls[0].Model != tc.wantModel {
+				t.Fatalf("calls=%+v, want one %s/%s", calls, tc.wantProvider, tc.wantModel)
+			}
+			if calls[0].Timeout != testCfg().UpstreamHeaderTimeout {
+				t.Fatalf("first-byte timeout=%s want request snapshot %s", calls[0].Timeout, testCfg().UpstreamHeaderTimeout)
+			}
+			if q.plan.Provider != tc.wantProvider || q.plan.Model != tc.wantModel {
+				t.Fatalf("reserved plan=%+v", q.plan)
+			}
+		})
+	}
+}
+
+func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) {
+	const publicModel = "anselm-client"
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+
+	requestBody := func(media, stream bool) string {
+		streamJSON := "false"
+		if stream {
+			streamJSON = "true"
+		}
+		if media {
+			return `{"model":"client-cannot-pick","stream":` + streamJSON + `,"messages":[{"role":"user","content":[` +
+				`{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+		}
+		return `{"model":"client-cannot-pick","stream":` + streamJSON + `,"messages":[{"role":"user","content":"hello"}]}`
+	}
+
+	tests := []struct {
+		name          string
+		media         bool
+		stream        bool
+		provider      billing.Provider
+		upstreamModel string
+	}{
+		{name: "DeepSeek non-stream", provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
+		{name: "DeepSeek stream", stream: true, provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
+		{name: "Gemini non-stream", media: true, provider: billing.ProviderGemini, upstreamModel: billing.Gemini31FlashLite},
+		{name: "Gemini stream", media: true, stream: true, provider: billing.ProviderGemini, upstreamModel: billing.Gemini31FlashLite},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamBody, wantClientBody string
+			if tc.stream {
+				upstreamBody = `data: {"id":"chunk-1", "model" : "` + tc.upstreamModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+					`data: {"model":"` + tc.upstreamModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
+					"data: [DONE]\n"
+				wantClientBody = `data: {"id":"chunk-1", "model" : "` + publicModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+					`data: {"model":"` + publicModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
+					"data: [DONE]\n"
+			} else {
+				upstreamBody = `{"id":"cmpl-1", "model" : "` + tc.upstreamModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+				wantClientBody = `{"id":"cmpl-1", "model" : "` + publicModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+			}
+
+			cfg := testCfg()
+			cfg.PublicModelID = publicModel
+			q := &fakeQuota{}
+			up := &fakeUpstream{body: upstreamBody}
+			svc, wg := build(Deps{
+				Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true},
+				Config: fakeConfig{c: cfg},
+			})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(requestBody(tc.media, tc.stream))}, sink)
+			wg.Wait()
+
+			if sink.statusCode() != 200 {
+				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+			}
+			if got := sink.bodyString(); got != wantClientBody {
+				t.Fatalf("client response changed outside model rewrite\n got: %s\nwant: %s", got, wantClientBody)
+			}
+			calls := up.callSnapshot()
+			if len(calls) != 1 || calls[0].Provider != tc.provider || calls[0].Model != tc.upstreamModel {
+				t.Fatalf("upstream calls=%+v want one %s/%s", calls, tc.provider, tc.upstreamModel)
+			}
+		})
+	}
+}
+
+func TestGeminiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+	q := &fakeQuota{}
+	up := &fakeUpstream{available: map[billing.Provider]bool{
+		billing.ProviderDeepSeek: true,
+		billing.ProviderGemini:   false,
+	}, body: `{}`}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 503 || !strings.Contains(sink.bodyString(), "MULTIMODAL_UNAVAILABLE") {
+		t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+	}
+	if q.reservedPUSD != 0 || len(up.callSnapshot()) != 0 {
+		t.Fatalf("unavailable route must reject before reserve/open: reserved=%d calls=%+v", q.reservedPUSD, up.callSnapshot())
+	}
+
+	// The absent Gemini credential is isolated: text remains on DeepSeek.
+	textQ := &fakeQuota{}
+	textSvc, textWG := build(Deps{Auth: okAuth(), Quota: textQ, Upstream: up, RL: &fakeRL{allow: true}})
+	textSink := newFakeSink()
+	textSvc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, textSink)
+	textWG.Wait()
+	if textSink.statusCode() != 200 {
+		t.Fatalf("text must remain available, status=%d body=%s", textSink.statusCode(), textSink.bodyString())
+	}
+	calls := up.callSnapshot()
+	if len(calls) != 1 || calls[0].Provider != billing.ProviderDeepSeek {
+		t.Fatalf("text route calls=%+v", calls)
+	}
+}
+
+func TestProviderBreakersAreIsolated(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	mediaBody := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+	tests := []struct {
+		name        string
+		body        string
+		openBreaker billing.Provider
+		wantRoute   billing.Provider
+	}{
+		{"DeepSeek open does not block Gemini", mediaBody, billing.ProviderDeepSeek, billing.ProviderGemini},
+		{"Gemini open does not block DeepSeek", goodBody, billing.ProviderGemini, billing.ProviderDeepSeek},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			up := &fakeUpstream{
+				breakers: map[billing.Provider]bool{tc.openBreaker: true},
+				body:     `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			wg.Wait()
+			if sink.statusCode() != 200 {
+				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+			}
+			calls := up.callSnapshot()
+			if len(calls) != 1 || calls[0].Provider != tc.wantRoute {
+				t.Fatalf("calls=%+v want=%s", calls, tc.wantRoute)
+			}
+		})
+	}
+}
+
+func TestGeminiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+	for _, tc := range []struct {
+		name         string
+		up           *fakeUpstream
+		wantRollback bool
+	}{
+		{"open failure", &fakeUpstream{aerr: apierr.ErrUpstreamError}, false},
+		{"breaker open", &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderGemini: true}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: tc.up, RL: &fakeRL{allow: true}})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+			wg.Wait()
+			for _, call := range tc.up.callSnapshot() {
+				if call.Provider != billing.ProviderGemini {
+					t.Fatalf("multimodal request fell back: calls=%+v", tc.up.callSnapshot())
+				}
+			}
+			if got := q.rollbacks(); (got == 1) != tc.wantRollback {
+				t.Fatalf("rollbacks=%d wantRollback=%v", got, tc.wantRollback)
+			}
+			if tc.wantRollback && len(q.settles()) != 0 {
+				t.Fatalf("definitely-unbilled failure must not settle: %v", q.settles())
+			}
+			if !tc.wantRollback {
+				if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+					t.Fatalf("ambiguous failure must retain quote: %v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
+	t.Run("DeepSeek cache dimensions", func(t *testing.T) {
+		q := &fakeQuota{}
+		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+		wg.Wait()
+		want := int64(4*2_800 + 6*140_000 + 2*280_000)
+		if got := q.settles(); len(got) != 1 || got[0] != want {
+			t.Fatalf("settles=%v want=%d", got, want)
+		}
+	})
+
+	t.Run("stream cumulative snapshots take max not sum", func(t *testing.T) {
+		q := &fakeQuota{}
+		up := &fakeUpstream{body: "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n" +
+			"data: {\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n"}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+		wg.Wait()
+		want := int64(12*140_000 + 3*280_000)
+		if got := q.settles(); len(got) != 1 || got[0] != want {
+			t.Fatalf("snapshots were summed or mispriced: settles=%v want=%d", got, want)
+		}
+	})
+
+	t.Run("contradictory usage keeps reservation", func(t *testing.T) {
+		q := &fakeQuota{}
+		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":99}}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+		wg.Wait()
+		if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
+			t.Fatalf("malformed usage must retain full reservation: reserved=%d got=%v", q.reservedPUSD, got)
+		}
+	})
+}
+
+func TestGeminiHardQuoteAndAudioInputClass(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	wav := base64.StdEncoding.EncodeToString([]byte("RIFF1234WAVE"))
+	tests := []struct {
+		name      string
+		body      string
+		wantClass billing.InputClass
+		inputRate int64
+	}{
+		{"image standard", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`, billing.InputStandard, 250_000},
+		{"audio higher rate", `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`, billing.InputAudio, 500_000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuota{}
+			up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+			sink := newFakeSink()
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			wg.Wait()
+			if q.plan.Provider != billing.ProviderGemini || q.plan.PromptQuote != billing.GeminiInputLimit || q.plan.OutputQuote != billing.GeminiOutputLimit || q.plan.InputClass != tc.wantClass {
+				t.Fatalf("Gemini hard plan=%+v", q.plan)
+			}
+			wantCost := 10*tc.inputRate + 2*int64(1_500_000)
+			if got := q.settles(); len(got) != 1 || got[0] != wantCost {
+				t.Fatalf("settles=%v want=%d", got, wantCost)
+			}
+		})
+	}
+}
+
+func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
+	q := &fakeQuota{}
+	mx := newFakeMetrics()
+	logger := &fakeLogger{}
+	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":100,"total_tokens":200}}`}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx, Logger: logger})
+	sink := newFakeSink()
+	body := `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+	want := int64(100*140_000 + 100*280_000)
+	if got := q.settles(); len(got) != 1 || got[0] != want || got[0] <= q.reservedPUSD {
+		t.Fatalf("actual top-up must settle truth: reserved=%d got=%v want=%d", q.reservedPUSD, got, want)
+	}
+	if mx.driftCount(billing.ProviderDeepSeek) != 1 || logger.warningCount() != 1 {
+		t.Fatalf("drift observability: metric=%d warns=%d", mx.driftCount(billing.ProviderDeepSeek), logger.warningCount())
+	}
+}
+
+func TestPayloadMaxTokensClampedBySelectedModel(t *testing.T) {
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	tests := []struct {
+		name string
+		body string
+		want int64
+	}{
+		{"DeepSeek", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, billing.DeepSeekOutputLimit},
+		{"Gemini", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, billing.GeminiOutputLimit},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testCfg()
+			cfg.MaxTokensCap = 1_000_000
+			q := &fakeQuota{}
+			up := &fakeUpstream{}
+			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, newFakeSink())
+			wg.Wait()
+			calls := up.callSnapshot()
+			if len(calls) != 1 || calls[0].Request.MaxTokens != tc.want {
+				t.Fatalf("calls=%+v want max_tokens=%d", calls, tc.want)
+			}
+		})
+	}
+}
+
+func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
+	cfgSource := &countingConfig{c: testCfg()}
+	q := &fakeQuota{}
+	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: cfgSource})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	wg.Wait()
+	// One startup read fixes semaphore capacity; exactly one entry read owns the
+	// whole request, including response headers.
+	if got := cfgSource.count(); got != 2 {
+		t.Fatalf("config loads=%d want 2 (startup + one request snapshot)", got)
+	}
+}
+
+func TestGeminiHardQuoteOverInstallWalletIs400BeforeReserve(t *testing.T) {
+	plan, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
+		billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cfg := testCfg()
+	cfg.InstallDailySpendPUSD = plan.ReservedPUSD - 1
+	wav := base64.StdEncoding.EncodeToString([]byte("RIFF1234WAVE"))
+	body := `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`
+	q := &fakeQuota{}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+	if sink.statusCode() != 400 || q.reservedPUSD != 0 {
+		t.Fatalf("status=%d reserved=%d body=%s", sink.statusCode(), q.reservedPUSD, sink.bodyString())
+	}
+}
+
+func TestGeminiPromptEstimateBeyondModelLimitIs400(t *testing.T) {
+	cfg := testCfg()
+	cfg.InputTokenCap = 0 // exercise the model hard-limit guard, not generic cap.
+	cfg.MaxMessageChars = 2_000_000
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.GeminiInputLimit)) +
+		`"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+	q := &fakeQuota{}
+	up := &fakeUpstream{}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+	calls := len(up.callSnapshot())
+	if sink.statusCode() != 400 || q.reservedPUSD != 0 || calls != 0 {
+		t.Fatalf("status=%d reserved=%d call_count=%d", sink.statusCode(), q.reservedPUSD, calls)
+	}
+}
+
+func TestMultimodalInputCapDoesNotTokenizeBase64TransportText(t *testing.T) {
+	cfg := testCfg()
+	// The byte-fallback estimator includes fixed request/message framing. Keep a
+	// small cap above that legitimate text/metadata bound but far below the 64KiB
+	// base64 transport payload this test proves is excluded.
+	cfg.InputTokenCap = 256
+	cfg.MaxMediaDecodedBytes = 128 * 1024
+	png := append([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}, make([]byte, 64*1024)...)
+	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
+	q := &fakeQuota{}
+	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}`}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+	if sink.statusCode() != 200 || len(up.callSnapshot()) != 1 {
+		t.Fatalf("media transport encoding was treated as text tokens: status=%d body=%s calls=%d", sink.statusCode(), sink.bodyString(), len(up.callSnapshot()))
 	}
 }
 

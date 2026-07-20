@@ -32,16 +32,31 @@ export interface Rates {
   windowSec: number
 }
 
+// Closed provider state exposed by overview.providers. The object always has
+// exactly the two deterministic routes; it never carries key counts or values.
+export interface ProviderStatus {
+  configured: boolean
+  breakerOpen: boolean
+}
+
+export interface ProviderStatuses {
+  deepseek: ProviderStatus
+  gemini: ProviderStatus
+}
+
 // overviewResponse (api.go) — the live operational snapshot.
 export interface OverviewResponse {
   budget: {
     day: string
-    used: number
-    limit: number
-    remaining: number
+    usedMicroUsd: number
+    limitMicroUsd: number
+    remainingMicroUsd: number
+    unit: 'micro_usd'
   }
   inflightConcurrency: number
   openReservations: number
+  providers: ProviderStatuses
+  // Compatibility aggregate for older consumers; this SPA uses providers.
   upstreamBreakerOpen: boolean
   diskDegraded: boolean
   alerts: AlertState[] | null
@@ -71,7 +86,7 @@ export interface InstallRow {
   status: string
   createdAt: string
   lastSeenAt?: string
-  todayTokens: number
+  todaySpendMicroUsd: number
 }
 
 // GET /api/installs response (installs.go).

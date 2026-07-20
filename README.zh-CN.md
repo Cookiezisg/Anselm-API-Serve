@@ -2,21 +2,21 @@
 
 [English](README.md) · 简体中文
 
-一个纯 Go + SQLite 的单二进制网关,把单个 LLM 上游(DeepSeek)包在 OpenAI 兼容的接口后面。上游 API key 只留在服务端;用量用悲观配额记账来计量,使 operator 的预算不会被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
+一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline media 走 Gemini 3.1 Flash-Lite。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
 
 它做三件事:
 
-1. **代理** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,透传 `tools`/`tool_choice` 以支持多轮工具调用)。上游 key 注入在请求副本上,不会返回给客户端。
-2. **计量** —— 进上游前,在单个 SQLite 事务里对三道闸(月度请求数 / 单 install 日 token 上限 / 全局日预算)预占,再据真实用量结算。失败回滚;崩溃只会多扣,不会少扣。
+1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用)。整段 messages 历史决定 provider;客户不能选 provider,两路之间也不 fallback。
+2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占月请求数、install 日花费、provider 日花费和全局日花费。成功依上游 usage 结算;无法判定的失败保留保守扣费。
 3. **限流** —— 匿名 install token(只存 SHA-256),外加默认关闭的 Proof-of-Work 与限流闸。
 
 代码采用 Clean Architecture(domain / app / infra / transport,加一个 bootstrap 组合根),依赖方向由 golangci-lint(depguard)强制。四层都有测试,另有一个 loopback 全栈端到端套件;CI 跑 race 测试、lint、govulncheck、gofmt,以及一项"内嵌后台的构建是否与源一致"的检查。
 
-## 配额记账
+## 成本记账
 
-![配额记账流程:一次 chat 请求先把计费周期快照一次,然后在单个 BEGIN IMMEDIATE 事务里对三道闸预占。三闸全过则转发上游、在首字节据真实用量结算;任一闸失败则回滚为 429/402;首字节之前的失败通过一个 defer 回滚全部三项;崩溃会留下一行 settled IS NULL,由 reconciler 退还。](docs/assets/quota-accounting.svg)
+四道护栏 —— 月请求数、单 install 日花费、单 provider 日花费、全局日花费 —— 在单写连接池的一个 `BEGIN IMMEDIATE` 事务里预占。不同 provider 的 token 向量绝不直接相加:每个请求先按冻结的精确模型费率卡换算,只有整数 picoUSD 成本进入共享钱包。
 
-三道闸 —— `月度次数 < 配额`、`install 日 token + 估算 ≤ 上限`、`全局日预算 + 估算 ≤ 预算` —— 在同一个 `BEGIN IMMEDIATE` 事务、单写连接池里判定,因此并发请求不会竞争这次读-改-写。计费只发生一次,在上游首字节。首字节之前的任何失败,都通过一个 defer 回滚全部三项预占。崩溃会留下一行 `settled IS NULL`,由 reconciler 退还,所以失败模式是多扣、不是少扣。
+确定没有达到 provider 前的拒绝会回滚预占。一旦请求已交给 provider,缺 usage、超时、断连或崩溃都保留保守预占;完整 usage 则结算到计算成本。账本转移是 compare-and-swap 且幂等,因此失败模式是多扣,不是花了 operator 的钱却没记账。
 
 ## 架构
 
@@ -40,13 +40,20 @@ TOKEN=$(curl -s -XPOST localhost:8080/v1/install | jq -r .token)
 
 curl -s localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-chat","stream":true,
+  -d '{"model":"anselm-auto","stream":true,
        "messages":[{"role":"user","content":"hello"}]}'
 
 curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 ```
 
-`model` 会被改写到 `MODEL_ALLOWLIST` 首项,客户端填任意 model 名都行;`GET /v1/models` 返回实际清单。
+## 确定性路由
+
+客户只看到一个逻辑模型 `anselm-auto`;`GET /v1/models` 以及流式/非流式 completion 的顶层 `model` 都只返回这个 ID。客户传入的 `model` 绝不用来选 provider:
+
+- 字符串 content,或只含 `text` part 的 content 数组,走 `deepseek-v4-flash`。
+- 整段历史任意位置出现一个受支持的媒体 part,就走 `gemini-3.1-flash-lite`。
+
+Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part,URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI;音频用 `input_audio` part,数据是 raw base64 WAV 或 MP3。远程 URL、PDF、视频、文件、未知 part、MIME/魔数不匹配,以及超出 part/解码字节上限的媒体都会直接拒绝,不向上游转发。两路之间没有 fallback。未配 `GEMINI_API_KEY` 时纯文本仍可用,多模态请求返回 `503 MULTIMODAL_UNAVAILABLE`。
 
 ## 管理后台
 
@@ -67,30 +74,34 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 |---|---|---|---|
 | `POST` | `/v1/install` | 无 | 领 install token(`{token, monthlyQuota, resetAt}`),只回显一次 |
 | `POST` | `/v1/chat/completions` | Bearer token | OpenAI 兼容推理;按 `stream` 返 SSE 或 JSON |
-| `GET` | `/v1/models` | Bearer token | OpenAI `{object:"list", data:[…]}`,源自实时 allowlist,只读 |
+| `GET` | `/v1/models` | Bearer token | OpenAI `{object:"list", data:[…]}`,内含唯一公开模型 ID |
 | `GET` | `/v1/quota` | Bearer token | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
 运维面(`127.0.0.1:9090`,loopback-only,不反代):`/metrics`、`/readyz`(`{db, upstream, disk}`)、`/debug/pprof/*`、`/debug/vars`。
 管理后台(`127.0.0.1:8081`,loopback):`/login`、`/logout`,以及会话保护的 `/api/*`。
 
-成功返回裸实体,失败返回 `{"error":{"code","message"}}`;上游 body 与 key 不透传。完整契约见 [`docs/references/backend/api.md`](docs/references/backend/api.md)。
+成功返回裸实体,失败返回 `{"error":{"code","message"}}`;成功 completion body 只会在严格校验并改写公开模型 alias 后转发，原始上游错误 body/header 与 provider key 绝不透传。完整契约见 [`docs/references/backend/api.md`](docs/references/backend/api.md)。
 
 ## 配置
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。主要护栏:`GLOBAL_DAILY_BUDGET_TOKENS`、`INSTALL_DAILY_TOKEN_CAP`(须 ≤ 全局预算)、`MONTHLY_QUOTA`、`MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`、`N_GLOBAL_CONCURRENCY`、`RATE_PER_MIN`。反滥用闸(`INSTALL_GLOBAL_DAILY_CAP`、`TOKEN_ANOMALY_RPM`、`INSTALL_POW_MODE` 等)默认 `0`/`off`。
+机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`GEMINI_API_KEY`(可选,逗号分隔;不配只禁用多模态)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
+
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=gemini-3.1-flash-lite`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`GEMINI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。其他主要护栏有 `MONTHLY_QUOTA`、`MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`、`N_GLOBAL_CONCURRENCY`、`RATE_PER_MIN`。示例文件为本地开发保留可选的 dormant 反滥用闸;仓库内生产部署已启用有界输入/输出及领号/请求速率闸。
 
 ## 部署
 
 VPS 上的 Caddy + systemd:
 
 - Caddy 终结 TLS 并把 API 域名反代到 `127.0.0.1:8080`(SSE 即时下发)。根域可从 `deploy/site/` 提供纯静态说明页。Go 进程只绑 `127.0.0.1`,不直面公网。
-- systemd socket-activation 持有 `:8080` 的 fd,连接跨重启不丢。
-- GitHub Actions(push `main`):`vet + test -race` → 静态 `linux/amd64` 编译 → 版本化二进制 + 原子 symlink → 部署 gate(本机 `readyz`/`healthz`,失败自动回滚上一版)→ 仅留最近 5 版。
+- systemd socket activation 在普通 service restart 时持有 `:8080` fd。发版时会有意先停 Caddy、socket、service,形成一段 fail-closed 维护窗,确保 SQLite 快照到 commit 之间没有请求写账本。
+- 只有本仓 `ci` 对 `main` push 全绿后,deploy workflow 才接收该次不可变 `head_sha`;失败、未完成或已经不是 `main` tip 的过期 CI 都绝不能部署。deploy 会 checkout 这个精确 SHA,并再次执行发布关键门项:gofmt/module verify/vet/build、race unit + integration e2e、公开 parser fuzz smoke、记账覆盖率地板、docs governance、rollback shell 模拟、高危 npm audit + 内嵌后台重建/drift、golangci-lint 与 govulncheck;全绿后才静态编译 `linux/amd64` → 全部 artifact 进入远端不可预测的 `0700` stage → 校验精确 regular-file 集与 SHA-256 manifest → 停写后快照 SQLite main/WAL/SHM → 安装并跑 loopback gate → 持久化本地 commit → 重开 Caddy。commit 前任一路径失败都会把 DB、binary/symlink、env、unit、Caddy、静态站与旧全局 rollback 入口(首次部署则精确恢复为不存在)作为一个兼容单元完整自动恢复。root filesystem 上的 transition marker 配合永久 systemd Caddy condition,即使进程死亡或整机重启也保持公网入口关闭;commit 后 Caddy 启动失败则绝不冒险回卷可能已承接流量的 DB。
+- 生产强制配置 GitHub Environment secret `SERVER_KNOWN_HOSTS`,缺失或不含 `SERVER_HOST` 条目即 fail closed;不存在 `ssh-keyscan`/TOFU 回退。远端 data dir 为 `0700`,DB/WAL/SHM 与 secret env 为 `0600`;成功发版后只保留一个 root-only rollback bundle。
+- 服务器安装 schema-aware 人工回滚命令:`sudo /usr/local/sbin/anselm-gateway-rollback`(交互确认),自动化用 `sudo /usr/local/sbin/anselm-gateway-rollback --yes`。若主机/进程崩溃留下持久 transition marker,必须先恢复 marker 指向的精确 checksummed bundle。最可靠的入口始终是 `sudo <marker 中的 bundle>/recovery/rollback.sh --recover-incomplete`(非交互再加 `--yes`);全局入口若已升级,也支持同样的 recovery mode。每个 bundle 都携带该版精确 recovery program,回滚又会恢复旧全局入口,因此不会与更旧的保留 READY bundle 发生格式错配。永久 Caddy guard 则作为 inert 的受管安全 artifact 保留。回滚会同时恢复 DB 快照及整套运行 artifact;schema migration 后只切 binary symlink 明确不受支持且不安全。
 
-部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
+部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。生产默认闸为 `INPUT_TOKEN_CAP=131072`、`MAX_TOKENS_CAP=16384`、`MAX_MESSAGES=1024`、`MAX_MESSAGE_CHARS=262144`、`RATE_PER_MIN=8`、`DAILY_SUBLIMIT=100`、`INSTALL_GLOBAL_DAILY_CAP=100`、`INSTALL_PER_FP_DAILY=3`、`INSTALL_PER_FP_COOLDOWN_SEC=3600`、`INSTALL_PER_IP_HOUR=10`、`TOKEN_ANOMALY_RPM=8`。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
 
 ## 开发
 
@@ -100,13 +111,13 @@ make lint      # golangci-lint v2.6.1(含 depguard 分层检查)
 make docs      # 文档治理门禁
 ```
 
-测试覆盖四层(约 48 个 `_test.go`)+ loopback 全栈 e2e(`internal/e2e`,`integration` tag)。CI 对记账相关包强制覆盖地板(`app/quota` ≥ 70%、`app/chat` ≥ 65%),并跑 govulncheck、gofmt、fuzz smoke、SBOM 与后台构建漂移检查。
+测试覆盖四层 + loopback 全栈 e2e(`internal/e2e`,`integration` tag)。CI 对记账相关包强制覆盖地板(`app/quota` ≥ 70%、`app/chat` ≥ 65%),并跑 govulncheck、gofmt、fuzz smoke、SBOM 与后台构建漂移检查。
 
 ## 状态与范围
 
 线上 `main` 运行中;管理后台已接线并提供,单轮与多轮工具调用已端到端测试。
 
-这是一个刻意做薄的网关:单上游(DeepSeek)、单 operator 预算、单节点 SQLite + 单写池(这正是原子记账能成立的前提)。它不是多租户 LLM 路由、不是计费系统,也不横向扩展;运维面 loopback-only。它是为一个产品而写的,搬到别处用需要一些改造。
+这是一个刻意做薄的网关:两条固定内容形状路由、单 operator 共享预算、单节点 SQLite + 单写池(这正是原子记账能成立的前提)。它不是通用模型路由、不是多租户计费系统,也不横向扩展;运维面 loopback-only。它是为一个产品而写的,搬到别处用需要一些改造。
 
 ## 文档
 
@@ -114,7 +125,7 @@ make docs      # 文档治理门禁
 
 - [`concepts/architecture.md`](docs/concepts/architecture.md) —— 系统模型
 - [`references/backend/`](docs/references/backend/) —— 与代码同步的契约(api / config / database / error-codes / invariants)
-- [`decisions/`](docs/decisions/) —— ADR-001..011(设计决策,保持不可变)
+- [`decisions/`](docs/decisions/) —— ADR-001..012(设计决策,保持不可变)
 
 ## 许可
 

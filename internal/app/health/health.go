@@ -1,6 +1,7 @@
 // Package health implements layered health policy: liveness (pure process,
-// NEVER touches any dependency) and readiness (DB writability + cached upstream
-// reachability + disk state aggregated into per-component states).
+// NEVER touches any dependency) and readiness (DB writability + cached
+// authenticated provider/model availability + disk state aggregated into
+// per-component states).
 //
 // GW-INV-13: /healthz must never touch the DB (DB jitter must NOT cause a
 // restart storm); /readyz is loopback-only and surfaces dependency state.
@@ -31,7 +32,7 @@ type DBChecker interface {
 }
 
 // UpstreamProbe exposes the CACHED background-probe result. Ready only reads it
-// — it never triggers a live DeepSeek call (probing per request could pile onto
+// — it never triggers a live provider call (probing per request could pile onto
 // or stall behind a struggling upstream).
 type UpstreamProbe interface {
 	// LastOK reports the last successful probe outcome and how long ago it was.

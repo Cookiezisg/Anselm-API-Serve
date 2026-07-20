@@ -17,6 +17,8 @@ package chat
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
@@ -27,52 +29,12 @@ import (
 // defensively. Exported so the one number has a single home both layers cite.
 const BodyDecodeLimit int64 = 256 * 1024
 
-// chatMessage mirrors only the whitelisted message fields. tool_calls /
-// tool_call_id / name are preserved verbatim (multi-turn tool loop, GW): a tool
-// turn carries tool_calls on the assistant message and tool_call_id+name on the
-// tool result, so stripping them breaks the loop. ToolCalls stays json.RawMessage
-// so the gateway neither parses nor reshapes the provider's tool-call schema.
-type chatMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
-	Name       string          `json:"name,omitempty"`
-	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	// ReasoningContent is the thinking-model trace. deepseek-v4-flash REQUIRES the
-	// assistant turn's reasoning_content be passed back on the next request when
-	// that turn made a tool call ("reasoning_content in the thinking mode must be
-	// passed back"), so the gateway whitelists it and forwards it verbatim — else
-	// the multi-turn agentic loop 400s. Opaque RawMessage (string|null), omitempty.
-	ReasoningContent json.RawMessage `json:"reasoning_content,omitempty"`
-}
-
-// MarshalJSON omits content on an assistant tool-call turn that carries no text:
-// the OpenAI-canonical echo of a tool call is {role, tool_calls} with content
-// null/absent (the model emitted null content). A literal "content":"" alongside
-// tool_calls is rejected by stricter upstreams (DeepSeek v4-flash → 400), which
-// breaks the multi-turn agentic loop. content stays a plain string field for the
-// estimate/shape guards; only the wire form drops the empty value here. All other
-// messages marshal normally (content is required for user/tool turns).
-func (m chatMessage) MarshalJSON() ([]byte, error) {
-	if len(m.ToolCalls) > 0 && m.Content == "" {
-		return json.Marshal(struct {
-			Role             string          `json:"role"`
-			Name             string          `json:"name,omitempty"`
-			ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
-			ToolCallID       string          `json:"tool_call_id,omitempty"`
-			ReasoningContent json.RawMessage `json:"reasoning_content,omitempty"`
-		}{Role: m.Role, Name: m.Name, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID, ReasoningContent: m.ReasoningContent})
-	}
-	type wire chatMessage // alias breaks the MarshalJSON recursion
-	return json.Marshal(wire(m))
-}
-
 // InboundRequest mirrors ONLY the whitelisted top-level fields. Unknown fields
 // are dropped by NOT being declared (strict whitelist, §5.2). n is decoded only
 // to reject n>1. Tools/ToolChoice are kept as RawMessage and forwarded verbatim.
 type InboundRequest struct {
 	Model       string          `json:"model"`
-	Messages    []chatMessage   `json:"messages"`
+	Messages    []Message       `json:"messages"`
 	Stream      bool            `json:"stream"`
 	Temperature *float64        `json:"temperature"`
 	MaxTokens   *int64          `json:"max_tokens"`
@@ -81,21 +43,36 @@ type InboundRequest struct {
 	ToolChoice  json.RawMessage `json:"tool_choice"`
 }
 
-// UpstreamRequest is the sanitized body forwarded upstream: ONLY whitelisted
-// fields + gateway-forced stream_options. Tools/ToolChoice are omitempty so a
-// non-tool request forwards an identical body to before.
-type UpstreamRequest struct {
-	Model         string          `json:"model"`
-	Messages      []chatMessage   `json:"messages"`
+// CompletionRequest is the sanitized, provider-independent Chat Completions
+// body. It intentionally has no model: deterministic routing chooses a provider
+// first, and the provider adapter owns its real model id. This prevents a client
+// model string (or one provider's model namespace) from leaking into routing.
+type CompletionRequest struct {
+	Messages      []Message       `json:"messages"`
 	Stream        bool            `json:"stream"`
 	Temperature   *float64        `json:"temperature,omitempty"`
 	MaxTokens     int64           `json:"max_tokens"`
 	Tools         json.RawMessage `json:"tools,omitempty"`
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
-	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
+	StreamOptions *StreamOptions  `json:"stream_options,omitempty"`
 }
 
-type streamOptions struct {
+// UpstreamRequest is the compatibility wire wrapper for an OpenAI-compatible
+// provider. New code should keep CompletionRequest canonical until its provider
+// adapter calls WithModel.
+type UpstreamRequest struct {
+	Model string `json:"model"`
+	CompletionRequest
+}
+
+// WithModel attaches a provider-owned model id to the canonical request.
+func (r CompletionRequest) WithModel(model string) UpstreamRequest {
+	return UpstreamRequest{Model: model, CompletionRequest: r}
+}
+
+// StreamOptions asks an OpenAI-compatible provider to include a final usage
+// frame, which the accounting saga needs for settlement.
+type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
@@ -109,6 +86,16 @@ type streamOptions struct {
 // are dropped by not being declared. Any non-nil APIError ⇒ REJECTED, never
 // forwarded. Never panics on any input (fuzz-safe).
 func DecodeInbound(body []byte) (InboundRequest, *apierr.APIError) {
+	// encoding/json historically replaces malformed UTF-8 inside decoded string
+	// fields with U+FFFD, while json.RawMessage keeps the original bytes. That
+	// split would make opaque tools/tool calls cost fewer estimated bytes than the
+	// provider may tokenize after normalization (one invalid byte can become the
+	// three-byte replacement scalar). Require the JSON transport itself to be
+	// valid UTF-8 so decode, forwarding, and byte-level billing share one meaning.
+	if !utf8.Valid(body) {
+		return InboundRequest{}, apierr.ErrBadRequest
+	}
+
 	// (a) Strict n-probe: catches n>1 in a clean single-object body.
 	var probe struct {
 		N *int `json:"n"`
@@ -130,6 +117,13 @@ func DecodeInbound(body []byte) (InboundRequest, *apierr.APIError) {
 	if in.N != nil && *in.N > 1 {
 		return InboundRequest{}, errNAllowed()
 	}
+	// Exactly one JSON value is the wire contract. json.Decoder.Decode alone
+	// would accept a valid object followed by arbitrary bytes, creating an
+	// ambiguous request that proxies and audit tooling may parse differently.
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return InboundRequest{}, apierr.ErrBadRequest
+	}
 	return in, nil
 }
 
@@ -150,62 +144,64 @@ func (in InboundRequest) MessagesEmpty() bool { return len(in.Messages) == 0 }
 // "" when acceptable, else a client-safe BAD_REQUEST message. These two O(1)/
 // O(len) checks run BEFORE the full token estimate so a hostile array/message is
 // rejected cheaply (海量 tiny message 在计费边界放大成本 OWASP-API4;单巨消息挡单条).
-func CheckMessageShape(msgs []chatMessage, maxMessages, maxChars int) string {
+func CheckMessageShape(msgs []Message, maxMessages, maxChars int) string {
 	if len(msgs) > maxMessages {
 		return "too many messages"
 	}
 	for _, m := range msgs {
-		if utf8.RuneCountInString(m.Content) > maxChars {
+		if m.Content.textRunes() > maxChars {
 			return "message content too large"
 		}
 	}
 	return ""
 }
 
-// EstimateRawTokens conservatively over-estimates the token cost of an opaque
-// raw JSON blob (the tools array): max(bytes/3, runes) + a 20% margin, rounded
-// up. Used to fold the tools payload into the prompt estimate so the input cap
-// and the reservation both account for a large tool schema (a 50-tool definition
-// is real prompt weight upstream bills for). 0 for empty/nil.
+// EstimateRawTokens returns a byte-level upper bound for an opaque JSON value.
+// A tokenizer may split one multi-byte Unicode scalar into several byte tokens,
+// so rune count and bytes/3 are only heuristics; one token per input byte is the
+// conservative fallback bound. The provider parses this JSON before applying
+// its chat template, therefore punctuation/escaping bytes only over-reserve.
+// 0 is retained for an absent field.
 func EstimateRawTokens(raw json.RawMessage) int64 {
-	if len(raw) == 0 {
-		return 0
-	}
-	b := int64(len(raw))
-	r := int64(utf8.RuneCount(raw))
-	est := (b + 2) / 3 // ceil(bytes/3)
-	if r > est {
-		est = r
-	}
-	est = (est*12 + 9) / 10 // +20%, ceil
-	return est
+	return int64(len(raw))
 }
 
 // EstimatePromptTokens conservatively over-estimates the prompt token count. It
 // is the SHARED foundation of three guardrails (input cap, reserve est, over-cap
 // bound), so it must stay ≥ the real tokenizer — over-reject is acceptable,
-// under-estimate is not. Strategy: per message count UTF-8 runes (CJK ≈ 1 token/
-// char, denser than the byte/3 Latin heuristic) AND bytes/3, take the max, add 8
-// framing tokens/msg, then a 20% margin rounded up. tool_calls + name are folded
-// in per message (they are real prompt weight in a multi-turn tool loop).
-func EstimatePromptTokens(msgs []chatMessage) int64 {
-	var runes, bytes int64
+// under-estimate is not. Every accepted text value is valid UTF-8 after JSON
+// decode, so its byte length bounds byte-fallback tokenization. We add a large,
+// explicit per-message allowance for provider-owned role/chat framing. Opaque
+// tool_calls, tool_call_id, name, and reasoning_content bytes are all included.
+func EstimatePromptTokens(msgs []Message) int64 {
+	return estimatePromptTokens(msgs, true)
+}
+
+// EstimateTextPromptTokens estimates only text/tool context. It deliberately
+// excludes inline media's base64 payload: Gemini tokenizes decoded media by
+// image tiles or audio duration, not as base64 text. Media has separate strict
+// part/decoded-byte limits and the Gemini billing plan reserves the complete
+// model input hard limit, so treating encoded bytes as text would only create
+// false rejections for ordinary screenshots and audio clips.
+func EstimateTextPromptTokens(msgs []Message) int64 {
+	return estimatePromptTokens(msgs, false)
+}
+
+func estimatePromptTokens(msgs []Message, includeMediaPayload bool) int64 {
+	// Current OpenAI-style templates use single-digit framing tokens per turn.
+	// 64 leaves substantial room for provider template evolution while keeping
+	// the reservation useful for concurrent admission control.
+	const perMessageFramingUpperBound int64 = 64
+	const requestFramingUpperBound int64 = 64
+
+	bytes := requestFramingUpperBound
 	for _, m := range msgs {
-		bytes += int64(len(m.Role)) + int64(len(m.Content)) + int64(len(m.Name)) + int64(len(m.ToolCalls)) + int64(len(m.ReasoningContent))
-		runes += int64(utf8.RuneCountInString(m.Role)) + int64(utf8.RuneCountInString(m.Content))
-		runes += int64(utf8.RuneCountInString(m.Name)) + int64(utf8.RuneCount(m.ToolCalls)) + int64(utf8.RuneCount(m.ReasoningContent))
-		runes += 8 // per-message structural overhead (role + framing), conservative.
+		contentBytes, _ := m.Content.estimateBytesAndRunes(includeMediaPayload)
+		bytes += int64(len(m.Role)) + contentBytes + int64(len(m.Name)) +
+			int64(len(m.ToolCalls)) + int64(len(m.ToolCallID)) +
+			int64(len(m.ReasoningContent)) + perMessageFramingUpperBound
 	}
-	byteEst := (bytes + 2) / 3 // ceil(bytes/3)
-	est := byteEst
-	if runes > est {
-		est = runes
-	}
-	est = (est*12 + 9) / 10 // +20%, ceil
-	if est < 1 {
-		est = 1
-	}
-	return est
+	return bytes
 }
 
 // ClampMaxTokens returns the upstream max_tokens: the gateway cap, lowered to a
@@ -218,32 +214,16 @@ func ClampMaxTokens(client *int64, capTok int64) int64 {
 	return capTok
 }
 
-// ResolveModel forces the client model to a whitelisted real model id; an
-// unknown/empty model resolves to the default (allowlist[0]). It resolves
-// against the request's OWN config snapshot so allowlist membership and the
-// default can never disagree mid-request after a MODEL_ALLOWLIST hot-reload. The
-// allowlist is a handful of entries, so a linear scan is intrinsically
-// consistent and cheaper than a separately-swapped membership set.
-func ResolveModel(allowlist []string, defaultModel, client string) string {
-	for _, m := range allowlist {
-		if m == client {
-			return client
-		}
-	}
-	return defaultModel
-}
-
-// SanitizeUpstream builds the forwarded body from a decoded inbound request: ONLY
-// whitelisted fields survive (model[rewritten] / messages / stream / temperature
-// / clamped max_tokens / tools / tool_choice) plus the gateway-forced
+// Sanitize builds the provider-independent body from a decoded inbound request:
+// ONLY whitelisted fields survive (messages / stream / temperature / clamped
+// max_tokens / tools / tool_choice) plus the gateway-forced
 // stream_options.include_usage on a stream (so the upstream emits a final usage
 // frame we settle against). Everything else the client sent is dropped by
 // construction — this is the single sanitization path the app + fuzz share.
 // Tools/ToolChoice pass through verbatim (GW); they are NOT inspected or reshaped.
-func SanitizeUpstream(in InboundRequest, model string, maxTok int64) UpstreamRequest {
-	out := UpstreamRequest{
-		Model:       model,
-		Messages:    in.Messages,
+func Sanitize(in InboundRequest, maxTok int64) CompletionRequest {
+	out := CompletionRequest{
+		Messages:    canonicalMessages(in.Messages),
 		Stream:      in.Stream,
 		Temperature: in.Temperature,
 		MaxTokens:   maxTok,
@@ -251,9 +231,43 @@ func SanitizeUpstream(in InboundRequest, model string, maxTok int64) UpstreamReq
 		ToolChoice:  in.ToolChoice,
 	}
 	if in.Stream {
-		out.StreamOptions = &streamOptions{IncludeUsage: true}
+		out.StreamOptions = &StreamOptions{IncludeUsage: true}
 	}
 	return out
+}
+
+// canonicalMessages collapses text-only part arrays to their equivalent string
+// form. That keeps the canonical request provider-independent: text providers
+// which only accept string content receive the Text route without a second
+// provider-specific interpretation, while any array containing media remains an
+// ordered parts array for the multimodal provider.
+func canonicalMessages(messages []Message) []Message {
+	out := append([]Message(nil), messages...)
+	for i := range out {
+		if out[i].Content.kind != ContentKindParts {
+			continue
+		}
+		var text strings.Builder
+		textOnly := true
+		for _, part := range out[i].Content.parts {
+			if part.Type != PartTypeText {
+				textOnly = false
+				break
+			}
+			text.WriteString(part.Text)
+		}
+		if textOnly {
+			out[i].Content = StringContent(text.String())
+		}
+	}
+	return out
+}
+
+// SanitizeUpstream is the compatibility wrapper for the existing app path.
+// Provider-aware callers should use Sanitize and attach a model only inside the
+// selected adapter.
+func SanitizeUpstream(in InboundRequest, model string, maxTok int64) UpstreamRequest {
+	return Sanitize(in, maxTok).WithModel(model)
 }
 
 // ShapeError runs CheckMessageShape against the request's own messages — a thin
@@ -263,8 +277,34 @@ func (in InboundRequest) ShapeError(maxMessages, maxChars int) string {
 }
 
 // PromptEstimate is the full input-side estimate: prompt tokens (messages) plus
-// the tools-array cost. Both the input cap check and the reserve est use THIS
-// value so the tools payload is never silently free.
+// both opaque tool-definition fields. Both the input cap check and the reserve
+// estimate use THIS value so no forwarded tool JSON is silently free.
 func (in InboundRequest) PromptEstimate() int64 {
-	return EstimatePromptTokens(in.Messages) + EstimateRawTokens(in.Tools)
+	return EstimatePromptTokens(in.Messages) + EstimateRawTokens(in.Tools) + EstimateRawTokens(in.ToolChoice)
+}
+
+// TextPromptEstimate is the gateway-side context estimate used for a
+// multimodal request's INPUT_TOKEN_CAP/model precheck. Binary media is governed
+// by MediaLimits and provider tokenization; text and tool schemas remain fully
+// counted here.
+func (in InboundRequest) TextPromptEstimate() int64 {
+	return EstimateTextPromptTokens(in.Messages) + EstimateRawTokens(in.Tools) + EstimateRawTokens(in.ToolChoice)
+}
+
+// HasAudio reports whether the validated request contains any input_audio part.
+// It is used only to select the conservative Gemini input price class; routing
+// itself remains the complete-history Modality returned by ValidateAndClassify.
+func (in InboundRequest) HasAudio() bool {
+	for _, message := range in.Messages {
+		parts, ok := message.Content.Parts()
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if part.Type == PartTypeInputAudio {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -23,15 +23,19 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 	Init(&buf, "info")
 
 	secrets := map[string]string{
-		"authorization": "Bearer sk-super-secret-deepseek-key",
-		"api_key":       "sk-another-key",
-		"token":         "gwk_install_token_value",
-		"prompt":        "the user's private prompt text",
-		"completion":    "the model's private completion",
-		"content":       "message content that is private",
-		"messages":      "[{role:user}]",
-		"body":          "raw upstream body json",
-		"upstream_body": "raw deepseek error body",
+		"authorization":  "Bearer sk-super-secret-deepseek-key",
+		"api_key":        "sk-another-key",
+		"gemini_api_key": "AIza-secret",
+		"x-goog-api-key": "AIza-header-secret",
+		"token":          "gwk_install_token_value",
+		"prompt":         "the user's private prompt text",
+		"completion":     "the model's private completion",
+		"content":        "message content that is private",
+		"image_url":      "data:image/png;base64,private",
+		"input_audio":    "private audio payload",
+		"messages":       "[{role:user}]",
+		"body":           "raw upstream body json",
+		"upstream_body":  "raw deepseek error body",
 	}
 	args := make([]any, 0, len(secrets)*2)
 	for k, v := range secrets {
@@ -47,6 +51,75 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 	}
 	if !strings.Contains(out, redactValue) {
 		t.Fatalf("expected redaction marker in output: %s", out)
+	}
+}
+
+// TestRedactionNormalizesProviderAPIKeyCase pins the env-style provider key
+// names and the case-insensitive lookup. A caller may pass the original uppercase
+// env name or any mixed-case spelling; neither provider secret may reach JSON.
+func TestRedactionNormalizesProviderAPIKeyCase(t *testing.T) {
+	var buf bytes.Buffer
+	Init(&buf, "info")
+
+	secrets := map[string]string{
+		"DEEPSEEK_API_KEY": "sk-deepseek-uppercase-secret",
+		"dEePsEeK_aPi_KeY": "sk-deepseek-mixed-case-secret",
+		"GEMINI_API_KEY":   "AIza-gemini-uppercase-secret",
+		"gEmInI_aPi_KeY":   "AIza-gemini-mixed-case-secret",
+	}
+	args := make([]any, 0, len(secrets)*2)
+	for key, secret := range secrets {
+		args = append(args, key, secret)
+	}
+	From(context.Background()).Info("provider_keys", args...)
+
+	out := buf.String()
+	for _, secret := range secrets {
+		if strings.Contains(out, secret) {
+			t.Fatalf("provider API key leaked after case normalization: %q in %s", secret, out)
+		}
+	}
+	if got := strings.Count(out, redactValue); got != len(secrets) {
+		t.Fatalf("redacted provider key count = %d, want %d: %s", got, len(secrets), out)
+	}
+}
+
+// TestRedactionCoversCredentialSuffixesAndHeaders protects the future-provider
+// path as well as HTTP credentials that do not use the generic "authorization"
+// spelling. Values under pinned names and conservative credential suffixes are
+// redacted case-insensitively; benign lookalikes remain observable.
+func TestRedactionCoversCredentialSuffixesAndHeaders(t *testing.T) {
+	var buf bytes.Buffer
+	Init(&buf, "info")
+
+	secrets := map[string]string{
+		"CUSTOM_PROVIDER_API_KEY": "custom-provider-key-secret",
+		"DASHBOARD_PASSWORD":      "dashboard-password-secret",
+		"INSTALL_POW_SECRET":      "pow-signing-secret",
+		"Proxy-Authorization":     "Basic proxy-secret",
+		"Cookie":                  "session=cookie-secret",
+		"Set-Cookie":              "session=set-cookie-secret",
+		"X-API-Key":               "header-api-key-secret",
+		"X-Goog-Api-Key":          "google-header-key-secret",
+	}
+	args := make([]any, 0, len(secrets)*2+2)
+	for key, secret := range secrets {
+		args = append(args, key, secret)
+	}
+	args = append(args, "password_policy", "visible-benign-value")
+	From(context.Background()).Info("credential_floor", args...)
+
+	out := buf.String()
+	for _, secret := range secrets {
+		if strings.Contains(out, secret) {
+			t.Fatalf("credential leaked through redaction floor: %q in %s", secret, out)
+		}
+	}
+	if got := strings.Count(out, redactValue); got != len(secrets) {
+		t.Fatalf("redacted credential count = %d, want %d: %s", got, len(secrets), out)
+	}
+	if !strings.Contains(out, "visible-benign-value") {
+		t.Fatalf("non-suffix lookalike was over-redacted: %s", out)
 	}
 }
 

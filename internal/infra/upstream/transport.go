@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,13 @@ var (
 	// errKeyOpen means the chosen key's per-key breaker is open. Treated as a
 	// retryable upstream signal that may rotate to a sibling key next attempt.
 	errKeyOpen = errors.New("upstream key breaker open")
+	// errAllKeysGated means every configured key is in an explicit cooldown or
+	// has an open breaker. No request was sent, so it is definitely unbilled and
+	// must be shed rather than bypassing those health gates.
+	errAllKeysGated = errors.New("all upstream api keys are gated")
+	// errNoUsableAPIKey is a defense-in-depth guard for direct RoundTrip use.
+	// Normal client calls fail closed before reaching the transport.
+	errNoUsableAPIKey = errors.New("upstream api key pool has no usable keys")
 )
 
 // redactingTransport injects the upstream key at the last possible moment, on a
@@ -34,12 +42,13 @@ var (
 // N_global is unaffected by rotation. Key material is never logged — only
 // key_index.
 type redactingTransport struct {
-	base http.RoundTripper
-	keys []*keyState
-	rr   uint64 // round-robin starting cursor for fair spread across healthy keys
-	mu   sync.Mutex
-	log  *slog.Logger
-	hook MetricsHook
+	backend BackendID
+	base    http.RoundTripper
+	keys    []*keyState
+	rr      uint64 // round-robin starting cursor for fair spread across healthy keys
+	mu      sync.Mutex
+	log     *slog.Logger
+	hook    MetricsHook
 }
 
 // keyState carries one upstream key plus its independent health gate.
@@ -70,28 +79,32 @@ func (k *keyState) setCooldown(until time.Time) {
 	}
 }
 
-// newRedactingTransport builds the upstream transport. respHeaderTimeout caps
-// connect→response-header only; it does NOT bound the streaming body (Go stops
-// applying ResponseHeaderTimeout after the first header). The per-attempt
-// first-byte timer (client.go) covers header→first-byte without touching body.
-func newRedactingTransport(apiKeys []string, respHeaderTimeout time.Duration, logger *slog.Logger, hook MetricsHook) *redactingTransport {
+// newRedactingTransport builds the provider-local transport. It deliberately
+// leaves ResponseHeaderTimeout unset: the request-snapshot first-byte timer in
+// client.go is the single dynamic connect→header→first-byte deadline. A fixed
+// transport timeout would make a hot increase of UPSTREAM_HEADER_TIMEOUT_SEC
+// ineffective while still adding no protection the context timer lacks.
+func newRedactingTransport(apiKeys []string, logger *slog.Logger, hook MetricsHook, backend BackendID) *redactingTransport {
 	base := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: respHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	t := &redactingTransport{base: base, log: logger, hook: hook}
-	for i, k := range apiKeys {
+	t := &redactingTransport{backend: backend, base: base, log: logger, hook: hook}
+	for i, rawKey := range apiKeys {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			continue
+		}
 		//nolint:bodyclose // newKeyBreaker returns a breaker, not a response; the body is closed by Stream.Close / drainAndClose
-		t.keys = append(t.keys, &keyState{id: i, apiKey: k, cb: newKeyBreaker(i, logger)})
+		t.keys = append(t.keys, &keyState{id: i, apiKey: key, cb: newKeyBreaker(backend, i, logger)})
 	}
 	return t
 }
@@ -100,10 +113,10 @@ func newRedactingTransport(apiKeys []string, respHeaderTimeout time.Duration, lo
 // account-level faults (only those are recorded as failures; 429 and client
 // cancel are not). half-open single probe to recover. IsSuccessful excludes
 // context.Canceled so a client cancel can never trip even a per-key breaker.
-func newKeyBreaker(id int, logger *slog.Logger) *gobreaker.CircuitBreaker[*http.Response] {
+func newKeyBreaker(backend BackendID, id int, logger *slog.Logger) *gobreaker.CircuitBreaker[*http.Response] {
 	//nolint:bodyclose // generic breaker over *http.Response; the actual body is closed by Stream.Close / drainAndClose
 	return gobreaker.NewCircuitBreaker[*http.Response](gobreaker.Settings{
-		Name:        "deepseek-key",
+		Name:        string(backend) + "-key",
 		MaxRequests: 1,
 		Interval:    30 * time.Second,
 		Timeout:     20 * time.Second,
@@ -124,34 +137,32 @@ func newKeyBreaker(id int, logger *slog.Logger) *gobreaker.CircuitBreaker[*http.
 		OnStateChange: func(_ string, from, to gobreaker.State) {
 			// Audit by index only — never key material.
 			logger.Warn("upstream_key_breaker_state_change", "event", "key_switch",
-				"key_index", id, "from", from.String(), "to", to.String())
+				"backend", backend, "key_index", id, "from", from.String(), "to", to.String())
 		},
 	})
 }
 
 // pickKey returns a key that is neither in cooldown nor open, scanning from a
-// rotating cursor for fair spread. When every key is gated it returns the first
-// scanned as the least-bad candidate (a transient blip still attempts rather
-// than hard-failing; the breaker/cooldown still short-circuits if truly open).
+// rotating cursor for fair spread. When every key is gated it returns nil: a
+// cooldown/breaker is a hard isolation boundary, never a selection preference.
 func (t *redactingTransport) pickKey(now time.Time) *keyState {
+	n := uint64(len(t.keys))
+	if n == 0 {
+		return nil
+	}
 	t.mu.Lock()
 	start := t.rr
 	t.rr++
 	t.mu.Unlock()
 
-	n := uint64(len(t.keys))
-	var fallback *keyState
 	for i := uint64(0); i < n; i++ {
 		ks := t.keys[(start+i)%n]
-		if fallback == nil {
-			fallback = ks
-		}
 		if ks.onCooldown(now) || ks.cb.State() == gobreaker.StateOpen {
 			continue
 		}
 		return ks
 	}
-	return fallback
+	return nil
 }
 
 // RoundTrip selects a healthy key, injects it on a clone, and routes the call
@@ -160,7 +171,13 @@ func (t *redactingTransport) pickKey(now time.Time) *keyState {
 // never trips a key offline.
 func (t *redactingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	now := time.Now()
+	if len(t.keys) == 0 {
+		return nil, errNoUsableAPIKey
+	}
 	ks := t.pickKey(now)
+	if ks == nil {
+		return nil, errAllKeysGated
+	}
 
 	resp, err := ks.cb.Execute(func() (*http.Response, error) {
 		clone := req.Clone(req.Context())
@@ -201,7 +218,7 @@ func (t *redactingTransport) accountLevelFault(ks *keyState, r *http.Response, n
 	case r.StatusCode == http.StatusUnauthorized || r.StatusCode == http.StatusForbidden:
 		ks.setCooldown(now.Add(10 * time.Minute))
 		t.log.Warn("upstream_key_cooldown", "event", "key_switch",
-			"key_index", ks.id, "reason", "auth", "upstream_status", r.StatusCode, "cooldown", "10m")
+			"backend", t.backend, "key_index", ks.id, "reason", "auth", "upstream_status", r.StatusCode, "cooldown", "10m")
 		if t.hook != nil {
 			t.hook.KeyCooldown()
 		}
@@ -210,7 +227,7 @@ func (t *redactingTransport) accountLevelFault(ks *keyState, r *http.Response, n
 		if d := parseRetryAfter(r.Header.Get("Retry-After"), now); d > 5*time.Second {
 			ks.setCooldown(now.Add(d))
 			t.log.Warn("upstream_key_cooldown", "event", "key_switch",
-				"key_index", ks.id, "reason", "retry_after", "upstream_status", 429, "cooldown", d.String())
+				"backend", t.backend, "key_index", ks.id, "reason", "retry_after", "upstream_status", 429, "cooldown", d.String())
 			if t.hook != nil {
 				t.hook.KeyCooldown()
 			}

@@ -1,16 +1,17 @@
-// Package upstream is the DeepSeek client + resilience: the redacting multi-key
-// transport (per-key failover, GW-INV-11/30), the bounded connect→first-byte
-// retry (GW-INV-26), the per-attempt first-byte timer (GW-INV-27), the process-
-// wide circuit breaker (REL-2), and the single typed fault classification that
-// excludes client-cancel and 429 by construction (ADR-011, GW-INV-23).
+// Package upstream provides provider-neutral OpenAI-compatible HTTP clients and
+// resilience: the redacting multi-key transport (per-key failover,
+// GW-INV-11/30), the bounded connect→first-byte retry (GW-INV-26), the
+// per-attempt first-byte timer (GW-INV-27), provider-local process breakers
+// (REL-2), and typed fault classification that excludes client-cancel and 429
+// by construction (ADR-011, GW-INV-23).
 //
-// The Client interface is the port app/chat (slice 7) consumes: Do runs one
-// request end to connect→first-byte and returns a *Stream whose Body the caller
-// relays (SSE frames + usage parsing). Non-2xx upstream responses are normalized
-// to *apierr.APIError — the upstream body/headers/key NEVER pass through. The
-// one nuance: a request rejection (400/413/422) parses the bounded error body
-// solely to derive the coarse details.reason enum for 400 UPSTREAM_REJECTED
-// (non-fault, non-retry per ADR-011); the upstream text itself is still discarded.
+// A Client owns exactly one construction-time endpoint, key pool, transport and
+// breaker. DoCall runs one request to connect→first-byte and returns a *Stream
+// whose Body the caller relays (SSE frames + usage parsing). Non-2xx responses
+// are normalized to *apierr.APIError — upstream body/headers/key NEVER pass
+// through. A request rejection (400/413/422) parses only a bounded error body to
+// derive the coarse details.reason enum for 400 UPSTREAM_REJECTED (non-fault,
+// non-retry per ADR-011); provider-controlled text is still discarded.
 package upstream
 
 import (
@@ -22,14 +23,66 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
+
+// BackendID is the low-cardinality identity of an upstream account.
+// It is deliberately separate from a model id: breakers, key pools and metrics
+// are isolated per account, while models remain request targets within one
+// account. Callers should use the declared constants and must never populate
+// this value from untrusted request JSON.
+type BackendID string
+
+const (
+	BackendDeepSeek BackendID = "deepseek"
+	BackendGemini   BackendID = "gemini"
+)
+
+// Options freezes everything that belongs to one upstream account. In
+// particular, URL/key/breaker state may never be selected from a client request
+// or a different backend's health state.
+type Options struct {
+	Backend            BackendID
+	ChatCompletionsURL string
+	APIKeys            []string
+	HeaderTimeout      time.Duration
+	Logger             *slog.Logger
+	Hook               MetricsHook
+}
+
+// Call contains the only request-varying wire facts the resilience engine
+// needs. Payload has already been provider-encoded and sanitized by the caller.
+type Call struct {
+	Payload          []byte
+	Stream           bool
+	FirstByteTimeout time.Duration
+}
+
+// CallFailure keeps the normalized client error and the independent billing
+// fact produced by the connect→first-byte engine. Callers must never infer
+// charge exposure from an API error code: the same UPSTREAM_ERROR envelope can
+// represent either an explicit, definitely-unbilled refusal or an ambiguous
+// transport failure after the provider may have accepted the request.
+type CallFailure struct {
+	APIError *apierr.APIError
+	Exposure billing.ChargeExposure
+}
+
+func callFailure(ae *apierr.APIError, exposure billing.ChargeExposure) *CallFailure {
+	if ae == nil {
+		ae = apierr.ErrUpstreamError
+	}
+	return &CallFailure{APIError: ae, Exposure: exposure}
+}
 
 // errUpstreamFault marks a terminal transient upstream fault (retry exhausted)
 // so the process breaker records exactly ONE failure per request attempt-set.
@@ -45,9 +98,20 @@ func isClientCancel(err error) bool { return errors.Is(err, context.Canceled) }
 // hot path stays allocation-free). Kept tiny so upstream needn't import the
 // metrics package (which would couple infra→infra unnecessarily).
 type MetricsHook interface {
-	KeyCooldown()                 // a key was cooled down (401/403 or long Retry-After)
-	BreakerStateChange(open bool) // process breaker flipped (open=true on Open)
+	KeyCooldown()                          // a key was cooled down (401/403 or long Retry-After)
+	BreakerStateChange(state BreakerState) // process breaker changed state
+	CallLatency(elapsed time.Duration)     // complete connect→first-byte attempt-set
 }
+
+// BreakerState is the stable numeric state exposed to metrics. It decouples the
+// bootstrap adapter from gobreaker's type while preserving all three states.
+type BreakerState uint8
+
+const (
+	BreakerClosed BreakerState = iota
+	BreakerHalfOpen
+	BreakerOpen
+)
 
 // Stream is the result of a successful connect→first-byte: the upstream body the
 // caller relays, plus the status it should emit (always 200 on the success path)
@@ -86,8 +150,20 @@ func (s *Stream) Close() error {
 	return err
 }
 
-// Client is the upstream port app/chat consumes.
+// BackendClient is the narrow provider-local client returned by NewBackend. Its
+// type surface cannot accept a runtime config or alternate URL, so a Gemini key
+// cannot accidentally be sent to the DeepSeek endpoint (or vice versa).
+type BackendClient interface {
+	// DoCall opens a request against this client's construction-time endpoint.
+	// A client represents exactly one provider-local key pool + breaker.
+	DoCall(ctx context.Context, call Call) (*Stream, *CallFailure)
+	BreakerOpen() bool
+}
+
+// Client is the one-release legacy DeepSeek surface returned only by New. New
+// provider-aware wiring must depend on BackendClient.
 type Client interface {
+	BackendClient
 	// Do runs one request through the process breaker + bounded retry to
 	// connect→first-byte. On success it returns a *Stream the caller relays and
 	// must Close; on failure a normalized *apierr.APIError (never the upstream
@@ -101,6 +177,9 @@ type Client interface {
 
 // client is the concrete Client.
 type client struct {
+	backend   BackendID
+	endpoint  string
+	timeout   time.Duration
 	transport *redactingTransport
 	http      *http.Client
 	breaker   *gobreaker.CircuitBreaker[struct{}]
@@ -109,56 +188,153 @@ type client struct {
 	now       func() time.Time
 }
 
-// New builds a Client for the configured keys. respHeaderTimeout seeds the
-// transport's connect→header bound; the per-attempt first-byte timer reads the
-// LIVE cfg.UpstreamHeaderTimeout on each Do. logger/hook may be nil.
+// New is the compatibility constructor for config-driven wiring. The endpoint
+// and per-attempt first-byte timeout are supplied by each legacy Do call;
+// NewBackend should be used by provider-aware wiring so those facts are frozen.
+// respHeaderTimeout seeds the transport's connect→header bound. logger/hook may
+// be nil.
 func New(apiKeys []string, respHeaderTimeout time.Duration, logger *slog.Logger, hook MetricsHook) Client {
+	return newClient(Options{
+		Backend:       BackendDeepSeek,
+		APIKeys:       apiKeys,
+		HeaderTimeout: respHeaderTimeout,
+		Logger:        logger,
+		Hook:          hook,
+	})
+}
+
+// NewBackend builds one provider-local client. It intentionally returns no
+// shared registry: constructing two clients creates two fully independent key
+// pools, transports and process breakers. An invalid URL is collapsed to an
+// unusable endpoint and normalizes to UPSTREAM_ERROR at call time; configuration
+// validation remains the composition root's responsibility.
+func NewBackend(opts Options) BackendClient {
+	return newClient(opts)
+}
+
+func newClient(opts Options) *client {
+	backend := opts.Backend
+	if backend == "" {
+		backend = BackendDeepSeek
+	}
+	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	t := newRedactingTransport(apiKeys, respHeaderTimeout, logger, hook)
+	endpoint := normalizeEndpoint(opts.ChatCompletionsURL)
+	t := newRedactingTransport(opts.APIKeys, logger, opts.Hook, backend)
 	c := &client{
+		backend:   backend,
+		endpoint:  endpoint,
+		timeout:   opts.HeaderTimeout,
 		transport: t,
-		http:      &http.Client{Transport: t}, // NO client.Timeout: it would truncate long streams
-		retry:     defaultRetryPolicy(),
-		hook:      hook,
-		now:       time.Now,
+		http: &http.Client{
+			Transport: t, // NO client.Timeout: it would truncate long streams.
+			// A provider endpoint is immutable. Following Location would both violate
+			// that invariant and let our auth-injecting transport attach the key to a
+			// different host. Return the 3xx for normal, secret-safe classification.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		retry: defaultRetryPolicy(),
+		hook:  opts.Hook,
+		now:   time.Now,
 	}
-	c.breaker = newProcessBreaker(func(from, to gobreaker.State) {
+	c.breaker = newProcessBreaker(string(backend)+"-upstream", func(from, to gobreaker.State) {
 		logger.Warn("upstream_breaker_state_change", "event", "upstream_breaker",
-			"from", from.String(), "to", to.String())
-		if hook != nil {
-			hook.BreakerStateChange(to == gobreaker.StateOpen)
+			"backend", backend, "from", from.String(), "to", to.String())
+		if opts.Hook != nil {
+			state := BreakerClosed
+			switch to {
+			case gobreaker.StateHalfOpen:
+				state = BreakerHalfOpen
+			case gobreaker.StateOpen:
+				state = BreakerOpen
+			}
+			opts.Hook.BreakerStateChange(state)
 		}
 	})
 	return c
 }
 
-// BreakerOpen reports whether the process breaker is open.
-func (c *client) BreakerOpen() bool { return c.breaker.State() == gobreaker.StateOpen }
+// normalizeEndpoint accepts credential-safe absolute endpoints: HTTPS, or plain
+// HTTP only when the host is explicitly loopback for local development/tests.
+// Returning the empty string gives both constructors one fail-closed sentinel
+// and prevents malformed/insecure configuration from reaching a provider key or
+// being charged to the provider's health breaker.
+func normalizeEndpoint(raw string) string {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return ""
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !secureurl.AllowsCredentialTransport(u) {
+		return ""
+	}
+	return endpoint
+}
 
-// Do drives connect→first-byte through the process breaker (REL-2). The inner
-// func runs the bounded retry loop (REL-1) and succeeds only once the first byte
-// has arrived, so the breaker records exactly one outcome per request (retry-
-// exhausted = one failure; 429 / client-cancel / post-output never counted).
+// BreakerOpen reports whether the process breaker is open.
+func (c *client) BreakerOpen() bool {
+	return c != nil && c.breaker != nil && c.breaker.State() == gobreaker.StateOpen
+}
+
+// DoCall is the provider-neutral entry point. URL, auth material and breaker
+// identity are construction-time facts; only the sanitized body, stream flag and
+// request-snapshot first-byte timeout vary per call.
+func (c *client) DoCall(ctx context.Context, call Call) (*Stream, *CallFailure) {
+	if c == nil {
+		return nil, callFailure(apierr.ErrUpstreamError, billing.DefinitelyUnbilled)
+	}
+	timeout := call.FirstByteTimeout
+	if timeout <= 0 {
+		timeout = c.timeout
+	}
+	return c.do(ctx, call.Payload, call.Stream, timeout, c.endpoint)
+}
+
+// Do is the compatibility entry point for the legacy config-driven client. It
+// drives connect→first-byte through the same provider-local breaker (REL-2).
 func (c *client) Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (*Stream, *apierr.APIError) {
+	if c == nil || cfg == nil {
+		return nil, apierr.ErrUpstreamError
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.DeepSeekBaseURL), "/")
+	endpoint := normalizeEndpoint(baseURL + "/chat/completions")
+	streamOut, failure := c.do(ctx, payload, stream, cfg.UpstreamHeaderTimeout, endpoint)
+	if failure != nil {
+		return nil, failure.APIError
+	}
+	return streamOut, nil
+}
+
+func (c *client) do(ctx context.Context, payload []byte, stream bool, firstByteTimeout time.Duration, endpoint string) (*Stream, *CallFailure) {
+	// Both exported entry points converge here. Fail closed before touching a
+	// breaker or RoundTripper so invalid construction and empty/blank key pools
+	// are configuration faults, not provider health events.
+	if c == nil || endpoint == "" || c.transport == nil || len(c.transport.keys) == 0 || c.http == nil || c.breaker == nil {
+		return nil, callFailure(apierr.ErrUpstreamError, billing.DefinitelyUnbilled)
+	}
+	started := time.Now()
+	if c.hook != nil {
+		defer func() { c.hook.CallLatency(time.Since(started)) }()
+	}
 	// Fast-path shed: an already-open breaker → immediate UPSTREAM_BUSY without
 	// even attempting (the caller must not have taken an N_global slot yet).
 	if c.breaker.State() == gobreaker.StateOpen {
-		return nil, apierr.ErrUpstreamBusy
+		return nil, callFailure(apierr.ErrUpstreamBusy, billing.DefinitelyUnbilled)
 	}
 
 	var (
-		out      *Stream
-		finalErr *apierr.APIError
+		out          *Stream
+		finalFailure *CallFailure
 	)
 	_, berr := c.breaker.Execute(func() (struct{}, error) {
-		s, o := c.attempt(ctx, payload, stream, cfg)
+		s, o := c.attempt(ctx, payload, stream, firstByteTimeout, endpoint)
 		if o.class == classOK {
 			out = s
 			return struct{}{}, nil
 		}
-		finalErr = o.apiErr
+		finalFailure = callFailure(o.apiErr, o.exposure)
 		if o.breakerFlt {
 			// One process-breaker failure for the whole attempt-set.
 			return struct{}{}, errUpstreamFault
@@ -174,21 +350,22 @@ func (c *client) Do(ctx context.Context, payload []byte, stream bool, cfg *confi
 	// The breaker was open between the fast-path check and Execute, or every
 	// attempt failed. ErrOpenState/ErrTooManyRequests → UPSTREAM_BUSY.
 	if berr == gobreaker.ErrOpenState || berr == gobreaker.ErrTooManyRequests {
-		return nil, apierr.ErrUpstreamBusy
+		return nil, callFailure(apierr.ErrUpstreamBusy, billing.DefinitelyUnbilled)
 	}
-	if finalErr != nil {
-		return nil, finalErr
+	if finalFailure != nil {
+		return nil, finalFailure
 	}
-	return nil, apierr.ErrUpstreamError
+	return nil, callFailure(apierr.ErrUpstreamError, billing.ChargePossible)
 }
 
-// attempt runs the bounded retry loop for connect→first-byte. It returns the
-// resolved outcome of the last attempt; only a retryable, non-final outcome with
-// budget left loops. The same payload is reused unchanged across attempts.
-func (c *client) attempt(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (*Stream, outcome) {
+// attempt runs the bounded failover loop for connect→first-byte. It returns the
+// resolved outcome of the last attempt; only a definitely-unbilled per-key
+// signal with budget left loops. Charge-ambiguous outcomes are terminal so one
+// reservation can never hide multiple possible provider charges.
+func (c *client) attempt(ctx context.Context, payload []byte, stream bool, firstByteTimeout time.Duration, endpoint string) (*Stream, outcome) {
 	var last outcome
 	for n := 1; n <= c.retry.maxAttempts; n++ {
-		s, o, retryAfter := c.tryOnce(ctx, payload, stream, cfg)
+		s, o, retryAfter := c.tryOnce(ctx, payload, stream, firstByteTimeout, endpoint)
 		if o.class == classOK {
 			return s, o
 		}
@@ -208,9 +385,12 @@ func (c *client) attempt(ctx context.Context, payload []byte, stream bool, cfg *
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			// Parent canceled during backoff: a client cancel, NOT a fault (the
-			// B5/B3 site). Resolve as client-cancel so the breaker never counts it.
-			return nil, resolve(classClientCancel)
+			// Parent canceled between definitely-unbilled key failover attempts:
+			// surface client-cancel but preserve the proof that no provider charge
+			// was possible. It remains a non-fault for the process breaker.
+			canceled := resolve(classClientCancel)
+			canceled.exposure = billing.DefinitelyUnbilled
+			return nil, canceled
 		}
 	}
 	return nil, last
@@ -220,7 +400,7 @@ func (c *client) attempt(ctx context.Context, payload []byte, stream bool, cfg *
 // request, bound connect→first-byte with an idempotently-disarmed timer (B6),
 // and on a 2xx peek the first stream byte. It returns the resolved outcome plus
 // any upstream Retry-After hint for the caller's backoff math.
-func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (*Stream, outcome, time.Duration) {
+func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, firstByteTimeout time.Duration, endpoint string) (*Stream, outcome, time.Duration) {
 	upCtx, cancelUp := context.WithCancel(ctx)
 
 	// First-byte timer (GW-INV-27): bounds connect→header→first-byte so an
@@ -232,7 +412,10 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 	timedOut := &atomicBool{}
 	var armed atomicBool
 	armed.set()
-	fbTimer := time.AfterFunc(cfg.UpstreamHeaderTimeout, func() {
+	if firstByteTimeout <= 0 {
+		firstByteTimeout = 60 * time.Second
+	}
+	fbTimer := time.AfterFunc(firstByteTimeout, func() {
 		// Only the racer that wins the armed true→false transition acts. If the
 		// success path already disarmed, this CAS fails and the timer is a no-op —
 		// so it can never cancel an already-started stream (B6).
@@ -262,13 +445,17 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 	}
 
 	upReq, err := http.NewRequestWithContext(upCtx, http.MethodPost,
-		cfg.DeepSeekBaseURL+"/v1/chat/completions", bytes.NewReader(payload))
+		endpoint, bytes.NewReader(payload))
 	if err != nil {
 		cleanup()
 		return nil, resolve(classUpstream), 0
 	}
 	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Accept", "text/event-stream")
+	if stream {
+		upReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		upReq.Header.Set("Accept", "application/json")
+	}
 	// Authorization is injected by the redacting transport on a clone, never here.
 
 	resp, err := c.http.Do(upReq)
@@ -295,22 +482,11 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 		return nil, resolve(cls), ra
 	}
 
-	if !stream {
-		// 2xx headers = header phase succeeded; the bounded body read happens in
-		// the caller (nonStream). Hand off ONLY if we won the disarm CAS — else the
-		// first-byte timer already canceled upCtx and the body read would fail (B6).
-		if !disarm() {
-			_ = drainAndClose(resp.Body)
-			cancelUp()
-			return nil, resolve(classTimeout), 0
-		}
-		return &Stream{Body: resp.Body, Status: http.StatusOK, resp: resp, cancel: cancelUp}, outcome{class: classOK}, 0
-	}
-
-	// Streaming: peek the first byte to gate the 200. If upstream sent headers but
-	// stalls, the timer cancels upCtx and this Peek fails → a retryable pre-output
-	// timeout. Disarm the INSTANT Peek returns, before classifying, closing the
-	// narrow race where the timer fires between a good Peek and the handoff.
+	// Both response modes must produce a first body byte before handoff. A 2xx
+	// header alone is not progress: without this shared Peek, a non-stream server
+	// could flush headers then pin N_global forever in the app's body ReadAll. The
+	// request-snapshot timer therefore gates connect→header→first byte for both
+	// JSON and SSE. Disarm the instant Peek returns to close the B6 race.
 	br := bufio.NewReader(resp.Body)
 	_, peekErr := br.Peek(1)
 	won := disarm()
@@ -322,8 +498,8 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, cfg *
 	if !won {
 		// Good first byte, but the timer won the disarm CAS in the post-Peek gap and
 		// WILL cancel upCtx → handing off this stream would truncate it. Resolve as a
-		// retryable pre-output timeout so the retry loop reattempts (B6: a RETURNED
-		// stream is never timer-cancelable). Vanishingly rare in prod (60s timeout).
+		// terminal charge-ambiguous timeout (B6: a RETURNED stream is never timer-
+		// cancelable). Vanishingly rare in production (60s default timeout).
 		_ = resp.Body.Close()
 		cancelUp()
 		return nil, resolve(classTimeout), 0
@@ -347,12 +523,20 @@ func drainAndClose(rc io.ReadCloser) error {
 // and the max_tokens range error names "max_tokens" — matched case-insensitively.
 func rejectionReason(body io.Reader) string {
 	raw, _ := io.ReadAll(io.LimitReader(body, 4*1024))
-	var env struct {
+	type errorEnvelope struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	_ = json.Unmarshal(raw, &env)
+	var env errorEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil || env.Error.Message == "" {
+		// Some compatibility endpoints return a one-element error array. Tolerate
+		// that envelope without ever forwarding its provider-controlled text.
+		var list []errorEnvelope
+		if err := json.Unmarshal(raw, &list); err == nil && len(list) > 0 {
+			env = list[0]
+		}
+	}
 	msg := strings.ToLower(env.Error.Message)
 	switch {
 	case strings.Contains(msg, "context length"):

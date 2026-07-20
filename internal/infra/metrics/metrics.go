@@ -37,28 +37,29 @@ type Metrics struct {
 	httpInFlight prometheus.Gauge
 
 	// Four golden signals + domain health.
-	UpstreamRequests *prometheus.CounterVec // gateway_upstream_requests_total{outcome}
-	UpstreamLatency  prometheus.Histogram   // gateway_upstream_latency_seconds
-	InflightConc     prometheus.Gauge       // gateway_inflight_concurrency (= N_global occupancy)
-	BudgetUsed       prometheus.Gauge       // gateway_budget_tokens_used
-	BudgetLimit      prometheus.Gauge       // gateway_budget_tokens_limit
-	ReservationsOpen prometheus.Gauge       // gateway_quota_reservations_open (settled IS NULL count)
-	BreakerState     prometheus.Gauge       // gateway_breaker_state: 0=closed 1=half-open 2=open
+	UpstreamRequests *prometheus.CounterVec   // gateway_upstream_requests_total{provider,outcome}
+	UpstreamLatency  *prometheus.HistogramVec // gateway_upstream_latency_seconds{provider}
+	InflightConc     prometheus.Gauge         // gateway_inflight_concurrency (= N_global occupancy)
+	BudgetUsed       prometheus.Gauge         // gateway_budget_spend_usd
+	BudgetLimit      prometheus.Gauge         // gateway_budget_limit_usd
+	ReservationsOpen prometheus.Gauge         // gateway_quota_reservations_open (state=open count)
+	BreakerState     *prometheus.GaugeVec     // gateway_breaker_state{provider}
+	BillingDrifts    *prometheus.CounterVec   // gateway_billing_drift_total{provider}
 
 	// Domain-health counters. None carry a label: the only safe dimension at each
 	// emit site is high-cardinality/PII (install_id/ip/path), so these stay
 	// aggregate "how often" signals.
-	KeyCooldowns         prometheus.Counter // gateway_key_cooldowns_total
-	RateLimiterEvictions prometheus.Counter // gateway_ratelimiter_evictions_total
-	Panics               prometheus.Counter // gateway_panics_total
-	InstallsCreated      prometheus.Counter // gateway_installs_created_total (Sybil-burst source)
-	TokenThrottled       prometheus.Counter // gateway_token_throttled_total (M2 auto-throttle activations)
-	TokensThrottledNow   prometheus.Gauge   // gateway_tokens_throttled (installs CURRENTLY throttled)
+	KeyCooldowns         *prometheus.CounterVec // gateway_key_cooldowns_total{provider}
+	RateLimiterEvictions prometheus.Counter     // gateway_ratelimiter_evictions_total
+	Panics               prometheus.Counter     // gateway_panics_total
+	InstallsCreated      prometheus.Counter     // gateway_installs_created_total (Sybil-burst source)
+	TokenThrottled       prometheus.Counter     // gateway_token_throttled_total (M2 auto-throttle activations)
+	TokensThrottledNow   prometheus.Gauge       // gateway_tokens_throttled (installs CURRENTLY throttled)
 
-	// SettleFailures / RollbackFailures (B2 NEW): a failed Settle/Rollback used to
-	// be swallowed (`_ = q.Settle(...)`), so the orphan scanner later refunded the
-	// full reserved and under-billed. These counters make the failure observable —
-	// the alert + dashboard see it instead of it vanishing into a silent reconcile.
+	// SettleFailures / RollbackFailures (B2 NEW): a failed terminal write used to
+	// be swallowed. The orphan scanner conservatively finalizes an aged open row at
+	// its full reservation, so these counters expose the loss of actual-usage
+	// reconciliation instead of letting it vanish into a silent finalize.
 	SettleFailures   prometheus.Counter // gateway_settle_failures_total
 	RollbackFailures prometheus.Counter // gateway_rollback_failures_total
 
@@ -96,37 +97,41 @@ func New() *Metrics {
 		}),
 		UpstreamRequests: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_upstream_requests_total",
-			Help: "Upstream attempt outcomes (success|rollback|busy|timeout|rejected|error).",
-		}, []string{"outcome"}),
-		UpstreamLatency: f.NewHistogram(prometheus.HistogramOpts{
+			Help: "Selected-provider request outcomes (success|busy|timeout|rejected|error).",
+		}, []string{"provider", "outcome"}),
+		UpstreamLatency: f.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "gateway_upstream_latency_seconds",
 			Help:    "Upstream connect→first-byte latency.",
 			Buckets: latencyBuckets,
-		}),
+		}, []string{"provider"}),
 		InflightConc: f.NewGauge(prometheus.GaugeOpts{
 			Name: "gateway_inflight_concurrency",
 			Help: "Current N_global semaphore occupancy.",
 		}),
 		BudgetUsed: f.NewGauge(prometheus.GaugeOpts{
-			Name: "gateway_budget_tokens_used",
-			Help: "Global daily budget tokens used today.",
+			Name: "gateway_budget_spend_usd",
+			Help: "Global daily provider spend charged/reserved today in USD.",
 		}),
 		BudgetLimit: f.NewGauge(prometheus.GaugeOpts{
-			Name: "gateway_budget_tokens_limit",
-			Help: "Global daily budget token limit.",
+			Name: "gateway_budget_limit_usd",
+			Help: "Global daily provider-spend wallet limit in USD.",
 		}),
 		ReservationsOpen: f.NewGauge(prometheus.GaugeOpts{
 			Name: "gateway_quota_reservations_open",
 			Help: "Ledger rows still unsettled (settled IS NULL) — missed-settle alarm source.",
 		}),
-		BreakerState: f.NewGauge(prometheus.GaugeOpts{
+		BreakerState: f.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "gateway_breaker_state",
-			Help: "Process upstream breaker state: 0=closed 1=half-open 2=open.",
-		}),
-		KeyCooldowns: f.NewCounter(prometheus.CounterOpts{
+			Help: "Provider-local process breaker state: 0=closed 1=half-open 2=open.",
+		}, []string{"provider"}),
+		BillingDrifts: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_billing_drift_total",
+			Help: "Actual provider cost exceeded its conservative reservation (must stay zero).",
+		}, []string{"provider"}),
+		KeyCooldowns: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_key_cooldowns_total",
 			Help: "Upstream key cooldown activations (account-level key sheds).",
-		}),
+		}, []string{"provider"}),
 		RateLimiterEvictions: f.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_ratelimiter_evictions_total",
 			Help: "Per-key minute-bucket LRU evictions (high rate ⇒ token-churn rate-limit-skirt signal; durable daily caps are the real guardrail).",
@@ -149,7 +154,7 @@ func New() *Metrics {
 		}),
 		SettleFailures: f.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_settle_failures_total",
-			Help: "Failed ledger Settle calls (B2): a non-nil Settle error, formerly swallowed — makes under-bill-via-orphan-full-refund observable.",
+			Help: "Failed ledger Settle calls (B2): exposes reservations that may later be conservatively finalized at their full quote instead of actual usage.",
 		}),
 		RollbackFailures: f.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_rollback_failures_total",

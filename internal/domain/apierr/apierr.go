@@ -79,13 +79,17 @@ var (
 	// upstream 429). Its own class so it is never retried/breakered (GW-INV-23).
 	ErrUpstreamBusy = NewError(statusTooManyRequests, "UPSTREAM_BUSY", "upstream capacity is busy, retry shortly")
 	// ErrBudgetExhausted — daily free-tier budget reached. Note 402, not 429.
-	ErrBudgetExhausted = NewError(statusPaymentRequired, "BUDGET_EXHAUSTED", "daily free-tier budget reached, try again tomorrow or use your own key")
+	ErrBudgetExhausted = NewError(statusPaymentRequired, "BUDGET_EXHAUSTED", "daily service budget reached, try again tomorrow")
 	// ErrBadRequest — invalid request body.
 	ErrBadRequest = NewError(statusBadRequest, "BAD_REQUEST", "invalid request body")
 	// ErrUpstreamError — upstream model provider error.
 	ErrUpstreamError = NewError(statusBadGateway, "UPSTREAM_ERROR", "upstream model provider error")
 	// ErrUpstreamTimeout — upstream model provider timeout.
 	ErrUpstreamTimeout = NewError(statusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream model provider timeout")
+	// ErrMultimodalUnavailable — this deployment has no configured multimodal
+	// provider credential. It is deliberately distinct from UPSTREAM_BUSY: retrying
+	// cannot help until the operator enables Gemini, and text remains available.
+	ErrMultimodalUnavailable = NewError(statusServiceUnavailable, "MULTIMODAL_UNAVAILABLE", "multimodal input is unavailable on this deployment")
 
 	// /install reject paths use DISTINCT codes for audit separation (GW-INV-20):
 
