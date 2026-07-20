@@ -181,6 +181,13 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		writeErr(sink, contentErr)
 		return
 	}
+	// Audio belongs to the common public content contract already, but the current two fixed
+	// upstreams are text DeepSeek and image/video Kimi. Reject it as an unavailable capability before
+	// any plan/reservation rather than lying by routing it to Kimi or treating raw bytes as text.
+	if modality == domchat.ModalityAudio {
+		writeErr(sink, apierr.ErrAudioUnavailable)
+		return
+	}
 	provider, model, modelOutputLimit := routeFor(modality, cfg)
 	if !s.upstream.Available(provider) {
 		if provider == billing.ProviderKimi {

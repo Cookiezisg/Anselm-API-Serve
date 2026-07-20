@@ -4,8 +4,8 @@ type: concept
 status: active
 owner: @weilin
 created: 2026-06-20
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-21
+review-due: 2026-10-19
 audience: [human, ai]
 ---
 
@@ -27,7 +27,7 @@ Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**�
 
 “模型选择”不是用户等级：client 只看到一个 `PUBLIC_MODEL_ID`（`/v1/models`、stream chunk 与 non-stream completion 顶层 `model` 一致）。服务端扫描完整 message history；内容形状确定 provider。没有语义分类、没有高级/普通档、没有 fallback。统一产品档位由网关固定：thinking always on；DeepSeek route 使用 `reasoning_effort=high`，Kimi route 不传 `reasoning_effort`。
 
-系统不是多租户 SaaS、账号平台、对话库或任意文件处理器。隔离单元是 install；只接收本文 API 契约内的 inline jpeg/png/webp 图片与 mp4 视频，不下载 URL、不接 PDF/video/file。
+系统不是多租户 SaaS、账号平台、对话库或任意文件处理器。隔离单元是 install；只接收本文 API 契约内的 inline jpeg/png/webp 图片、mp4 视频与 wav/mp3 音频，不下载 URL、不接 PDF/file。音频目前只完成公共输入协议，尚无路由上游，故在计费前明确不可用。
 
 ### 三个物理监听器
 

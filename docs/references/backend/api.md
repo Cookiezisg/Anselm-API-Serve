@@ -4,8 +4,8 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-21
+review-due: 2026-10-19
 audience: [human, ai]
 ---
 
@@ -94,7 +94,16 @@ message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`M
 
 - 仅接受 inline MP4 data URI；base64 必须 canonical/strict，声明 MIME 必须匹配 MP4 容器标识。
 
-message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+video part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、file/file_id、未知 MIME/format/part、跨 variant 多余字段，以及 `input_audio` 全部 400；gateway **不 fetch 客户端 URL**。
+```json
+{
+  "type":"input_audio",
+  "input_audio":{"data":"<strict-base64>","format":"wav|mp3"}
+}
+```
+
+- 音频 `data` 是 raw strict base64（不是 data URI）；`format` 仅 `wav|mp3`，且必须匹配文件魔数。当前部署在任一 reserve/Open 前返回 `503 AUDIO_UNAVAILABLE`，因此它是**协议已知但尚未路由**的能力。
+
+message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+video+audio part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、file/file_id、未知 MIME/format/part、跨 variant 多余字段全部 400；gateway **不 fetch 客户端 URL**。
 
 ### 2.3 唯一路由表
 
@@ -104,6 +113,7 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 |---|---|---|
 | 只有 string / text parts / 合法 tool-call 空内容 | DeepSeek | `TEXT_UPSTREAM_MODEL`=`deepseek-v4-flash` |
 | 任一 accepted image/video part | Kimi | `MULTIMODAL_UPSTREAM_MODEL`=`kimi-k2.6` |
+| 任一 accepted audio part | 无 | reserve/Open 前 `503 AUDIO_UNAVAILABLE` |
 
 `PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。
 
@@ -116,7 +126,7 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 
 Kimi adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool_calls`。统一对外上下文若需要单值，应按多模态保守展示 `256K`；纯文本实际走 DeepSeek 的 `1M`。成本仍按冻结 provider/model rate card 预留：DeepSeek 用文本 prompt estimate + bounded output quote；Kimi 用完整模型 input/output hard limits 后按自洽 usage 退款。
 
-`KIMI_API_KEY` 未配置时不构造 Kimi backend：纯文本照常；合法多模态在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。Kimi 故障同样只返回自身归一错误，不跨 provider。
+`KIMI_API_KEY` 未配置时不构造 Kimi backend：纯文本照常；合法图片/视频在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。音频不依赖 Kimi 配置，始终先返回 `503 AUDIO_UNAVAILABLE`；未来音频 route 只能经新 capability 决策启用。Kimi 故障同样只返回自身归一错误，不跨 provider。
 
 ### 2.4 输出档位、stream 与账务可见行为
 

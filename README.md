@@ -2,7 +2,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline media goes to Kimi K2.6. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
+A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline images/videos go to Kimi K2.6. Audio has a validated public protocol but no deployed route yet. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
 
 It does three things:
 
@@ -52,9 +52,10 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level `model` in streaming/non-streaming completions always return that ID. The client-supplied `model` never selects a provider:
 
 - String content, or content arrays containing only `text` parts, routes to `deepseek-v4-flash`.
-- Any accepted media part anywhere in the complete history routes to `kimi-k2.6`.
+- Any accepted image or video part anywhere in the complete history routes to `kimi-k2.6`.
+- A valid `input_audio` part is accepted by the public protocol but returns `503 AUDIO_UNAVAILABLE` before routing or billing, until an audio-capable upstream is deployed.
 
-Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4. Remote URLs, PDFs, files, audio, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and multimodal requests return `503 MULTIMODAL_UNAVAILABLE`.
+Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and accepted image/video requests return `503 MULTIMODAL_UNAVAILABLE`.
 
 The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking` and `reasoning_effort` do not change this tier. Caller request knobs such as `max_tokens` remain OpenAI-compatible passthrough fields: a positive `max_tokens` is forwarded after clamping to `MAX_TOKENS_CAP` and the selected model's hard output limit, while an absent value is omitted on the wire and reserved conservatively for accounting. Text has DeepSeek's 1M input context; media has Kimi's 262K input context, so a single product-facing context number should be the conservative 256K.
 
@@ -90,7 +91,7 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only multimodal requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
+Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only image/video requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
 
 The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`, `INSTALL_DAILY_SPEND_MICRO_USD=5600000`, `DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`, and `KIMI_DAILY_SPEND_MICRO_USD=14000000` in the production example. It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. Other main guardrails include `MONTHLY_QUOTA`, `MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`, `N_GLOBAL_CONCURRENCY`, and `RATE_PER_MIN`. The example file keeps optional anti-abuse gates dormant for local development; the committed production deployment enables bounded input/output and install/request rate gates.
 
@@ -104,7 +105,7 @@ Caddy + systemd on a VPS:
 - Production requires a pinned `SERVER_KNOWN_HOSTS` GitHub Environment secret; deployment fails closed when it is absent or has no entry for `SERVER_HOST`. There is no `ssh-keyscan`/TOFU fallback. The remote data directory is `0700`, DB/WAL/SHM and secret env are `0600`, and the successful release retains one root-only rollback bundle.
 - A schema-aware manual rollback is installed as `sudo /usr/local/sbin/anselm-gateway-rollback` (interactive confirmation) or `sudo /usr/local/sbin/anselm-gateway-rollback --yes` (automation). If a host/process crash leaves the persistent transition marker, recover the exact checksummed bundle named there. The most reliable entry is always `sudo <bundle-from-marker>/recovery/rollback.sh --recover-incomplete` (add `--yes` non-interactively); the global command supports the same mode when it has already been upgraded. Every bundle carries its exact recovery program, while rollback restores the previous global entry so it cannot drift from an older retained READY bundle. The inert Caddy guard remains a managed safety artifact. Rollback restores the retained DB snapshot and all matching runtime artifacts; switching the binary symlink alone is unsupported and unsafe after a schema migration.
 
-The deployment target (domain, ACME email) is injected from GitHub secrets and is not committed. Production defaults include `INPUT_TOKEN_CAP=131072`, `MAX_TOKENS_CAP=16384`, `MAX_MESSAGES=1024`, `MAX_MESSAGE_CHARS=262144`, `RATE_PER_MIN=8`, `DAILY_SUBLIMIT=100`, `INSTALL_GLOBAL_DAILY_CAP=100`, `INSTALL_PER_FP_DAILY=3`, `INSTALL_PER_FP_COOLDOWN_SEC=3600`, `INSTALL_PER_IP_HOUR=10`, and `TOKEN_ANOMALY_RPM=8`. See [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and [`deploy/`](deploy/).
+The deployment target (domain, ACME email) is injected from GitHub secrets and is not committed. Production defaults include `INPUT_TOKEN_CAP=131072`, `MAX_TOKENS_CAP=16384`, `MAX_MESSAGES=1024`, `MAX_MESSAGE_CHARS=262144`, `RATE_PER_MIN=8`, `DAILY_SUBLIMIT=100`, `INSTALL_GLOBAL_DAILY_CAP=100`, `INSTALL_PER_FP_DAILY=0`, `INSTALL_PER_FP_COOLDOWN_SEC=0` (both per-device install gates temporarily disabled during debugging), `INSTALL_PER_IP_HOUR=10`, and `TOKEN_ANOMALY_RPM=8`. See [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and [`deploy/`](deploy/).
 
 ## Development
 

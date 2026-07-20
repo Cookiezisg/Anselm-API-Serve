@@ -181,7 +181,16 @@ func (p *ContentPart) UnmarshalJSON(raw []byte) error {
 		}
 		p.VideoURL = &video
 	case PartTypeInputAudio:
-		return errors.New("input_audio is not supported")
+		allowed["input_audio"] = true
+		rawAudio, ok := fields["input_audio"]
+		if !ok {
+			return errors.New("input_audio part requires input_audio")
+		}
+		audio, err := decodeInputAudio(rawAudio)
+		if err != nil {
+			return err
+		}
+		p.InputAudio = &audio
 	default:
 		return fmt.Errorf("unsupported content part type %q", typ)
 	}
@@ -368,17 +377,25 @@ type Modality uint8
 const (
 	ModalityText Modality = iota
 	ModalityMultimodal
+	// ModalityAudio is a valid, recognized audio request. The current fixed gateway has no
+	// audio upstream yet, so app/chat returns AUDIO_UNAVAILABLE before reservation/open. Keeping it
+	// distinct from malformed input makes the public protocol ready for a future audio-capable route.
+	ModalityAudio
 )
 
 func (m Modality) String() string {
-	if m == ModalityMultimodal {
+	switch m {
+	case ModalityMultimodal:
 		return "multimodal"
+	case ModalityAudio:
+		return "audio"
+	default:
+		return "text"
 	}
-	return "text"
 }
 
-// MediaLimits caps cumulative media work per request. MaxParts counts image and
-// audio parts (text parts do not consume it); MaxDecodedBytes is the cumulative
+// MediaLimits caps cumulative media work per request. MaxParts counts image, video and audio
+// parts (text parts do not consume it); MaxDecodedBytes is the cumulative
 // decoded payload size. Non-positive limits disable media while leaving text
 // requests available.
 type MediaLimits struct {
@@ -432,7 +449,9 @@ func (in InboundRequest) ValidateAndClassify(limits MediaLimits) (Modality, *api
 						return ModalityText, contentError(err.Error())
 					}
 					decodedBytes += n
-					modality = ModalityMultimodal
+					if modality != ModalityAudio {
+						modality = ModalityMultimodal
+					}
 				case PartTypeVideoURL:
 					if message.Role != "user" {
 						return ModalityText, contentError("media content is only allowed in user messages")
@@ -450,9 +469,27 @@ func (in InboundRequest) ValidateAndClassify(limits MediaLimits) (Modality, *api
 						return ModalityText, contentError(err.Error())
 					}
 					decodedBytes += n
-					modality = ModalityMultimodal
+					if modality != ModalityAudio {
+						modality = ModalityMultimodal
+					}
 				case PartTypeInputAudio:
-					return ModalityText, contentError("input_audio is not supported")
+					if message.Role != "user" {
+						return ModalityText, contentError("media content is only allowed in user messages")
+					}
+					mediaParts++
+					if limits.MaxParts <= 0 || mediaParts > limits.MaxParts {
+						return ModalityText, contentError("too many media parts")
+					}
+					remaining := limits.MaxDecodedBytes - decodedBytes
+					if remaining < 0 {
+						remaining = 0
+					}
+					n, err := validateAudio(part.InputAudio, remaining)
+					if err != nil {
+						return ModalityText, contentError(err.Error())
+					}
+					decodedBytes += n
+					modality = ModalityAudio
 				default:
 					// Construction outside JSON cannot bypass the closed union.
 					return ModalityText, contentError("unsupported content part type")

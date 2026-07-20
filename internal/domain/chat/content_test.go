@@ -141,10 +141,24 @@ func TestValidateImagesMIMEBase64AndMagic(t *testing.T) {
 	}
 }
 
-func TestRejectsAudioParts(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}]}]}`)
-	if _, err := DecodeInbound(body); err == nil || err.Status != 400 {
-		t.Fatalf("audio must be rejected before provider routing, got %v", err)
+func TestAudioPartsAreValidatedAndClassifiedSeparately(t *testing.T) {
+	wav := base64.StdEncoding.EncodeToString([]byte("RIFF\x04\x00\x00\x00WAVEfmt "))
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`)
+	in, err := DecodeInbound(body)
+	if err != nil {
+		t.Fatalf("audio must pass the structural decoder, got %v", err)
+	}
+	if modality, err := in.ValidateAndClassify(generousMediaLimits); err != nil || modality != ModalityAudio {
+		t.Fatalf("audio modality=%v err=%v, want audio/nil", modality, err)
+	}
+
+	bad := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"mp3"}}]}]}`)
+	in, err = DecodeInbound(bad)
+	if err != nil {
+		t.Fatalf("mismatched audio should structurally decode, got %v", err)
+	}
+	if _, err := in.ValidateAndClassify(generousMediaLimits); err == nil || err.Status != 400 {
+		t.Fatalf("mismatched audio must fail validation, got %v", err)
 	}
 }
 

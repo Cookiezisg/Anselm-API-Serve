@@ -4,8 +4,8 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-21
+review-due: 2026-10-19
 audience: [human, ai]
 ---
 
@@ -67,12 +67,12 @@ audience: [human, ai]
 | GW-INV-32 | `n>1` 经 raw probe 与 typed decode 双重拒绝为 `400 BAD_REQUEST` | 单请求扇出多个 completion、破坏报价上界 |
 | GW-INV-33 | pre-reserve shape guard：messages 非空且 `len≤MAX_MESSAGES`；每 message 文本 rune 数≤`MAX_MESSAGE_CHARS`；body≤`MAX_BODY_BYTES` | 多小消息或单大文本造成内存/估算放大 |
 | GW-INV-34 | business middleware 与 chat handler 共享 `MAX_BODY_BYTES`（默认 256KiB，范围 4KiB..8MiB，重启生效）；`/v1/install` 独立 8KiB | 未鉴权或 chat body 无界缓冲 |
-| GW-INV-35 | 路由只由完整 history 的已验证 content 决定：全 string/文本 parts→DeepSeek V4 Flash；任一受支持 media→Kimi K2.6。client `model` 永不选择 provider/实际模型；`/v1/models` 及 stream/non-stream 成功响应顶层 `model` 都只给 `PUBLIC_MODEL_ID`，且 duplicate/case-fold 等价 model key fail closed。non-stream 只放行单一 UTF-8 object；SSE 只放行 object data、精确 DONE/blank 与归一 bare-comment；只有完整读到合法 DONE 才允许按 stream usage 退款，提前 EOF/读错即 full quote | 客户端绕过成本/能力策略、只看最后一条消息而误路由，公开 alias 被真实 provider/version 漂移击穿，duplicate key 放大输出，或未完成 stream 用中途 usage 错误退款 |
-| GW-INV-36 | message role 是闭集 `system|user|assistant|tool`（tool 必须有非空 `tool_call_id`）；`content` 是关闭联合类型：missing/null/string/parts；missing/null 仅合法 assistant tool-call；part 仅 `text`、`image_url`、`video_url` 且未知/交叉字段拒绝；文本-only parts canonicalize 为 string；opaque `tool_calls` 原样保留 | 未知 role/多部分走私、provider 对同一 body 产生不同解释，或 Kimi function loop 第二步被 400 拒绝 |
+| GW-INV-35 | 路由只由完整 history 的已验证 content 决定：全 string/文本 parts→DeepSeek V4 Flash；任一受支持 image/video→Kimi K2.6；任一合法 audio→reserve/Open 前 `AUDIO_UNAVAILABLE`。client `model` 永不选择 provider/实际模型；`/v1/models` 及 stream/non-stream 成功响应顶层 `model` 都只给 `PUBLIC_MODEL_ID`，且 duplicate/case-fold 等价 model key fail closed。non-stream 只放行单一 UTF-8 object；SSE 只放行 object data、精确 DONE/blank 与归一 bare-comment；只有完整读到合法 DONE 才允许按 stream usage 退款，提前 EOF/读错即 full quote | 客户端绕过成本/能力策略、只看最后一条消息而误路由，公开 alias 被真实 provider/version 漂移击穿，duplicate key 放大输出，或未完成 stream 用中途 usage 错误退款 |
+| GW-INV-36 | message role 是闭集 `system|user|assistant|tool`（tool 必须有非空 `tool_call_id`）；`content` 是关闭联合类型：missing/null/string/parts；missing/null 仅合法 assistant tool-call；part 仅 `text`、`image_url`、`video_url`、`input_audio` 且未知/交叉字段拒绝；文本-only parts canonicalize 为 string；opaque `tool_calls` 原样保留 | 未知 role/多部分走私、provider 对同一 body 产生不同解释，或 Kimi function loop 第二步被 400 拒绝 |
 | GW-INV-37 | reasoning 档位由服务端唯一确定：DeepSeek adapter 固定注入 `thinking.enabled` + `reasoning_effort=high`；Kimi adapter 固定注入 `thinking.enabled` 且不传 `reasoning_effort`。caller `max_tokens` 是受保护调用参数：正数 wire 值为 `min(client,MAX_TOKENS_CAP,selected model output limit)`，缺省/非正不写 wire；DeepSeek quote 用同一 bounded output，缺省按 cap 保守预留；Kimi quote 始终按完整 hard limits | payload 与账本上界漂移，输出成本失控，或客户端绕过统一 thinking/effort 产品档 |
-| GW-INV-42 | media 只允许 user role：image 必须 inline strict-base64 `data:image/{jpeg|png|webp};base64,...` 且 MIME=magic；video 必须 inline strict-base64 `data:video/mp4;base64,...` 且 MIME=MP4 容器标识；remote URL/PDF/file/audio/未知 part 一律 400，网关永不 fetch URL | SSRF/下载放大/MIME 欺骗，或 compatibility 未定义输入进入上游 |
-| GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；`INPUT_TOKEN_CAP` 约束文本及所有透传 tool JSON（含 `tools`/`tool_choice`/message tool calls）的 estimate，媒体由 parts/decoded-byte 闸限制并交 Kimi 判定实际 media token，但账本仍按 Kimi full hard limits 预留 | base64 解码 OOM、tool JSON 绕过输入/报价护栏，或把文本估算误称为可证明的媒体 token 上限 |
-| GW-INV-44 | `KIMI_API_KEY` 可选：缺失时 Kimi backend 不构造，文本 readiness/DeepSeek 路由正常，合法多模态在任何 reserve/Open 前固定返回 `503 MULTIMODAL_UNAVAILABLE`；配置 key 后 readiness 的 cached authenticated `/models` probe 必须同时确认 Kimi 固定模型，DeepSeek 固定模型始终必需；绝无静默 fallback | 未配 key 导致全站不 ready、已配坏 key 却错误放行部署，或媒体被错误送到文本模型 |
+| GW-INV-42 | media 只允许 user role：image 必须 inline strict-base64 `data:image/{jpeg|png|webp};base64,...` 且 MIME=magic；video 必须 inline strict-base64 `data:video/mp4;base64,...` 且 MIME=MP4 容器标识；audio 必须 raw strict-base64 `input_audio{data,format}`，`format∈{wav,mp3}` 且 format=magic；remote URL/PDF/file/未知 part 一律 400，网关永不 fetch URL。合法 audio 固定在 reserve/Open 前 `503 AUDIO_UNAVAILABLE`，直到显式接入音频 provider | SSRF/下载放大/MIME 欺骗，或 compatibility 未定义输入进入上游；更不能把尚未计价的音频静默送给 Kimi |
+| GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；`INPUT_TOKEN_CAP` 约束文本及所有透传 tool JSON（含 `tools`/`tool_choice`/message tool calls）的 estimate，图片/视频由 parts/decoded-byte 闸限制并交 Kimi 判定实际 media token，但账本仍按 Kimi full hard limits 预留；audio 也受同一形状/bytes 闸，随后在本地拒绝 | base64 解码 OOM、tool JSON 绕过输入/报价护栏，或把文本估算误称为可证明的媒体 token 上限 |
+| GW-INV-44 | `KIMI_API_KEY` 可选：缺失时 Kimi backend 不构造，文本 readiness/DeepSeek 路由正常，合法图片/视频在任何 reserve/Open 前固定返回 `503 MULTIMODAL_UNAVAILABLE`；合法音频无论 key 是否存在均先返回 `503 AUDIO_UNAVAILABLE`。配置 key 后 readiness 的 cached authenticated `/models` probe 必须同时确认 Kimi 固定模型，DeepSeek 固定模型始终必需；绝无静默 fallback | 未配 key 导致全站不 ready、已配坏 key 却错误放行部署，或媒体被错误送到文本模型 |
 | GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
 
 ## E. 跨切配置 / 可观测

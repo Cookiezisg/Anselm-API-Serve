@@ -41,8 +41,8 @@ for pair in \
 	'RATE_PER_MIN="8"' \
 	'DAILY_SUBLIMIT="100"' \
 	'INSTALL_GLOBAL_DAILY_CAP="100"' \
-	'INSTALL_PER_FP_DAILY="3"' \
-	'INSTALL_PER_FP_COOLDOWN_SEC="3600"' \
+	'INSTALL_PER_FP_DAILY="0"' \
+	'INSTALL_PER_FP_COOLDOWN_SEC="0"' \
 	'INSTALL_PER_IP_HOUR="10"' \
 	'TOKEN_ANOMALY_RPM="8"'; do
 	grep -Fqx "${pair}" "${STAGE}/gateway.env" || fail "missing production config: ${pair}"

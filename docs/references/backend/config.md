@@ -4,8 +4,8 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-21
+review-due: 2026-10-19
 audience: [human, ai]
 ---
 
@@ -39,7 +39,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | `INPUT_TOKEN_CAP` | 16384 | 0 | 10,000,000 | 否 | 文本/tools 保守 estimate 上限；0=禁用；**不是媒体 token 上限** |
 | `MAX_MESSAGES` | 256 | 1 | 100,000 | 否 | 完整 history 的 message 数上限 |
 | `MAX_MESSAGE_CHARS` | 131072 | 1 | 16,777,216 | 否 | 单 message 文本 rune 上限 |
-| `MAX_MEDIA_PARTS` | 8 | 1 | 64 | 否 | 整请求 image+video part 数上限 |
+| `MAX_MEDIA_PARTS` | 8 | 1 | 64 | 否 | 整请求 image+video+audio part 数上限 |
 | `MAX_MEDIA_DECODED_BYTES` | `min(3MiB, MAX_BODY_BYTES×3/4)` | 1 | 8,388,608 | 否 | 整请求累计 decoded media bytes；同时必须 ≤ body cap |
 | `MAX_BODY_BYTES` | 262144 | 4096 | 8,388,608 | **是** | business chat body cap；中间件装配一次 |
 | `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100,000 | **是** | 两 provider 共享的总 upstream 在飞 cap |
@@ -108,7 +108,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
 3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Kimi route 注入 `thinking.enabled` 且不传 `reasoning_effort`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
 4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入 install 日 cap。
-5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，Kimi provider wallet 必须装入 global wallet，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。
+5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，Kimi provider wallet 必须装入 global wallet，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 

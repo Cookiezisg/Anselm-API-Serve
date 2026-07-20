@@ -774,6 +774,26 @@ func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	}
 }
 
+func TestAudioIsExplicitlyUnavailableBeforeReserveOrRouting(t *testing.T) {
+	// Audio is intentionally a valid protocol part, but the current deterministic table has no
+	// audio upstream. This must never silently become a Kimi request or consume a wallet slot.
+	wav := base64.StdEncoding.EncodeToString([]byte("RIFF\x04\x00\x00\x00WAVEfmt "))
+	body := `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`
+	q := &fakeQuota{}
+	up := &fakeUpstream{}
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	wg.Wait()
+
+	if sink.statusCode() != 503 || !strings.Contains(sink.bodyString(), "AUDIO_UNAVAILABLE") {
+		t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+	}
+	if q.reservedPUSD != 0 || len(up.callSnapshot()) != 0 {
+		t.Fatalf("audio must reject before reserve/open: reserved=%d calls=%+v", q.reservedPUSD, up.callSnapshot())
+	}
+}
+
 func TestProviderBreakersAreIsolated(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	mediaBody := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
