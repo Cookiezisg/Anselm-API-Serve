@@ -20,7 +20,7 @@ fail() {
 STAGE="${TEST_ROOT}/stage"
 mkdir -m 0700 "${STAGE}"
 DEEPSEEK_API_KEY='alpha\beta"gamma$delta' \
-	GEMINI_API_KEY='' \
+	KIMI_API_KEY='' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \
@@ -82,7 +82,7 @@ fi
 BAD_STAGE="${TEST_ROOT}/bad-stage"
 mkdir -m 0700 "${BAD_STAGE}"
 if DEEPSEEK_API_KEY=$'bad\nsecret' \
-	GEMINI_API_KEY='' \
+	KIMI_API_KEY='' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \

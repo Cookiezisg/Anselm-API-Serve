@@ -91,21 +91,21 @@ const (
 type Config struct {
 	DeepSeekAPIKeys []string // DEEPSEEK_API_KEY(逗号分隔多 key,第一个为主)
 	DeepSeekBaseURL string   // DEEPSEEK_BASE_URL
-	GeminiAPIKeys   []string // GEMINI_API_KEY(可选;未配置则多模态能力明确不可用)
-	GeminiBaseURL   string   // GEMINI_BASE_URL(OpenAI compatibility base)
+	KimiAPIKeys     []string // KIMI_API_KEY(可选;未配置则多模态能力明确不可用)
+	KimiBaseURL     string   // KIMI_BASE_URL(OpenAI compatibility base)
 
 	// PublicModelID is the single client-facing logical model. Actual upstream
 	// models are construction/config facts selected solely by content capability;
 	// a client model string never selects a provider or a price tier.
 	PublicModelID           string // PUBLIC_MODEL_ID(default anselm-auto)
 	TextUpstreamModel       string // TEXT_UPSTREAM_MODEL(exact priced DeepSeek id)
-	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Gemini id)
+	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Kimi id)
 
 	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
 	GlobalDailySpendPUSD   int64 // GLOBAL_DAILY_SPEND_MICRO_USD converted to pUSD
 	InstallDailySpendPUSD  int64 // INSTALL_DAILY_SPEND_MICRO_USD converted to pUSD
 	DeepSeekDailySpendPUSD int64 // DEEPSEEK_DAILY_SPEND_MICRO_USD provider wallet
-	GeminiDailySpendPUSD   int64 // GEMINI_DAILY_SPEND_MICRO_USD provider wallet
+	KimiDailySpendPUSD     int64 // KIMI_DAILY_SPEND_MICRO_USD provider wallet
 	MaxTokensCap           int64 // MAX_TOKENS_CAP(单请求输出上限,clamp;兼预留额输出分量)
 	InputTokenCap          int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
 	MaxMessages            int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
@@ -244,7 +244,7 @@ func validatePowSecretPresent(mode string, secret []byte) error {
 // Cross-field rules: install/active-provider cost caps fit under the shared
 // wallet; every active upstream model has a compiled immutable rate card; one
 // request's provable worst-case quote fits the install cap; media cannot exceed
-// the body memory envelope; effective PoW modes have a secret. Gemini-dependent
+// the body memory envelope; effective PoW modes have a secret. Kimi-dependent
 // checks are conditional on its optional credential: an intentionally text-only
 // deployment must not fail startup because of an inactive media wallet/model.
 func (c *Config) ValidateSemantics() error {
@@ -261,11 +261,11 @@ func (c *Config) ValidateSemantics() error {
 	}{
 		{"DEEPSEEK_DAILY_SPEND_MICRO_USD", c.DeepSeekDailySpendPUSD},
 	}
-	if len(c.GeminiAPIKeys) > 0 {
+	if len(c.KimiAPIKeys) > 0 {
 		providerCaps = append(providerCaps, struct {
 			name string
 			cap  int64
-		}{"GEMINI_DAILY_SPEND_MICRO_USD", c.GeminiDailySpendPUSD})
+		}{"KIMI_DAILY_SPEND_MICRO_USD", c.KimiDailySpendPUSD})
 	}
 	for _, item := range providerCaps {
 		if item.cap <= 0 || item.cap > c.GlobalDailySpendPUSD {
@@ -288,12 +288,12 @@ func (c *Config) ValidateSemantics() error {
 	if textPlan.ReservedPUSD > c.InstallDailySpendPUSD {
 		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds INSTALL_DAILY_SPEND_MICRO_USD")
 	}
-	if len(c.GeminiAPIKeys) > 0 {
-		// Gemini compatibility does not formally promise a thinking-token sub-cap.
-		// Reserve its full model input+output hard limits at the highest accepted
-		// input modality rate (audio), then refund from authoritative usage.
-		mediaPlan, err := billing.NewPlan(billing.ProviderGemini, c.MultimodalUpstreamModel,
-			billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+	if len(c.KimiAPIKeys) > 0 {
+		// Kimi compatibility does not promise a smaller thinking-token sub-cap.
+		// Reserve K2.6's full input/output hard limits, then refund only from
+		// authoritative usage.
+		mediaPlan, err := billing.NewPlan(billing.ProviderKimi, c.MultimodalUpstreamModel,
+			billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
 		if err != nil {
 			return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}

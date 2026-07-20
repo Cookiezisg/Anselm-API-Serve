@@ -149,16 +149,16 @@ func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	}
 }
 
-func TestLoadBaseGeminiKeyIsOptionalAndTrimmed(t *testing.T) {
+func TestLoadBaseKimiKeyIsOptionalAndTrimmed(t *testing.T) {
 	env := minimalEnv()
 	c := mustLoad(t, env)
-	if len(c.GeminiAPIKeys) != 0 {
-		t.Fatalf("unset Gemini key must keep multimodal disabled, got %d keys", len(c.GeminiAPIKeys))
+	if len(c.KimiAPIKeys) != 0 {
+		t.Fatalf("unset Kimi key must keep multimodal disabled, got %d keys", len(c.KimiAPIKeys))
 	}
-	env["GEMINI_API_KEY"] = " gem-a, ,gem-b "
+	env["KIMI_API_KEY"] = " gem-a, ,gem-b "
 	c = mustLoad(t, env)
-	if len(c.GeminiAPIKeys) != 2 || c.GeminiAPIKeys[1] != "gem-b" {
-		t.Fatalf("Gemini keys=%v", c.GeminiAPIKeys)
+	if len(c.KimiAPIKeys) != 2 || c.KimiAPIKeys[1] != "gem-b" {
+		t.Fatalf("Kimi keys=%v", c.KimiAPIKeys)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}{
 		{"missing key", func(m map[string]string) { delete(m, "DEEPSEEK_API_KEY") }, ErrDeepSeekKeyRequired, ""},
 		{"blank key", func(m map[string]string) { m["DEEPSEEK_API_KEY"] = "  , " }, ErrDeepSeekKeyRequired, ""},
-		{"base URL userinfo", func(m map[string]string) { m["GEMINI_BASE_URL"] = "https://secret@example.com/v1beta/openai" }, nil, "absolute HTTPS base URL"},
+		{"base URL userinfo", func(m map[string]string) { m["KIMI_BASE_URL"] = "https://secret@example.com/v1beta/openai" }, nil, "absolute HTTPS base URL"},
 		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
 		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
 		{"unknown priced model", func(m map[string]string) { m["TEXT_UPSTREAM_MODEL"] = "deepseek-latest" }, nil, "no exact rate card"},
@@ -188,7 +188,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "800000"
 		}, nil, "must be <= GLOBAL_DAILY_SPEND_MICRO_USD"},
 		{"per-req exceeds cap", func(m map[string]string) {
-			m["GEMINI_API_KEY"] = "gem-key"
+			m["KIMI_API_KEY"] = "gem-key"
 			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
 		}, nil, "multimodal hard-limit quote"},
 		{"dashboard half auth", func(m map[string]string) { m["DASHBOARD_USER"] = "admin" }, nil, "must be set together"},
@@ -216,18 +216,18 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}
 }
 
-func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveGemini(t *testing.T) {
+func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveKimi(t *testing.T) {
 	env := minimalEnv()
 	env["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
 	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
-	env["GEMINI_DAILY_SPEND_MICRO_USD"] = "15000000"
+	env["KIMI_DAILY_SPEND_MICRO_USD"] = "15000000"
 	if _, err := LoadBase(envMap(env)); err != nil {
-		t.Fatalf("Gemini-disabled deployment should validate only active text cost: %v", err)
+		t.Fatalf("Kimi-disabled deployment should validate only active text cost: %v", err)
 	}
 
-	env["GEMINI_API_KEY"] = "gem-key"
-	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "GEMINI_DAILY_SPEND_MICRO_USD") {
-		t.Fatalf("enabling Gemini must activate its wallet/model checks, got %v", err)
+	env["KIMI_API_KEY"] = "gem-key"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "KIMI_DAILY_SPEND_MICRO_USD") {
+		t.Fatalf("enabling Kimi must activate its wallet/model checks, got %v", err)
 	}
 }
 
@@ -433,7 +433,7 @@ func TestDumpMasksSecretsAndCarriesBounds(t *testing.T) {
 		byKey[it.Key] = it
 		// No secret key may ever surface in Dump.
 		switch it.Key {
-		case "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
+		case "DEEPSEEK_API_KEY", "KIMI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
 			t.Fatalf("secret %q leaked into Dump", it.Key)
 		}
 	}
@@ -467,7 +467,7 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	env["INSTALL_POW_SECRET"] = "supersecretvalue"
 	env["DASHBOARD_USER"] = "admin"
 	env["DASHBOARD_PASSWORD"] = "hunter2pw"
-	env["GEMINI_API_KEY"] = "gemini-supersecret"
+	env["KIMI_API_KEY"] = "kimi-supersecret"
 	p := New(mustLoad(t, env))
 
 	attrs := p.Snapshot()
@@ -483,7 +483,7 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 		kv[k] = attrs[i+1]
 		vals += valStr(attrs[i+1]) + ";"
 	}
-	for _, leak := range []string{"sk-a", "sk-b", "gemini-supersecret", "supersecretvalue", "hunter2pw"} {
+	for _, leak := range []string{"sk-a", "sk-b", "kimi-supersecret", "supersecretvalue", "hunter2pw"} {
 		if strings.Contains(vals, leak) {
 			t.Fatalf("secret %q leaked into Snapshot values: %s", leak, vals)
 		}
@@ -491,8 +491,8 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	if kv["deepseek_keys"] != "sk-*** (2 configured)" {
 		t.Fatalf("deepseek_keys mask = %v", kv["deepseek_keys"])
 	}
-	if kv["gemini_keys"] != "*** (1 configured)" {
-		t.Fatalf("gemini_keys mask = %v", kv["gemini_keys"])
+	if kv["kimi_keys"] != "*** (1 configured)" {
+		t.Fatalf("kimi_keys mask = %v", kv["kimi_keys"])
 	}
 	if kv["install_pow_secret"] != "configured" {
 		t.Fatalf("pow secret mask = %v", kv["install_pow_secret"])

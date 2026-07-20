@@ -27,8 +27,8 @@ func TestDeepSeekPlanAndCacheAwareCost(t *testing.T) {
 	}
 }
 
-func TestGeminiAudioAndThinkingConservativeCost(t *testing.T) {
-	p, err := NewPlan(ProviderGemini, Gemini31FlashLite, InputAudio, 100, GeminiOutputLimit)
+func TestKimiImageAndThinkingConservativeCost(t *testing.T) {
+	p, err := NewPlan(ProviderKimi, KimiK26, InputStandard, 100, KimiOutputLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestGeminiAudioAndThinkingConservativeCost(t *testing.T) {
 	}
 	// total-prompt=20 is greater than completion_tokens=5, so it protects
 	// compatibility responses whose thinking tokens appear only in total.
-	want := int64(100*500_000 + 20*1_500_000)
+	want := int64(100*950_000 + 20*4_000_000)
 	if cost != want {
 		t.Fatalf("cost=%d want %d", cost, want)
 	}
@@ -93,7 +93,7 @@ func TestContradictoryUsageKeepsReservation(t *testing.T) {
 		})
 	}
 
-	p, err := NewPlan(ProviderGemini, Gemini31FlashLite, InputStandard, 10, 10)
+	p, err := NewPlan(ProviderKimi, KimiK26, InputStandard, 10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,16 +109,16 @@ func TestContradictoryUsageKeepsReservation(t *testing.T) {
 			Present: true, PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, ReasoningTokens: 3,
 		},
 	} {
-		t.Run("gemini/"+name, func(t *testing.T) {
+		t.Run("kimi/"+name, func(t *testing.T) {
 			if _, ok, err := p.Cost(usage); err != nil || ok {
-				t.Fatalf("ambiguous Gemini usage refunded: ok=%v err=%v usage=%+v", ok, err, usage)
+				t.Fatalf("ambiguous Kimi usage refunded: ok=%v err=%v usage=%+v", ok, err, usage)
 			}
 		})
 	}
 }
 
 func TestUnknownModelFailsClosed(t *testing.T) {
-	_, err := NewPlan(ProviderGemini, "gemini-latest", InputStandard, 1, 1)
+	_, err := NewPlan(ProviderKimi, "kimi-latest", InputStandard, 1, 1)
 	if !errors.Is(err, ErrUnknownRateCard) {
 		t.Fatalf("err=%v", err)
 	}
@@ -130,8 +130,7 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 		model    string
 		class    InputClass
 	}{
-		"unknown class":          {ProviderGemini, Gemini31FlashLite, InputClass(255)},
-		"audio on text provider": {ProviderDeepSeek, DeepSeekV4Flash, InputAudio},
+		"unknown class":          {ProviderKimi, KimiK26, InputClass(255)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewPlan(tc.provider, tc.model, tc.class, 1, 1); !errors.Is(err, ErrUnknownRateCard) {

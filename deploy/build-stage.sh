@@ -75,12 +75,12 @@ REPO_ROOT="$3"
 : "${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}"
 : "${ACME_EMAIL:?ACME_EMAIL is required}"
 : "${SHA:?SHA is required}"
-GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+KIMI_API_KEY="${KIMI_API_KEY:-}"
 DASHBOARD_USER="${DASHBOARD_USER:-}"
 DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
 
-for secret_name in DEEPSEEK_API_KEY GEMINI_API_KEY DASHBOARD_USER DASHBOARD_PASSWORD; do
+for secret_name in DEEPSEEK_API_KEY KIMI_API_KEY DASHBOARD_USER DASHBOARD_PASSWORD; do
 	require_single_line "${secret_name}" "${!secret_name}"
 done
 [[ -z "${DASHBOARD_USER}" && -z "${DASHBOARD_PASSWORD}" ||
@@ -117,7 +117,7 @@ ENV_FILE="${STAGE}/gateway.env"
 : >"${ENV_FILE}"
 chmod 0600 "${ENV_FILE}"
 write_env DEEPSEEK_API_KEY "${DEEPSEEK_API_KEY}"
-write_env GEMINI_API_KEY "${GEMINI_API_KEY}"
+write_env KIMI_API_KEY "${KIMI_API_KEY}"
 write_env DASHBOARD_USER "${DASHBOARD_USER}"
 write_env DASHBOARD_PASSWORD "${DASHBOARD_PASSWORD}"
 
@@ -125,14 +125,14 @@ write_env DASHBOARD_PASSWORD "${DASHBOARD_PASSWORD}"
 # from SQLite, but a fresh install is safe to expose without a later hardening
 # pass.
 write_env DEEPSEEK_BASE_URL "https://api.deepseek.com"
-write_env GEMINI_BASE_URL "https://generativelanguage.googleapis.com/v1beta/openai"
+write_env KIMI_BASE_URL "https://api.moonshot.ai/v1"
 write_env PUBLIC_MODEL_ID "anselm-auto"
 write_env TEXT_UPSTREAM_MODEL "deepseek-v4-flash"
-write_env MULTIMODAL_UPSTREAM_MODEL "gemini-3.1-flash-lite"
+write_env MULTIMODAL_UPSTREAM_MODEL "kimi-k2.6"
 write_env GLOBAL_DAILY_SPEND_MICRO_USD "14000000"
 write_env INSTALL_DAILY_SPEND_MICRO_USD "5600000"
 write_env DEEPSEEK_DAILY_SPEND_MICRO_USD "14000000"
-write_env GEMINI_DAILY_SPEND_MICRO_USD "14000000"
+write_env KIMI_DAILY_SPEND_MICRO_USD "14000000"
 write_env INPUT_TOKEN_CAP "131072"
 write_env MAX_TOKENS_CAP "16384"
 write_env MAX_MESSAGES "1024"

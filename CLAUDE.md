@@ -5,7 +5,7 @@
 
 ## 0. 项目一句话
 
-`github.com/sunweilin/anselm/gateway`：纯 Go + SQLite(WAL) 单二进制**确定性 capability 薄网关**，给 Anselm(Flutter)客户端一个 provider-neutral 逻辑模型：纯文本完整历史→DeepSeek V4 Flash，任一受支持媒体→Gemini 3.1 Flash-Lite，无语义分级、无跨 provider fallback。key 只在服务端。Clean Arch 重写已落 `main` 并取代旧部署、线上运行(海外 VPS，Caddy 终结 TLS)。心智模型见 [`docs/concepts/architecture.md`](docs/concepts/architecture.md)，硬契约见 [`docs/references/backend/`](docs/references/backend/)。
+`github.com/sunweilin/anselm/gateway`：纯 Go + SQLite(WAL) 单二进制**确定性 capability 薄网关**，给 Anselm(Flutter)客户端一个 provider-neutral 逻辑模型：纯文本完整历史→DeepSeek V4 Flash，任一受支持媒体→Kimi K2.6，无语义分级、无跨 provider fallback。key 只在服务端。Clean Arch 重写已落 `main` 并取代旧部署、线上运行(海外 VPS，Caddy 终结 TLS)。心智模型见 [`docs/concepts/architecture.md`](docs/concepts/architecture.md)，硬契约见 [`docs/references/backend/`](docs/references/backend/)。
 
 ## 1. 三条工程铁律(违反 = 严重 Bug，与编译失败同级)
 
@@ -22,14 +22,14 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ```
 - `domain` 只依赖 stdlib + pkg;`app` 在本包声明 infra 端口(interface)，**禁** import infra/`database/sql`/HTTP server;`infra` 结构化满足端口、唯一碰 OS/DB/网络;`bootstrap` 唯一可跨全层、**无人 import 它**;`pkg` 叶内核谁都不依赖。
 - **事务聚合**(quota/install):事务边界 owned 在 `infra/store/*`(`orm.DB.Transaction`/`BEGIN IMMEDIATE`)，app 端口只暴露**一个原子聚合操作**，`*sql.Tx` 永不漏出 infra。
-- **密钥边界**:secret(`DEEPSEEK_API_KEY`/`GEMINI_API_KEY`/`DASHBOARD_USER`/`DASHBOARD_PASSWORD`/`INSTALL_POW_SECRET`)env-only，不入 `config.Specs()`、绝不入 settings 表/Dump/Snapshot/日志；Snapshot 只能暴露安全状态/数量。
+- **密钥边界**:secret(`DEEPSEEK_API_KEY`/`KIMI_API_KEY`/`DASHBOARD_USER`/`DASHBOARD_PASSWORD`/`INSTALL_POW_SECRET`)env-only，不入 `config.Specs()`、绝不入 settings 表/Dump/Snapshot/日志；Snapshot 只能暴露安全状态/数量。
 
 ## 3. 不可破的红线(摘要，全集见 invariants.md)
 
 - **记账**:请求先冻结 provider/model/rate card 并换算为整数 pUSD；月请求额度 + install/provider/global 三个日 pUSD 钱包在单 `BEGIN IMMEDIATE` **四闸原子预留**。仅明确未计费可 rollback；provider `Open` 尝试后的 timeout/connect/error/client-cancel 等歧义结果按 full quote settle。`spend_ledger.state='open'` 终态 CAS 单赢家，period 入口快照一次贯穿，orphan 不退钱；崩溃只多扣不少扣。
-- **安全**:DeepSeek/Gemini 各自只在 cloned request 注入 provider-local key，redirect/上游 header/body/error 原文不得带 key 离端或透传；install token 只存 SHA-256；admin/metrics/pprof + 管理后台仅 loopback(绑定 fail-fast、不上公网)；日志/指标无 key/prompt/media/token/ip，label 仅低基数闭集；XFF 仅信回环直连对端。
+- **安全**:DeepSeek/Kimi 各自只在 cloned request 注入 provider-local key，redirect/上游 header/body/error 原文不得带 key 离端或透传；install token 只存 SHA-256；admin/metrics/pprof + 管理后台仅 loopback(绑定 fail-fast、不上公网)；日志/指标无 key/prompt/media/token/ip，label 仅低基数闭集；XFF 仅信回环直连对端。
 - **可靠**:两 provider 共享唯一 N_global，但 endpoint/key pool/per-key health/process breaker 物理隔离；选定后无 fallback、无跨池 key。**故障分类排除 client-cancel、429 与 400/413/422 请求拒绝**(不触进程 breaker)；其他显式 3xx/4xx 拒绝可证明未计费，但仍与 provider health 分类正交；多 key/排队/retry 不放大总在飞；关停 DB 最后关(bgWG 排空)。
-- **输入/路由**:严格 top-level/content-part 关闭联合类，拒 `n>1`；客户端 `model` 只是逻辑 alias、绝不选 provider。完整 history 皆文本→DeepSeek，任一合法 user inline jpeg/png/webp 或 wav/mp3→Gemini；远程 URL/PDF/video/file 一律拒绝。Gemini 未配置时文本/readiness 正常，媒体在 reserve/Open 前固定 `503 MULTIMODAL_UNAVAILABLE`。`MAX_BODY_BYTES` 默认 256KiB，media 再受 parts/decoded-byte 上限；`INPUT_TOKEN_CAP` 只限文本/tools estimate。provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`(闭集 reason、原文不透传、非故障非重试)。
+- **输入/路由**:严格 top-level/content-part 关闭联合类，拒 `n>1`；客户端 `model` 只是逻辑 alias、绝不选 provider。完整 history 皆文本→DeepSeek，任一合法 user inline jpeg/png/webp 图片或 mp4 视频→Kimi；远程 URL/PDF/video/file 一律拒绝。Kimi 未配置时文本/readiness 正常，媒体在 reserve/Open 前固定 `503 MULTIMODAL_UNAVAILABLE`。`MAX_BODY_BYTES` 默认 256KiB，media 再受 parts/decoded-byte 上限；`INPUT_TOKEN_CAP` 只限文本/tools estimate。provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`(闭集 reason、原文不透传、非故障非重试)。
 
 ## 4. 工作流(切片纪律)
 
@@ -49,6 +49,6 @@ make lint     # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/.
 
 - 仓库:`<repo>` · 分支 `main`(线上 lineage)
 - 入口:`cmd/gateway`(瘦壳)→ `internal/bootstrap`(组合根) · 三监听器:业务 8080(公网/socket-activated)· admin 9090(loopback)· dashboard 8081(loopback)
-- 路由:`PUBLIC_MODEL_ID`(默认 `anselm-auto`)· text=`deepseek-v4-flash`· media=`gemini-3.1-flash-lite`· no fallback
+- 路由:`PUBLIC_MODEL_ID`(默认 `anselm-auto`)· text=`deepseek-v4-flash`· media=`kimi-k2.6`· no fallback
 - SQLite:当前 13 张应用表(0001 的 8 表 + 0002 的 5 张 pUSD 账本表)+`schema_migrations`；v1 accounting 三表仅读保留供审计/迁移。
 - Go:`mise which go`(1.25) · 文档体系:[`docs/INDEX.md`](docs/INDEX.md)(会话入口)

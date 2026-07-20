@@ -172,7 +172,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 
 	// 4) Validate the strict content union and deterministically route from the
 	// COMPLETE history. A client model string is never consulted: any accepted
-	// media selects Gemini; string/text-only content selects DeepSeek.
+	// media selects Kimi; string/text-only content selects DeepSeek.
 	modality, contentErr := req.ValidateAndClassify(domchat.MediaLimits{
 		MaxParts:        cfg.MaxMediaParts,
 		MaxDecodedBytes: cfg.MaxMediaDecodedBytes,
@@ -183,7 +183,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 	provider, model, modelOutputLimit := routeFor(modality, cfg)
 	if !s.upstream.Available(provider) {
-		if provider == billing.ProviderGemini {
+		if provider == billing.ProviderKimi {
 			writeErr(sink, apierr.ErrMultimodalUnavailable)
 		} else {
 			writeErr(sink, apierr.ErrUpstreamBusy)
@@ -192,7 +192,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 5) Input-token cap. Text requests count their whole body. Multimodal
-	// requests count text + tool schemas but not base64 bytes: Gemini tokenizes
+	// requests count text + tool schemas but not base64 bytes: Kimi tokenizes
 	// decoded image/audio rather than their transport encoding, while media size
 	// is already bounded by the strict cumulative MediaLimits above. A provider
 	// media-context rejection remains an explicit 400 UPSTREAM_REJECTED.
@@ -206,10 +206,10 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 6) Clamp the payload to this exact model's output limit, then freeze a
-	// provider-aware pUSD plan. Gemini's compatibility usage cannot prove a
+	// provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
 	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
 	// input/output hard limits. DeepSeek can use the request prompt estimate and
-	// clamped output bound. Audio selects Gemini's higher input rate.
+	// clamped output bound. Audio selects Kimi's higher input rate.
 	maxTok := domchat.ClampMaxTokens(maxTokensOf(req), min64(cfg.MaxTokensCap, modelOutputLimit))
 	plan, planAPIError := billingPlan(provider, model, req, promptEst, maxTok)
 	if planAPIError != nil {
@@ -267,7 +267,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 // deterministic two-way mapping and never accepts the client's model field.
 func routeFor(modality domchat.Modality, cfg *config.Config) (billing.Provider, string, int64) {
 	if modality == domchat.ModalityMultimodal {
-		return billing.ProviderGemini, cfg.MultimodalUpstreamModel, billing.GeminiOutputLimit
+		return billing.ProviderKimi, cfg.MultimodalUpstreamModel, billing.KimiOutputLimit
 	}
 	return billing.ProviderDeepSeek, cfg.TextUpstreamModel, billing.DeepSeekOutputLimit
 }
@@ -282,12 +282,8 @@ func billingPlan(provider billing.Provider, model string, req domchat.InboundReq
 	if promptEst > card.InputLimit {
 		return billing.Plan{}, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large")
 	}
-	if provider == billing.ProviderGemini {
-		inputClass := billing.InputStandard
-		if req.HasAudio() {
-			inputClass = billing.InputAudio
-		}
-		plan, err := billing.NewPlan(provider, model, inputClass, card.InputLimit, card.OutputLimit)
+	if provider == billing.ProviderKimi {
+		plan, err := billing.NewPlan(provider, model, billing.InputStandard, card.InputLimit, card.OutputLimit)
 		if err != nil {
 			return billing.Plan{}, apierr.Internal()
 		}

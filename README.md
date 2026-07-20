@@ -2,7 +2,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline media goes to Gemini 3.1 Flash-Lite. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
+A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline media goes to Kimi K2.6. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
 
 It does three things:
 
@@ -51,9 +51,9 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level `model` in streaming/non-streaming completions always return that ID. The client-supplied `model` never selects a provider:
 
 - String content, or content arrays containing only `text` parts, routes to `deepseek-v4-flash`.
-- Any accepted media part anywhere in the complete history routes to `gemini-3.1-flash-lite`.
+- Any accepted media part anywhere in the complete history routes to `kimi-k2.6`.
 
-Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` part whose URL is a base64 data URI for JPEG, PNG, or WebP; audio uses an `input_audio` part with raw base64 WAV or MP3. Remote URLs, PDFs, video, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `GEMINI_API_KEY` is absent, text remains available and multimodal requests return `503 MULTIMODAL_UNAVAILABLE`.
+Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4. Remote URLs, PDFs, files, audio, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and multimodal requests return `503 MULTIMODAL_UNAVAILABLE`.
 
 ## Dashboard
 
@@ -87,9 +87,9 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `GEMINI_API_KEY` (optional, comma-separated; omitting it disables only multimodal requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
+Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only multimodal requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
 
-The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=gemini-3.1-flash-lite`. Spend limits use integer microUSD (`1,000,000 = US$1`): `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`, `INSTALL_DAILY_SPEND_MICRO_USD=5600000`, `DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`, and `GEMINI_DAILY_SPEND_MICRO_USD=14000000` in the production example. It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. Other main guardrails include `MONTHLY_QUOTA`, `MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`, `N_GLOBAL_CONCURRENCY`, and `RATE_PER_MIN`. The example file keeps optional anti-abuse gates dormant for local development; the committed production deployment enables bounded input/output and install/request rate gates.
+The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`, `INSTALL_DAILY_SPEND_MICRO_USD=5600000`, `DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`, and `KIMI_DAILY_SPEND_MICRO_USD=14000000` in the production example. It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. Other main guardrails include `MONTHLY_QUOTA`, `MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`, `N_GLOBAL_CONCURRENCY`, and `RATE_PER_MIN`. The example file keeps optional anti-abuse gates dormant for local development; the committed production deployment enables bounded input/output and install/request rate gates.
 
 ## Deployment
 

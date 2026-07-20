@@ -41,7 +41,7 @@ export interface ProviderStatus {
 
 export interface ProviderStatuses {
   deepseek: ProviderStatus
-  gemini: ProviderStatus
+  kimi: ProviderStatus
 }
 
 // overviewResponse (api.go) — the live operational snapshot.

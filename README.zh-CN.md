@@ -2,7 +2,7 @@
 
 [English](README.md) · 简体中文
 
-一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline media 走 Gemini 3.1 Flash-Lite。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
+一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline media 走 Kimi K2.6。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
 
 它做三件事:
 
@@ -51,9 +51,9 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 客户只看到一个逻辑模型 `anselm-auto`;`GET /v1/models` 以及流式/非流式 completion 的顶层 `model` 都只返回这个 ID。客户传入的 `model` 绝不用来选 provider:
 
 - 字符串 content,或只含 `text` part 的 content 数组,走 `deepseek-v4-flash`。
-- 整段历史任意位置出现一个受支持的媒体 part,就走 `gemini-3.1-flash-lite`。
+- 整段历史任意位置出现一个受支持的媒体 part,就走 `kimi-k2.6`。
 
-Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part,URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI;音频用 `input_audio` part,数据是 raw base64 WAV 或 MP3。远程 URL、PDF、视频、文件、未知 part、MIME/魔数不匹配,以及超出 part/解码字节上限的媒体都会直接拒绝,不向上游转发。两路之间没有 fallback。未配 `GEMINI_API_KEY` 时纯文本仍可用,多模态请求返回 `503 MULTIMODAL_UNAVAILABLE`。
+Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI。远程 URL、PDF、文件、音频、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。未配 `KIMI_API_KEY` 时纯文本仍可用，多模态请求返回 `503 MULTIMODAL_UNAVAILABLE`。
 
 ## 管理后台
 
@@ -87,9 +87,9 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`GEMINI_API_KEY`(可选,逗号分隔;不配只禁用多模态)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
+机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,逗号分隔;不配只禁用多模态)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
 
-公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=gemini-3.1-flash-lite`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`GEMINI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。其他主要护栏有 `MONTHLY_QUOTA`、`MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`、`N_GLOBAL_CONCURRENCY`、`RATE_PER_MIN`。示例文件为本地开发保留可选的 dormant 反滥用闸;仓库内生产部署已启用有界输入/输出及领号/请求速率闸。
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`KIMI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。其他主要护栏有 `MONTHLY_QUOTA`、`MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`、`N_GLOBAL_CONCURRENCY`、`RATE_PER_MIN`。示例文件为本地开发保留可选的 dormant 反滥用闸;仓库内生产部署已启用有界输入/输出及领号/请求速率闸。
 
 ## 部署
 

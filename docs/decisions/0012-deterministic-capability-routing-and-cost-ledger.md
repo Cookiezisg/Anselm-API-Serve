@@ -13,7 +13,7 @@ audience: [human, ai]
 
 ## 背景 / Context
 
-网关同时提供纯文本与多模态能力，但两个上游的能力、计价和故障域不同：DeepSeek V4 Flash 是文本模型；Gemini 3.1 Flash-Lite 接受本文限定的图像/音频输入。不同 provider 的 token 价格不可直接相加，Gemini OpenAI compatibility 的 thinking token 与 usage 字段也不能证明一个比模型硬上限更小的账单上界。
+网关同时提供纯文本与多模态能力，但两个上游的能力、计价和故障域不同：DeepSeek V4 Flash 是文本模型；Kimi K2.6 接受本文限定的图像/视频输入。不同 provider 的 token 价格不可直接相加，Kimi OpenAI compatibility 的 thinking token 与 usage 字段也不能证明一个比模型硬上限更小的账单上界。
 
 客户端只需要知道“Anselm 可以自动处理请求内容”，不应通过 `model` 字符串选择运营者账户、价格层或 fallback。记账则必须在调用前冻结 provider/model/rate card。client-facing error、provider health、retry 与是否可能收费是四个正交事实：任何网络歧义都只能多扣，不能因某个 wire code 看似失败而猜测“也许没生成”。
 
@@ -26,7 +26,7 @@ audience: [human, ai]
 | 规范化内容 | provider / 实际模型 |
 |---|---|
 | 全部是 string、文本 part，或合法 assistant tool-call 空内容 | DeepSeek / `deepseek-v4-flash` |
-| 任一 user message 含受支持的图像或音频 part | Gemini / `gemini-3.1-flash-lite` |
+| 任一 user message 含受支持的图像或视频 part | Kimi / `kimi-k2.6` |
 
 客户端 `model` 不参与 provider、实际模型或价格选择；服务端配置的实际模型必须存在精确 rate card。路由没有“高级/普通”判断，也不按用户、文本语义、顺序或健康状态改选 provider。
 
@@ -35,27 +35,27 @@ audience: [human, ai]
 只接受 OpenAI-compatible inline 形状：
 
 - `image_url.url`：严格 base64 data URI，MIME 仅 `image/jpeg`、`image/png`、`image/webp`，声明 MIME 必须匹配 magic bytes；
-- `input_audio`：`data` 为严格 raw base64，`format` 仅 `wav`、`mp3`，格式必须匹配 magic bytes；
+- `video_url.url`：严格 base64 `data:video/mp4;base64,...`，声明 MIME 必须匹配 MP4 容器标识；
 - media 只允许出现在 `user` message，并受整请求 `MAX_MEDIA_PARTS` 与累计 `MAX_MEDIA_DECODED_BYTES` 约束。
 
-远程 URL、PDF、video、file、未知 part、跨 variant 字段全部 `400 BAD_REQUEST`；网关永不抓取客户端 URL。纯文本 part 数组在 canonical request 中折叠成 string。
+远程 URL、PDF、file、未知 part、跨 variant 字段与 `input_audio` 全部 `400 BAD_REQUEST`；网关永不抓取客户端 URL。纯文本 part 数组在 canonical request 中折叠成 string。
 
 ### 3. provider 物理隔离，禁止 fallback
 
-DeepSeek 与 Gemini 各自拥有固定 endpoint、API key pool、per-key health/cooldown、process breaker 和低基数指标标签。选定 provider 后**绝不**切另一个 provider，也不跨 provider 复用 key、breaker 或请求扩展：Gemini adapter 会剥离 DeepSeek 专有 `reasoning_content`，并固定 `reasoning_effort="minimal"`。Gemini 3 function-call continuity 所需的 `tool_calls[].extra_content.google.thought_signature` 属于 opaque tool-call JSON，必须原样保留。
+DeepSeek 与 Kimi 各自拥有固定 endpoint、API key pool、per-key health/cooldown、process breaker 和低基数指标标签。选定 provider 后**绝不**切另一个 provider，也不跨 provider 复用 key、breaker 或请求扩展：Kimi adapter 会剥离 DeepSeek 专有 `reasoning_content`，并使用 K2.6 的默认 thinking 行为。opaque `tool_calls` JSON 原样保留。
 
-`DEEPSEEK_API_KEY` 是文本基线的必填 secret；`GEMINI_API_KEY` 可选。未配置 Gemini 时文本与 readiness 正常，多模态请求在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`，不会暗降级为 DeepSeek。
+`DEEPSEEK_API_KEY` 是文本基线的必填 secret；`KIMI_API_KEY` 可选。未配置 Kimi 时文本与 readiness 正常，多模态请求在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`，不会暗降级为 DeepSeek。
 
 ### 4. token 先按冻结 rate card 换算为 pUSD
 
 内部唯一金额单位是 pico-US dollar：`1 USD = 10^12 pUSD`，`1 microUSD = 10^6 pUSD`。精确模型的版本化 rate card 是编译期闭集：
 
-| provider/model | input | cache hit | audio input | output |
-|---|---:|---:|---:|---:|
-| DeepSeek V4 Flash | 140,000 pUSD/token | 2,800 pUSD/token | — | 280,000 pUSD/token |
-| Gemini 3.1 Flash-Lite | 250,000 pUSD/token | 25,000 pUSD/token | 500,000 pUSD/token | 1,500,000 pUSD/token |
+| provider/model | input cache miss | cache hit | output |
+|---|---:|---:|---:|
+| DeepSeek V4 Flash | 140,000 pUSD/token | 2,800 pUSD/token | 280,000 pUSD/token |
+| Kimi K2.6 | 950,000 pUSD/token | 160,000 pUSD/token | 4,000,000 pUSD/token |
 
-DeepSeek quote 使用 byte-fallback prompt 上界（所有透传 message/tool 字段逐 UTF-8 byte 计数，另加固定 request framing 与每消息 64 token framing 余量）+ 已 clamp 的输出上界，避免多字节 tokenizer 或 tool continuation 先少占后追账。Gemini compatibility 无法证明 thinking 上界，也不可靠提供 cache/modality split，故 quote 使用模型完整输入/输出硬上限；settle 对整段 prompt 使用请求的最高 input class，不依据 compatibility cache 字段退款。Gemini 缺 `total_tokens`、`total<prompt+completion` 或 reasoning 明细超过 `total-prompt` 时不可计价；DeepSeek cache hit/miss 合计超过 prompt 同样不可计价，均保留 full quote。请求含音频时按较高 audio input rate；完整 Gemini audio quote 为 `622,592,000,000 pUSD = 622,592 microUSD = $0.622592`。未知 provider/model、越模型 limit 或无法精确计价一律 fail closed。
+DeepSeek quote 使用 byte-fallback prompt 上界（所有透传 message/tool 字段逐 UTF-8 byte 计数，另加固定 request framing 与每消息 64 token framing 余量）+ 已 clamp 的输出上界，避免多字节 tokenizer 或 tool continuation 先少占后追账。Kimi compatibility 无法证明 thinking 上界，故图片/视频 quote 使用模型完整输入/输出硬上限；settle 只在 usage 结构自洽时，以 cache hit 明细按较低费率退款，其余 prompt 都按 cache miss 计价。Kimi 缺 `total_tokens`、`total<prompt+completion` 或 reasoning 明细超过 `total-prompt` 时不可计价；DeepSeek cache hit/miss 合计超过 prompt 同样不可计价，均保留 full quote。完整 Kimi quote 为 `380,108,800,000 pUSD = 380,108.8 microUSD`。未知 provider/model、越模型 limit 或无法精确计价一律 fail closed。
 
 ### 5. 单事务预留四道余额
 
@@ -118,8 +118,8 @@ open ── authoritative/保守结算 ──▶ settled
 
 **不选择：**
 
-- 客户端显式选择 DeepSeek/Gemini：暴露运营者价格层并允许绕过 capability 路由；
-- Gemini 故障后回退 DeepSeek：多模态内容不受支持，且会撕裂已冻结账单与 provider 身份；
+- 客户端显式选择 DeepSeek/Kimi：暴露运营者价格层并允许绕过 capability 路由；
+- Kimi 故障后回退 DeepSeek：多模态内容不受支持，且会撕裂已冻结账单与 provider 身份；
 - 共享 raw-token 钱包：把不同价格 token 当成同一金额，必然超卖或过度拒绝；
 - 按 `UPSTREAM_ERROR`/HTTP status 猜退款：同一 client code 可代表明确 refusal 或网络歧义，必然在一侧记错；
 - 对 connect/timeout/5xx 自动 retry：多次可能收费被藏在一份 reservation 后，账本无法守恒；
@@ -128,7 +128,7 @@ open ── authoritative/保守结算 ──▶ settled
 **后果：**
 
 - operator 必须为每个可路由 provider 配正数日 cap；共享 global cap 仍是最终钱包上限。
-- Gemini key 可在代码部署后再配置；此前只有多模态能力返回明确 503。
+- Kimi key 可在代码部署后再配置；此前只有多模态能力返回明确 503。
 - `/v1/quota` 继续以月请求次数对客户端呈现；成本余额是 operator 内部护栏，dashboard 在展示边界转成整数 microUSD。
 
 ## 相关 / Links

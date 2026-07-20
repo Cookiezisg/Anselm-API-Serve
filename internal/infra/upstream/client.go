@@ -44,7 +44,7 @@ type BackendID string
 
 const (
 	BackendDeepSeek BackendID = "deepseek"
-	BackendGemini   BackendID = "gemini"
+	BackendKimi   BackendID = "kimi"
 )
 
 // Options freezes everything that belongs to one upstream account. In
@@ -151,7 +151,7 @@ func (s *Stream) Close() error {
 }
 
 // BackendClient is the narrow provider-local client returned by NewBackend. Its
-// type surface cannot accept a runtime config or alternate URL, so a Gemini key
+// type surface cannot accept a runtime config or alternate URL, so a Kimi key
 // cannot accidentally be sent to the DeepSeek endpoint (or vice versa).
 type BackendClient interface {
 	// DoCall opens a request against this client's construction-time endpoint.

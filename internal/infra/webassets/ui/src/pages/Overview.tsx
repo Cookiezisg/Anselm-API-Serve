@@ -209,7 +209,7 @@ export default function Overview() {
               <ProviderCard name="DeepSeek" route="纯文本" state={data.providers.deepseek} />
             </Col>
             <Col xs={24} md={8}>
-              <ProviderCard name="Gemini" route="图片 / 音频" state={data.providers.gemini} />
+              <ProviderCard name="Kimi" route="图片 / 音频" state={data.providers.kimi} />
             </Col>
             <Col xs={24} md={8}>
               <Card>

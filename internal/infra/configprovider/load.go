@@ -9,7 +9,7 @@
 // 加载顺序:env 默认/机密/硬约束(LoadBase)← DB overlay 覆盖运行时可改项
 // (LoadWithOverlay)。读路径 Load() 无锁取当前 atomic 快照(每请求快照一次,热更
 // 新永不在单请求内半旧半新);写路径 ApplyOverrides 在写锁下:domain 校验 → 全或无
-// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / GEMINI_API_KEY /
+// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / KIMI_API_KEY /
 // DASHBOARD_* / INSTALL_POW_SECRET)只读 env,绝不入 overlay、绝不在 Dump/Snapshot 出真值。
 package configprovider
 
@@ -45,7 +45,7 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c := config.Config{}
 
 	// DeepSeek key(s) remain required because the text route is the baseline
-	// capability. Gemini is optional: without a key only multimodal requests return
+	// capability. Kimi is optional: without a key only multimodal requests return
 	// MULTIMODAL_UNAVAILABLE; text service and readiness continue normally.
 	rawKeys := getenv("DEEPSEEK_API_KEY")
 	if strings.TrimSpace(rawKeys) == "" {
@@ -62,17 +62,17 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 
 	c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
 	validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
-	for _, k := range strings.Split(getenv("GEMINI_API_KEY"), ",") {
+	for _, k := range strings.Split(getenv("KIMI_API_KEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
-			c.GeminiAPIKeys = append(c.GeminiAPIKeys, k)
+			c.KimiAPIKeys = append(c.KimiAPIKeys, k)
 		}
 	}
-	c.GeminiBaseURL = strings.TrimRight(g.str("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai"), "/")
-	validateHTTPBaseURL(g, "GEMINI_BASE_URL", c.GeminiBaseURL)
+	c.KimiBaseURL = strings.TrimRight(g.str("KIMI_BASE_URL", "https://api.moonshot.ai/v1"), "/")
+	validateHTTPBaseURL(g, "KIMI_BASE_URL", c.KimiBaseURL)
 
 	c.PublicModelID = g.str("PUBLIC_MODEL_ID", "anselm-auto")
 	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
-	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Gemini31FlashLite)
+	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.KimiK26)
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
@@ -80,11 +80,11 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	globalSpendMicro := g.boundedInt64("GLOBAL_DAILY_SPEND_MICRO_USD", 14_000_000, 1, config.MaxDailySpendMicroUSD)
 	installSpendMicro := g.boundedInt64("INSTALL_DAILY_SPEND_MICRO_USD", 5_600_000, 1, config.MaxDailySpendMicroUSD)
 	deepSeekSpendMicro := g.boundedInt64("DEEPSEEK_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
-	geminiSpendMicro := g.boundedInt64("GEMINI_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
+	kimiSpendMicro := g.boundedInt64("KIMI_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
 	c.GlobalDailySpendPUSD = globalSpendMicro * billing.PicoUSDPerMicroUSD
 	c.InstallDailySpendPUSD = installSpendMicro * billing.PicoUSDPerMicroUSD
 	c.DeepSeekDailySpendPUSD = deepSeekSpendMicro * billing.PicoUSDPerMicroUSD
-	c.GeminiDailySpendPUSD = geminiSpendMicro * billing.PicoUSDPerMicroUSD
+	c.KimiDailySpendPUSD = kimiSpendMicro * billing.PicoUSDPerMicroUSD
 
 	c.MaxTokensCap = g.boundedInt64("MAX_TOKENS_CAP", 4096, 1, config.MaxTokensCap)
 	// INPUT_TOKEN_CAP=0 disables the input estimate gate (upstream model judges).

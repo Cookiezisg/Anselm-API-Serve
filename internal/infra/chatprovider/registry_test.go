@@ -37,18 +37,18 @@ func TestDeepSeekEncodingPreservesReasoningAndForcesModel(t *testing.T) {
 	}
 }
 
-func TestGeminiEncodingDropsDeepSeekTraceAndForcesMinimalThinking(t *testing.T) {
+func TestKimiEncodingDropsDeepSeekTraceAndForcesMinimalThinking(t *testing.T) {
 	req := canonicalRequest(t)
-	raw, err := encode(billing.ProviderGemini, billing.Gemini31FlashLite, req)
+	raw, err := encode(billing.ProviderKimi, billing.KimiK26, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(raw)
 	if strings.Contains(s, "private-ds-trace") || strings.Contains(s, "reasoning_content") {
-		t.Fatalf("DeepSeek extension leaked to Gemini: %s", s)
+		t.Fatalf("DeepSeek extension leaked to Kimi: %s", s)
 	}
-	if !strings.Contains(s, `"model":"gemini-3.1-flash-lite"`) || !strings.Contains(s, `"reasoning_effort":"minimal"`) {
-		t.Fatalf("Gemini wire=%s", s)
+	if !strings.Contains(s, `"model":"kimi-k2.6"`) {
+		t.Fatalf("Kimi wire=%s", s)
 	}
 	// The caller-owned canonical value was cloned, not mutated.
 	original, _ := json.Marshal(req)
@@ -57,7 +57,7 @@ func TestGeminiEncodingDropsDeepSeekTraceAndForcesMinimalThinking(t *testing.T) 
 	}
 }
 
-func TestGeminiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
+func TestKimiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
 	in, ae := domchat.DecodeInbound([]byte(`{
       "messages":[
         {"role":"user","content":"inspect"},
@@ -72,7 +72,7 @@ func TestGeminiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
 	if ae != nil {
 		t.Fatal(ae)
 	}
-	raw, err := encode(billing.ProviderGemini, billing.Gemini31FlashLite, domchat.Sanitize(in, 64))
+	raw, err := encode(billing.ProviderKimi, billing.KimiK26, domchat.Sanitize(in, 64))
 	if err != nil {
 		t.Fatal(err)
 	}

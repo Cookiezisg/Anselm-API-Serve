@@ -47,7 +47,7 @@ audience: [human, ai]
 
 ## 2. v2 provider-aware accounting（0002）
 
-余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集 `deepseek|gemini`。
+余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集 `deepseek|kimi`。
 
 ### `quota_monthly` — 月请求额度
 
@@ -72,7 +72,7 @@ audience: [human, ai]
 
 | 列 | 类型 | 约束 |
 |---|---|---|
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`kimi`) |
 | `period_day` | TEXT | NOT NULL |
 | `spend_pusd` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
@@ -92,7 +92,7 @@ audience: [human, ai]
 |---|---|---|
 | `request_id` | TEXT | PRIMARY KEY |
 | `install_id` | TEXT | NOT NULL |
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`kimi`) |
 | `model` | TEXT | NOT NULL；实际 provider model，不是 client alias |
 | `rate_card_id` | TEXT | NOT NULL；版本化价格快照 id |
 | `period_month` | TEXT | NOT NULL |

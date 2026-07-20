@@ -5,7 +5,7 @@
 #   SSH_PRIVATE_KEY, SERVER_HOST, SERVER_USER, SERVER_KNOWN_HOSTS
 #   DEEPSEEK_API_KEY, GATEWAY_DOMAIN, ACME_EMAIL
 # Optional secrets:
-#   GEMINI_API_KEY (omitting it disables only multimodal requests)
+#   KIMI_API_KEY (omitting it disables only multimodal requests)
 #   DASHBOARD_USER + DASHBOARD_PASSWORD (must be set together)
 #   SITE_DOMAIN (otherwise derived from api.<root>)
 #
@@ -174,7 +174,7 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}

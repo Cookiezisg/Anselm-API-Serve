@@ -15,17 +15,17 @@ func validBase() Config {
 	return Config{
 		DeepSeekAPIKeys:         []string{"sk-test"},
 		DeepSeekBaseURL:         "https://api.deepseek.com",
-		GeminiAPIKeys:           []string{"gem-test"},
-		GeminiBaseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
+		KimiAPIKeys:           []string{"gem-test"},
+		KimiBaseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
 		PublicModelID:           "anselm-auto",
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
-		MultimodalUpstreamModel: billing.Gemini31FlashLite,
+		MultimodalUpstreamModel: billing.KimiK26,
 
 		MonthlyQuota:           5000,
 		GlobalDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
 		InstallDailySpendPUSD:  5_600_000 * billing.PicoUSDPerMicroUSD,
 		DeepSeekDailySpendPUSD: 14 * billing.PicoUSDPerUSD,
-		GeminiDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
+		KimiDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
 		MaxTokensCap:           4096,
 		InputTokenCap:          16384,
 		MaxMessages:            256,
@@ -92,7 +92,7 @@ func TestSemanticsInstallCapVsGlobalBudget(t *testing.T) {
 
 func TestSemanticsMultimodalQuoteVsInstallCap(t *testing.T) {
 	c := validBase()
-	c.InstallDailySpendPUSD = 100_000_000_000 // $0.10: above text, below Gemini hard quote.
+	c.InstallDailySpendPUSD = 100_000_000_000 // $0.10: above text, below Kimi hard quote.
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
 		t.Fatalf("want quote>install-cap error, got %v", err)
@@ -101,8 +101,8 @@ func TestSemanticsMultimodalQuoteVsInstallCap(t *testing.T) {
 
 func TestSemanticsMultimodalQuoteAtBoundPasses(t *testing.T) {
 	c := validBase()
-	p, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
-		billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+	p, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
+		billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,17 +112,17 @@ func TestSemanticsMultimodalQuoteAtBoundPasses(t *testing.T) {
 	}
 }
 
-func TestSemanticsGeminiDisabledDoesNotConstrainTextStartup(t *testing.T) {
+func TestSemanticsKimiDisabledDoesNotConstrainTextStartup(t *testing.T) {
 	c := validBase()
-	c.GeminiAPIKeys = nil
+	c.KimiAPIKeys = nil
 	c.MultimodalUpstreamModel = "inactive-unknown-model"
-	c.GeminiDailySpendPUSD = c.GlobalDailySpendPUSD + 1
+	c.KimiDailySpendPUSD = c.GlobalDailySpendPUSD + 1
 	// $0.10 is safely above this text fixture's worst quote, but below the
-	// conservative Gemini full-model quote. With no Gemini credential, only the
+	// conservative Kimi full-model quote. With no Kimi credential, only the
 	// text route is active and startup must remain healthy.
 	c.InstallDailySpendPUSD = 100_000 * billing.PicoUSDPerMicroUSD
 	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("inactive Gemini constrained text-only startup: %v", err)
+		t.Fatalf("inactive Kimi constrained text-only startup: %v", err)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestSemanticsInputCapZeroAccepted(t *testing.T) {
 
 func TestSemanticsUnknownPricedModelFailsClosed(t *testing.T) {
 	c := validBase()
-	c.MultimodalUpstreamModel = "gemini-latest"
+	c.MultimodalUpstreamModel = "kimi-latest"
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "no exact rate card") {
 		t.Fatalf("unknown model must fail closed, got %v", err)
@@ -349,7 +349,7 @@ func TestApplyOverrideRejectsStartupHardByName(t *testing.T) {
 }
 
 func TestApplyOverrideRejectsSecretByName(t *testing.T) {
-	for _, key := range []string{"DEEPSEEK_API_KEY", "GEMINI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
+	for _, key := range []string{"DEEPSEEK_API_KEY", "KIMI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
 		_, err := ApplyOverrides(validBase(), map[string]string{key: "x"})
 		if err == nil || !strings.Contains(err.Error(), "unknown or secret") || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s: want named secret/unknown rejection, got %v", key, err)

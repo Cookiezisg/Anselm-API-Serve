@@ -19,7 +19,7 @@ Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**�
 
 ```text
 纯文本完整历史 ──▶ DeepSeek V4 Flash
-任一受支持媒体 ──▶ Gemini 3.1 Flash-Lite
+任一受支持媒体 ──▶ Kimi K2.6
                        │
                        ▼
          provider rate card ──▶ pUSD 成本账本
@@ -27,7 +27,7 @@ Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**�
 
 “模型选择”不是用户等级：client 只看到一个 `PUBLIC_MODEL_ID`（`/v1/models`、stream chunk 与 non-stream completion 顶层 `model` 一致）。服务端扫描完整 message history；内容形状确定 provider。没有语义分类、没有高级/普通档、没有 fallback。
 
-系统不是多租户 SaaS、账号平台、对话库或任意文件处理器。隔离单元是 install；只接收本文 API 契约内的 inline jpeg/png/webp 与 wav/mp3，不下载 URL、不接 PDF/video/file。
+系统不是多租户 SaaS、账号平台、对话库或任意文件处理器。隔离单元是 install；只接收本文 API 契约内的 inline jpeg/png/webp 图片与 mp4 视频，不下载 URL、不接 PDF/video/file。
 
 ### 三个物理监听器
 
@@ -55,7 +55,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 | `app` | auth/rate/disk/input/routing/reserve/forward/settle 用例编排；在本包声明 infra port | 不 import infra/transport/`database/sql`；`app/chat` 是唯一可组合 install+quota 的协调者 |
 | `infra` | SQLite/migrations/stores、provider-local upstream engine、chatprovider adapters、metrics/config/disk/webassets | 唯一网络/DB/OS 实现；结构化满足 app port |
 | `transport` | 三 mux、中间件、HTTP↔app 薄 handler、统一 envelope | 不 import infra/bootstrap |
-| `bootstrap` | 构造 DeepSeek/Gemini backend registry、stores、services、routers、loops、lifecycle | 唯一跨全层组合根；无人 import 它 |
+| `bootstrap` | 构造 DeepSeek/Kimi backend registry、stores、services、routers、loops、lifecycle | 唯一跨全层组合根；无人 import 它 |
 | `pkg` | logging/redaction、request id、client IP、PoW、sampling/alerts 等叶内核 | 不依赖其它 internal 层 |
 
 `cmd/gateway` 只调用 bootstrap。依赖方向由 depguard 强制；事务只暴露聚合 port，`*sql.Tx` 不穿过 infra 边界。
@@ -70,17 +70,17 @@ chatprovider.Registry
 │   ├── endpoint + DEEPSEEK_API_KEY pool
 │   ├── per-key breaker/cooldown
 │   └── process breaker
-└── Gemini Backend（GEMINI_API_KEY 非空才存在）
-    ├── endpoint + Gemini key pool
+└── Kimi Backend（KIMI_API_KEY 非空才存在）
+    ├── endpoint + Kimi key pool
     ├── per-key breaker/cooldown
     └── process breaker
 ```
 
-两边共享唯一 `N_GLOBAL_CONCURRENCY` 总信号量，但不共享 endpoint、key、breaker、provider 扩展或账单身份。这样 Gemini 故障不会熔断 DeepSeek，换 key/retry 也不会放大总在飞。
+两边共享唯一 `N_GLOBAL_CONCURRENCY` 总信号量，但不共享 endpoint、key、breaker、provider 扩展或账单身份。这样 Kimi 故障不会熔断 DeepSeek，换 key/retry 也不会放大总在飞。
 
-Registry 没有 fallback API。路由已冻结 billing Plan 后切 provider 会同时破坏能力、认证、价格和审计，因此从类型/装配上禁止。Gemini adapter 去掉 DeepSeek 专有 `reasoning_content`，强制最低可用 thinking effort；DeepSeek adapter 保留其 tool continuation 语义。
+Registry 没有 fallback API。路由已冻结 billing Plan 后切 provider 会同时破坏能力、认证、价格和审计，因此从类型/装配上禁止。Kimi adapter 去掉 DeepSeek 专有 `reasoning_content`，强制最低可用 thinking effort；DeepSeek adapter 保留其 tool continuation 语义。
 
-DeepSeek key 是启动必需；Gemini key 可稍后配置。缺 Gemini 只关闭多模态请求并返回明确 503，不影响文本 route 或 readiness。readiness 每 30s 缓存一次无推理费用的认证 `/models` 结果：DeepSeek key + 固定模型始终必须通过；若配置 Gemini key，则 Gemini key + 固定模型也必须通过。它不为每个请求现场探测 provider。
+DeepSeek key 是启动必需；Kimi key 可稍后配置。缺 Kimi 只关闭多模态请求并返回明确 503，不影响文本 route 或 readiness。readiness 每 30s 缓存一次无推理费用的认证 `/models` 结果：DeepSeek key + 固定模型始终必须通过；若配置 Kimi key，则 Kimi key + 固定模型也必须通过。它不为每个请求现场探测 provider。
 
 ## 4. Chat 请求生命周期
 
@@ -91,9 +91,9 @@ DeepSeek key 是启动必需；Gemini key 可稍后配置。缺 Gemini 只关闭
 | 1 | bearer lookup、banned 判定、rate limit、anomaly observe | 401/403/429；无 reserve |
 | 2 | diskguard、body cap、strict decode、messages/文本 shape | 400/503；无 reserve |
 | 3 | 完整 history 验证 content union；base64/MIME/magic/role/media totals | 400；无 reserve |
-| 4 | capability 二分；检查选中 backend 是否 configured | Gemini 缺 key→503；无 reserve |
+| 4 | capability 二分；检查选中 backend 是否 configured | Kimi 缺 key→503；无 reserve |
 | 5 | 文本/tools estimate cap；模型 input hard limit；输出 clamp | 400；无 reserve |
-| 6 | 冻结 provider/model/rate-card Plan；Gemini 按 full hard limits quote | 无精确 card/quote 不可装入 install cap→fail closed/400 |
+| 6 | 冻结 provider/model/rate-card Plan；Kimi 按 full hard limits quote | 无精确 card/quote 不可装入 install cap→fail closed/400 |
 | 7 | 单事务 reserve 月额度 + install/provider/global 三 pUSD 钱包 | 429 quota/rate 或 402 budget |
 | 8 | provider-local breaker fast path + shared N_global 有界排队 | Open 前失败，完整 rollback |
 | 9 | 对**唯一选中 provider** Open；stream/non-stream 均等到首个 body byte 才返回 stream，否则返回 `CallFailure{APIError,ChargeExposure}` | DefinitelyUnbilled→rollback；ChargePossible→不 retry、full settle |
@@ -120,14 +120,14 @@ process breaker 是另一维度：client-cancel、429、401/403 key signal、key
 
 ## 5. 为什么账本用 pUSD
 
-raw token 不是钱：DeepSeek cache hit/miss/output 与 Gemini text/audio/thinking output 各有价格。跨 provider 累加 token 会把不同金额误当相同额度。billing domain 因此先冻结：
+raw token 不是钱：DeepSeek cache hit/miss/output 与 Kimi text/audio/thinking output 各有价格。跨 provider 累加 token 会把不同金额误当相同额度。billing domain 因此先冻结：
 
 ```text
 Plan = provider + actual model + rate-card version
      + input class + input/output quote + reserved pUSD
 ```
 
-内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + 每消息 64 token framing 余量）和 output clamp；Gemini compatibility 不能证明 hidden thinking 的较小上界，所以 reserve 模型完整 input/output hard limits，usage 可证明后再 refund。流式累计 usage 逐字段取最大值而不求和；任一帧出现负数/畸形证据会 sticky 到终局，不能被后续较大正常值洗白。Gemini 只有正且不小于 `prompt+completion` 的 `total_tokens` 才可能退款；DeepSeek 的 cache hit/miss 合计不得超过 prompt，未报告部分按 miss。`INPUT_TOKEN_CAP` 只挡文本/tools estimate；media 用 part/decoded-byte 上限控制内存与形状，实际 media token 由 Gemini 判定，但绝不会削弱 full-limit 成本预留。
+内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + 每消息 64 token framing 余量）和 output clamp；Kimi compatibility 不能证明 hidden thinking 的较小上界，所以 reserve 模型完整 input/output hard limits，usage 可证明后再 refund。流式累计 usage 逐字段取最大值而不求和；任一帧出现负数/畸形证据会 sticky 到终局，不能被后续较大正常值洗白。Kimi 只有正且不小于 `prompt+completion` 的 `total_tokens` 才可能退款；DeepSeek 的 cache hit/miss 合计不得超过 prompt，未报告部分按 miss。`INPUT_TOKEN_CAP` 只挡文本/tools estimate；media 用 part/decoded-byte 上限控制内存与形状，实际 media token 由 Kimi 判定，但绝不会削弱 full-limit 成本预留。
 
 ## 6. Unit of Work 与状态机
 
@@ -155,7 +155,7 @@ open ── usage / conservative full quote ──▶ settled
 
 - provider auth 只注入 cloned request；上游 header/body/error 原文不反射。
 - inline media、prompt、tool JSON、token、key、IP 不进入日志/指标；redactor 对相关字段和复合值 fail closed。
-- metrics provider label 只有 `deepseek|gemini`，outcome 是固定闭集；model id 不作 label。
+- metrics provider label 只有 `deepseek|kimi`，outcome 是固定闭集；model id 不作 label。
 - dashboard 金额在展示边界从 pUSD 转成整数 microUSD；DB 仍保留精确 pUSD。
 - low disk 在 reserve 前 shed；所有 detached accounting goroutine 由 bgWG 跟踪，DB 在 shutdown 最后关闭。
 
@@ -186,6 +186,6 @@ open ── usage / conservative full quote ──▶ settled
 
 ## 10. 生命周期
 
-bootstrap 顺序：env/base config→SQLite+migrations→overlay→stores→DeepSeek backend→optional Gemini backend→Registry→app services→三 routers→background loops。diskguard 在 serve 前同步 prime；orphan reconciler 启动即扫、随后周期运行。
+bootstrap 顺序：env/base config→SQLite+migrations→overlay→stores→DeepSeek backend→optional Kimi backend→Registry→app services→三 routers→background loops。diskguard 在 serve 前同步 prime；orphan reconciler 启动即扫、随后周期运行。
 
 shutdown：①取消 scanners/loops；② Shutdown business/admin/dashboard；③等待 bgWG（detached settle/rollback、reconcile、probe、disk/metrics）；④最后 Close SQLite。关 DB 提前于 accounting drain 是财务数据损坏，不是普通 shutdown error。

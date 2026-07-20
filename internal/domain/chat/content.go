@@ -104,6 +104,7 @@ func (c Content) MarshalJSON() ([]byte, error) {
 const (
 	PartTypeText       = "text"
 	PartTypeImageURL   = "image_url"
+	PartTypeVideoURL   = "video_url"
 	PartTypeInputAudio = "input_audio"
 )
 
@@ -114,6 +115,7 @@ type ContentPart struct {
 	Type       string
 	Text       string
 	ImageURL   *ImageURL
+	VideoURL   *VideoURL
 	InputAudio *InputAudio
 }
 
@@ -122,6 +124,12 @@ type ContentPart struct {
 type ImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// VideoURL is Kimi's OpenAI-compatible video_url payload. The gateway accepts
+// only a strict inline MP4 data URI; it never downloads a remote URL.
+type VideoURL struct {
+	URL string `json:"url"`
 }
 
 // InputAudio is the OpenAI-compatible input_audio payload. Data is raw base64
@@ -161,17 +169,19 @@ func (p *ContentPart) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		p.ImageURL = &image
-	case PartTypeInputAudio:
-		allowed["input_audio"] = true
-		rawAudio, ok := fields["input_audio"]
+	case PartTypeVideoURL:
+		allowed["video_url"] = true
+		rawVideo, ok := fields["video_url"]
 		if !ok {
-			return errors.New("input_audio part requires input_audio")
+			return errors.New("video_url part requires video_url")
 		}
-		audio, err := decodeInputAudio(rawAudio)
+		video, err := decodeVideoURL(rawVideo)
 		if err != nil {
 			return err
 		}
-		p.InputAudio = &audio
+		p.VideoURL = &video
+	case PartTypeInputAudio:
+		return errors.New("input_audio is not supported")
 	default:
 		return fmt.Errorf("unsupported content part type %q", typ)
 	}
@@ -206,6 +216,23 @@ func decodeImageURL(raw []byte) (ImageURL, error) {
 		}
 	}
 	return image, nil
+}
+
+func decodeVideoURL(raw []byte) (VideoURL, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return VideoURL{}, errors.New("video_url must be an object")
+	}
+	for name := range fields {
+		if name != "url" {
+			return VideoURL{}, fmt.Errorf("unknown video_url field %q", name)
+		}
+	}
+	var video VideoURL
+	if value, ok := fields["url"]; !ok || json.Unmarshal(value, &video.URL) != nil || video.URL == "" {
+		return VideoURL{}, errors.New("video_url.url must be a string")
+	}
+	return video, nil
 }
 
 func decodeInputAudio(raw []byte) (InputAudio, error) {
@@ -243,6 +270,14 @@ func (p ContentPart) MarshalJSON() ([]byte, error) {
 			Type     string   `json:"type"`
 			ImageURL ImageURL `json:"image_url"`
 		}{Type: p.Type, ImageURL: *p.ImageURL})
+	case PartTypeVideoURL:
+		if p.VideoURL == nil {
+			return nil, errors.New("video_url part has no video_url payload")
+		}
+		return json.Marshal(struct {
+			Type     string   `json:"type"`
+			VideoURL VideoURL `json:"video_url"`
+		}{Type: p.Type, VideoURL: *p.VideoURL})
 	case PartTypeInputAudio:
 		if p.InputAudio == nil {
 			return nil, errors.New("input_audio part has no input_audio payload")
@@ -398,7 +433,7 @@ func (in InboundRequest) ValidateAndClassify(limits MediaLimits) (Modality, *api
 					}
 					decodedBytes += n
 					modality = ModalityMultimodal
-				case PartTypeInputAudio:
+				case PartTypeVideoURL:
 					if message.Role != "user" {
 						return ModalityText, contentError("media content is only allowed in user messages")
 					}
@@ -410,12 +445,14 @@ func (in InboundRequest) ValidateAndClassify(limits MediaLimits) (Modality, *api
 					if remaining < 0 {
 						remaining = 0
 					}
-					n, err := validateAudio(part.InputAudio, remaining)
+					n, err := validateVideo(part.VideoURL, remaining)
 					if err != nil {
 						return ModalityText, contentError(err.Error())
 					}
 					decodedBytes += n
 					modality = ModalityMultimodal
+				case PartTypeInputAudio:
+					return ModalityText, contentError("input_audio is not supported")
 				default:
 					// Construction outside JSON cannot bypass the closed union.
 					return ModalityText, contentError("unsupported content part type")
@@ -467,6 +504,23 @@ func validateImage(image *ImageURL, maxDecoded int64) (int64, error) {
 	}
 	if !magic(decoded) {
 		return 0, errors.New("image MIME type does not match its data")
+	}
+	return int64(len(decoded)), nil
+}
+
+func validateVideo(video *VideoURL, maxDecoded int64) (int64, error) {
+	if video == nil {
+		return 0, errors.New("video_url payload is required")
+	}
+	if !strings.HasPrefix(video.URL, "data:video/mp4;base64,") {
+		return 0, errors.New("video_url must use an inline video/mp4 base64 data URI")
+	}
+	decoded, err := decodeBase64(strings.TrimPrefix(video.URL, "data:video/mp4;base64,"), maxDecoded)
+	if err != nil {
+		return 0, err
+	}
+	if !isMP4(decoded) {
+		return 0, errors.New("video MIME type does not match its data")
 	}
 	return int64(len(decoded)), nil
 }
@@ -552,6 +606,10 @@ func isMP3(data []byte) bool {
 		len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0
 }
 
+func isMP4(data []byte) bool {
+	return len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp"))
+}
+
 func (c Content) textRunes() int {
 	switch c.kind {
 	case ContentKindString:
@@ -571,7 +629,7 @@ func (c Content) textRunes() int {
 
 // estimateBytesAndRunes optionally includes media's encoded representation.
 // Text-only routing includes everything. Multimodal context checks exclude the
-// base64 payload because Gemini tokenizes the decoded media, while retaining
+// base64 payload because Kimi tokenizes the decoded media, while retaining
 // its type/MIME/format metadata and all surrounding text.
 func (c Content) estimateBytesAndRunes(includeMediaPayload bool) (int64, int64) {
 	switch c.kind {
@@ -596,6 +654,17 @@ func (c Content) estimateBytesAndRunes(includeMediaPayload bool) (int64, int64) 
 					}
 					byteCount += int64(len(url) + len(part.ImageURL.Detail))
 					runeCount += int64(utf8.RuneCountInString(url) + utf8.RuneCountInString(part.ImageURL.Detail))
+				}
+			case PartTypeVideoURL:
+				if part.VideoURL != nil {
+					url := part.VideoURL.URL
+					if !includeMediaPayload {
+						if comma := strings.IndexByte(url, ','); comma >= 0 {
+							url = url[:comma]
+						}
+					}
+					byteCount += int64(len(url))
+					runeCount += int64(utf8.RuneCountInString(url))
 				}
 			case PartTypeInputAudio:
 				if part.InputAudio != nil {

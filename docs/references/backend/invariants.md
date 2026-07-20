@@ -25,18 +25,18 @@ audience: [human, ai]
 | GW-INV-06 | aged `open` 孤儿原子转为 `orphaned(charged_pusd=reserved_pusd)`，余额和请求计数均不退款；崩溃与未知外部结果只能多扣、不能少扣。0002 对 legacy ledger 同样保守：open 取 reserved、positive settled 取 settled、zero rollback 排除，三钱包 floor=`max(v1 balance, chargeable ledger aggregate×rate)`，聚合溢出则整迁移失败 | 自动退款或迁移漏掉一个 provider 可能已收费的请求，形成永久欠账 |
 | GW-INV-07 | 三个金额钱包都按 `period_day='YYYY-MM-DD'`：install/provider/global cap 均须为正，install/provider cap 均不得超过 global cap；global 是共享最终护栏 | 单 install/provider 抽干共享钱包，或日边界漂移 |
 | GW-INV-08 | Reserve 只接受由精确 provider/model rate card 构造且可自校验的冻结 `billing.Plan`；跨 provider raw token 绝不相加，只有 pUSD 可进入余额 | 伪造零价 plan 或把不同价格 token 当同一金额导致超卖 |
-| GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up 三个 pUSD 钱包；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Gemini 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
-| GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Gemini compatibility 因不能证明 thinking 上界而 reserve 完整 `1,048,576` input + `65,536` output hard limits，含 audio 时按较高 audio input rate；任一请求 quote 必须能装入 install 日 cap，否则配置 fail-fast/请求 pre-reserve 400 | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Gemini hidden thinking 造成欠预留 |
+| GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up 三个 pUSD 钱包；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Kimi 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
+| GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Kimi K2.6 compatibility 因不能证明 thinking 上界而 reserve 完整 `262,144` input + `32,768` output hard limits；任一请求 quote 必须能装入 install 日 cap，否则配置 fail-fast/请求 pre-reserve 400 | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Kimi hidden thinking 造成欠预留 |
 
 ## B. 安全
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-11 | DeepSeek/Gemini key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index` | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
+| GW-INV-11 | DeepSeek/Kimi key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index` | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
 | GW-INV-12 | install token 仅存 `SHA-256(token)`：发放返一次性 `gwk_`+32B token，`installs.token_sha256` UNIQUE；`/v1/install` 每次创建全新身份/额度池，绝不重显旧 token | DB 泄露可用 token 或 token 回显给错客户端 |
 | GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars` 与 dashboard 均 loopback-only；`requireLoopback` 拒空 host/IP 非回环/解析到任一非回环地址；`/healthz` 不碰 DB | 管理/画像面公网暴露，远程 DoS 或凭证攻击 |
-| GW-INV-14 | `DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_*`、`INSTALL_POW_SECRET` 均 secret-env-only，不进 `Specs`/settings/Dump；Snapshot 只给安全状态/数量，日志 redaction 覆盖 auth、media data 与 provider key 字段 | secret 或 inline media 经配置/日志/导出泄露 |
-| GW-INV-15 | metric/audit 标签严格低基数：provider 仅 `deepseek|gemini`，另仅固定 `outcome`/`handler`/`result`；禁止 model、install_id、token、prompt、media、ip 入 label | Prometheus 基数爆炸或 PII/内容入时序 |
+| GW-INV-14 | `DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_*`、`INSTALL_POW_SECRET` 均 secret-env-only，不进 `Specs`/settings/Dump；Snapshot 只给安全状态/数量，日志 redaction 覆盖 auth、media data 与 provider key 字段 | secret 或 inline media 经配置/日志/导出泄露 |
+| GW-INV-15 | metric/audit 标签严格低基数：provider 仅 `deepseek|kimi`，另仅固定 `outcome`/`handler`/`result`；禁止 model、install_id、token、prompt、media、ip 入 label | Prometheus 基数爆炸或 PII/内容入时序 |
 | GW-INV-16 | business XFF 仅当直连对端为 loopback Caddy 时可信并取最右段，否则回退 `RemoteAddr`；dashboard 直连/SSH tunnel 的 login bucket **永远忽略 XFF**，只取 direct peer | 攻击者伪造 XFF 绕过 install 或 dashboard per-IP 限速 |
 | GW-INV-17 | redaction 对 auth/cookie/provider-key/password/secret 精确名及 `*_api_key|*_password|*_secret` 后缀（大小写不敏感）直接 `[REDACTED]`，非 allowlist key 下 struct/map/slice 整体抹除；`image_url`、`input_audio`、inline/file data 在红线内 | 新 provider key、`slog.Any` 或 base64 media 被静默序列化 |
 | GW-INV-18 | TLS 仅由 Caddy 终结；Go 三监听默认 loopback、地址必须两两不同，否则 `LoadBase` fail-fast | 误绑公网或运行时端口冲突 |
@@ -56,7 +56,7 @@ audience: [human, ai]
 | GW-INV-27 | `UPSTREAM_HEADER_TIMEOUT_SEC` per attempt 界定 connect→header→first body byte；stream/non-stream 都必须成功 `Peek(1)` 才 handoff，2xx header 不提前停表；handoff 后 timer 已幂等 disarm，且不覆盖其余 body/stream。timeout 是 ChargePossible，不 retry、保留 full quote | non-stream headers-only stall 钉死 slot；timer race 截断已返回 stream；timeout retry 造成多次潜在收费 |
 | GW-INV-28 | `QUEUE_WAIT_MS` 是共享信号量的有界等待：0=立即拒绝，超时→429，排队取消→499 审计；三者都在 Open 前 rollback 且不占/放大 slot | 无界排队、并发放大或取消请求虚占钱包 |
 | GW-INV-29 | diskguard 每 30s 探测数据盘，低于 MB 或百分比阈值时在任何 reserve 前返回 `503 DISK_LOW`；启动同步预热、探测失败 fail-open、恢复自动清 | 磁盘满时中途写坏账本或探测抖动永久只读 |
-| GW-INV-30 | DeepSeek 与 Gemini 各自固定 endpoint、API key pool、per-key breaker/cooldown、process breaker；选定 provider 后禁止 fallback、禁止跨池取 key；单 key 配置行为不变 | 单 provider 故障污染另一 provider，或实际费用与冻结 plan 不一致 |
+| GW-INV-30 | DeepSeek 与 Kimi 各自固定 endpoint、API key pool、per-key breaker/cooldown、process breaker；选定 provider 后禁止 fallback、禁止跨池取 key；单 key 配置行为不变 | 单 provider 故障污染另一 provider，或实际费用与冻结 plan 不一致 |
 | GW-INV-41 | provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`，只暴露 `details.reason∈{context_length,max_tokens,invalid_request}`；Exposure=DefinitelyUnbilled，不 retry/不计 breaker并 rollback；其它明确 3xx/4xx也 DefinitelyUnbilled，但可归一成不同 APIError/fault class | 恶意超长输入触发全站 breaker、上游原文泄露或用 code 代替 exposure |
 
 ## D. 输入、能力与模型路由
@@ -67,12 +67,12 @@ audience: [human, ai]
 | GW-INV-32 | `n>1` 经 raw probe 与 typed decode 双重拒绝为 `400 BAD_REQUEST` | 单请求扇出多个 completion、破坏报价上界 |
 | GW-INV-33 | pre-reserve shape guard：messages 非空且 `len≤MAX_MESSAGES`；每 message 文本 rune 数≤`MAX_MESSAGE_CHARS`；body≤`MAX_BODY_BYTES` | 多小消息或单大文本造成内存/估算放大 |
 | GW-INV-34 | business middleware 与 chat handler 共享 `MAX_BODY_BYTES`（默认 256KiB，范围 4KiB..8MiB，重启生效）；`/v1/install` 独立 8KiB | 未鉴权或 chat body 无界缓冲 |
-| GW-INV-35 | 路由只由完整 history 的已验证 content 决定：全 string/文本 parts→DeepSeek V4 Flash；任一受支持 media→Gemini 3.1 Flash-Lite。client `model` 永不选择 provider/实际模型；`/v1/models` 及 stream/non-stream 成功响应顶层 `model` 都只给 `PUBLIC_MODEL_ID`，且 duplicate/case-fold 等价 model key fail closed。non-stream 只放行单一 UTF-8 object；SSE 只放行 object data、精确 DONE/blank 与归一 bare-comment；只有完整读到合法 DONE 才允许按 stream usage 退款，提前 EOF/读错即 full quote | 客户端绕过成本/能力策略、只看最后一条消息而误路由，公开 alias 被真实 provider/version 漂移击穿，duplicate key 放大输出，或未完成 stream 用中途 usage 错误退款 |
-| GW-INV-36 | message role 是闭集 `system|user|assistant|tool`（tool 必须有非空 `tool_call_id`）；`content` 是关闭联合类型：missing/null/string/parts；missing/null 仅合法 assistant tool-call；part 仅 `text`、`image_url`、`input_audio` 且未知/交叉字段拒绝；文本-only parts canonicalize 为 string；opaque `tool_calls`（含 Gemini 3 必需的 nested thought signature）原样保留 | 未知 role/多部分走私、provider 对同一 body 产生不同解释，或 Gemini function loop 第二步被 400 拒绝 |
+| GW-INV-35 | 路由只由完整 history 的已验证 content 决定：全 string/文本 parts→DeepSeek V4 Flash；任一受支持 media→Kimi K2.6。client `model` 永不选择 provider/实际模型；`/v1/models` 及 stream/non-stream 成功响应顶层 `model` 都只给 `PUBLIC_MODEL_ID`，且 duplicate/case-fold 等价 model key fail closed。non-stream 只放行单一 UTF-8 object；SSE 只放行 object data、精确 DONE/blank 与归一 bare-comment；只有完整读到合法 DONE 才允许按 stream usage 退款，提前 EOF/读错即 full quote | 客户端绕过成本/能力策略、只看最后一条消息而误路由，公开 alias 被真实 provider/version 漂移击穿，duplicate key 放大输出，或未完成 stream 用中途 usage 错误退款 |
+| GW-INV-36 | message role 是闭集 `system|user|assistant|tool`（tool 必须有非空 `tool_call_id`）；`content` 是关闭联合类型：missing/null/string/parts；missing/null 仅合法 assistant tool-call；part 仅 `text`、`image_url`、`video_url` 且未知/交叉字段拒绝；文本-only parts canonicalize 为 string；opaque `tool_calls` 原样保留 | 未知 role/多部分走私、provider 对同一 body 产生不同解释，或 Kimi function loop 第二步被 400 拒绝 |
 | GW-INV-37 | `max_tokens` 先取正的较小 client 值，否则 `MAX_TOKENS_CAP`，再受所选模型 output limit 限制；同一 clamp 值进入 payload，DeepSeek 也进入 quote | payload 与账本上界漂移，输出成本失控 |
-| GW-INV-42 | media 只允许 user role：image 必须 inline strict-base64 `data:image/{jpeg|png|webp};base64,...` 且 MIME=magic；audio 必须 raw strict base64、format `wav|mp3` 且 format=magic；remote URL/PDF/video/file/未知 part 一律 400，网关永不 fetch URL | SSRF/下载放大/MIME 欺骗，或 compatibility 未定义输入进入上游 |
-| GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；`INPUT_TOKEN_CAP` 约束文本及所有透传 tool JSON（含 `tools`/`tool_choice`/message tool calls）的 estimate，媒体由 parts/decoded-byte 闸限制并交 Gemini 判定实际 media token，但账本仍按 Gemini full hard limits 预留 | base64 解码 OOM、tool JSON 绕过输入/报价护栏，或把文本估算误称为可证明的媒体 token 上限 |
-| GW-INV-44 | `GEMINI_API_KEY` 可选：缺失时 Gemini backend 不构造，文本 readiness/DeepSeek 路由正常，合法多模态在任何 reserve/Open 前固定返回 `503 MULTIMODAL_UNAVAILABLE`；配置 key 后 readiness 的 cached authenticated `/models` probe 必须同时确认 Gemini 固定模型，DeepSeek 固定模型始终必需；绝无静默 fallback | 未配 key 导致全站不 ready、已配坏 key 却错误放行部署，或媒体被错误送到文本模型 |
+| GW-INV-42 | media 只允许 user role：image 必须 inline strict-base64 `data:image/{jpeg|png|webp};base64,...` 且 MIME=magic；video 必须 inline strict-base64 `data:video/mp4;base64,...` 且 MIME=MP4 容器标识；remote URL/PDF/file/audio/未知 part 一律 400，网关永不 fetch URL | SSRF/下载放大/MIME 欺骗，或 compatibility 未定义输入进入上游 |
+| GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；`INPUT_TOKEN_CAP` 约束文本及所有透传 tool JSON（含 `tools`/`tool_choice`/message tool calls）的 estimate，媒体由 parts/decoded-byte 闸限制并交 Kimi 判定实际 media token，但账本仍按 Kimi full hard limits 预留 | base64 解码 OOM、tool JSON 绕过输入/报价护栏，或把文本估算误称为可证明的媒体 token 上限 |
+| GW-INV-44 | `KIMI_API_KEY` 可选：缺失时 Kimi backend 不构造，文本 readiness/DeepSeek 路由正常，合法多模态在任何 reserve/Open 前固定返回 `503 MULTIMODAL_UNAVAILABLE`；配置 key 后 readiness 的 cached authenticated `/models` probe 必须同时确认 Kimi 固定模型，DeepSeek 固定模型始终必需；绝无静默 fallback | 未配 key 导致全站不 ready、已配坏 key 却错误放行部署，或媒体被错误送到文本模型 |
 | GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
 
 ## E. 跨切配置 / 可观测
@@ -86,6 +86,6 @@ audience: [human, ai]
 ## 备注
 
 - wire error 只描述客户端结果；是否 rollback 由 `CallFailure.ChargeExposure` 决定。尤其 `UPSTREAM_ERROR` 既可 DefinitelyUnbilled（明确 3xx/4xx）也可 ChargePossible（connect/5xx）。
-- readiness 以 DeepSeek + DB + disk 为必需基线；可选 Gemini 缺 key 不使文本服务失活，配置 key 后则必须和 DeepSeek 一样通过 cached authenticated exact-model probe。
+- readiness 以 DeepSeek + DB + disk 为必需基线；可选 Kimi 缺 key 不使文本服务失活，配置 key 后则必须和 DeepSeek 一样通过 cached authenticated exact-model probe。
 - 中间件链：`Recover → DenyCORS → MaxBody → mux`；带 `Origin` 的 `OPTIONS` 为 403 且不发 `Access-Control-*`。
 - Sybil/PoW 旋钮默认 dormant：`INSTALL_POW_MODE=off`，其余 M2 cap 为 0 时在 DB 工作前短路。

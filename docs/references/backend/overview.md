@@ -11,7 +11,7 @@ audience: [human, ai]
 
 # 后端总览（backend overview）
 
-> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持媒体→Gemini 3.1 Flash-Lite；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、六域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
+> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持媒体→Kimi K2.6；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、六域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
 
 ## 1. 三个物理隔离监听器（ADR-004 / GW-INV-13/18）
 
@@ -63,4 +63,4 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 
 ## 6. 配置三层级
 
-runtime-hot / secret-env-only / startup-hard 三层。DeepSeek key 必填；Gemini key 可选，缺失只使合法多模态返回 `503 MULTIMODAL_UNAVAILABLE`，文本/readiness 正常。provider model/URL 启动冻结，成本/media caps 可按 registry 热改。全表见 [config.md](config.md)。
+runtime-hot / secret-env-only / startup-hard 三层。DeepSeek key 必填；Kimi key 可选，缺失只使合法多模态返回 `503 MULTIMODAL_UNAVAILABLE`，文本/readiness 正常。provider model/URL 启动冻结，成本/media caps 可按 registry 热改。全表见 [config.md](config.md)。

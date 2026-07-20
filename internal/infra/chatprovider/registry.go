@@ -15,15 +15,15 @@ import (
 )
 
 // Registry has no fallback path by design. Each provider owns an independent
-// endpoint/key pool/breaker; a Gemini failure can never consume a DeepSeek key or
+// endpoint/key pool/breaker; a Kimi failure can never consume a DeepSeek key or
 // silently change the model/account after billing has been reserved.
 type Registry struct {
 	deepSeek upstream.BackendClient
-	gemini   upstream.BackendClient
+	kimi     upstream.BackendClient
 }
 
-func New(deepSeek, gemini upstream.BackendClient) *Registry {
-	return &Registry{deepSeek: deepSeek, gemini: gemini}
+func New(deepSeek, kimi upstream.BackendClient) *Registry {
+	return &Registry{deepSeek: deepSeek, kimi: kimi}
 }
 
 func (r *Registry) client(provider billing.Provider) upstream.BackendClient {
@@ -33,8 +33,8 @@ func (r *Registry) client(provider billing.Provider) upstream.BackendClient {
 	switch provider {
 	case billing.ProviderDeepSeek:
 		return r.deepSeek
-	case billing.ProviderGemini:
-		return r.gemini
+	case billing.ProviderKimi:
+		return r.kimi
 	default:
 		return nil
 	}
@@ -70,21 +70,18 @@ func encode(provider billing.Provider, model string, req domchat.CompletionReque
 	switch provider {
 	case billing.ProviderDeepSeek:
 		return json.Marshal(req.WithModel(model))
-	case billing.ProviderGemini:
+	case billing.ProviderKimi:
 		// DeepSeek reasoning_content is an account-specific continuation token. If
-		// an earlier image keeps the whole history on Gemini, that extension must
-		// not leak into Google's request. Tool-call JSON remains opaque/preserved.
+		// an earlier image keeps the whole history on Kimi, that extension must
+		// not leak into Kimi's request. Tool-call JSON remains opaque/preserved.
 		req.Messages = append([]domchat.Message(nil), req.Messages...)
 		for i := range req.Messages {
 			req.Messages[i].ReasoningContent = nil
 		}
-		// Gemini 3.1 Flash-Lite cannot fully disable thinking. Minimal is the
-		// cheapest supported deterministic level; the cost quote still reserves
-		// the model's full output hard limit because minimal is not zero.
-		return json.Marshal(struct {
-			domchat.UpstreamRequest
-			ReasoningEffort string `json:"reasoning_effort"`
-		}{UpstreamRequest: req.WithModel(model), ReasoningEffort: "minimal"})
+		// K2.6 has a different thinking control surface. Omit provider-specific
+		// parameters so its documented default remains stable and callers cannot
+		// smuggle an incompatible DeepSeek/Google extension across the boundary.
+		return json.Marshal(req.WithModel(model))
 	default:
 		return nil, apierr.Internal()
 	}

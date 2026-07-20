@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。
+Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -33,13 +33,13 @@ Secrets：`DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PA
 | `GLOBAL_DAILY_SPEND_MICRO_USD` | 14,000,000 | 1 | 9,000,000,000,000 | 否 | shared global 日钱包（默认 $14） |
 | `INSTALL_DAILY_SPEND_MICRO_USD` | 5,600,000 | 1 | 9,000,000,000,000 | 否 | per-install 日钱包（默认 $5.60） |
 | `DEEPSEEK_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | DeepSeek provider 日钱包 |
-| `GEMINI_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | Gemini provider 日钱包 |
+| `KIMI_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | Kimi provider 日钱包 |
 | `MONTHLY_QUOTA` | 5000 | 1 | 1,000,000,000 | 否 | per-install 月请求次数 |
 | `MAX_TOKENS_CAP` | 4096 | 1 | 1,000,000 | 否 | client 输出 clamp 的 gateway 上限；再受实际模型 limit 限制 |
 | `INPUT_TOKEN_CAP` | 16384 | 0 | 10,000,000 | 否 | 文本/tools 保守 estimate 上限；0=禁用；**不是媒体 token 上限** |
 | `MAX_MESSAGES` | 256 | 1 | 100,000 | 否 | 完整 history 的 message 数上限 |
 | `MAX_MESSAGE_CHARS` | 131072 | 1 | 16,777,216 | 否 | 单 message 文本 rune 上限 |
-| `MAX_MEDIA_PARTS` | 8 | 1 | 64 | 否 | 整请求 image+audio part 数上限 |
+| `MAX_MEDIA_PARTS` | 8 | 1 | 64 | 否 | 整请求 image+video part 数上限 |
 | `MAX_MEDIA_DECODED_BYTES` | `min(3MiB, MAX_BODY_BYTES×3/4)` | 1 | 8,388,608 | 否 | 整请求累计 decoded media bytes；同时必须 ≤ body cap |
 | `MAX_BODY_BYTES` | 262144 | 4096 | 8,388,608 | **是** | business chat body cap；中间件装配一次 |
 | `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100,000 | **是** | 两 provider 共享的总 upstream 在飞 cap |
@@ -68,9 +68,9 @@ Secrets：`DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PA
 | key | 默认 | 约束 / 语义 |
 |---|---|---|
 | `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
-| `MULTIMODAL_UPSTREAM_MODEL` | `gemini-3.1-flash-lite` | Gemini 启用时必须是精确已编译 rate card；媒体路由 |
+| `MULTIMODAL_UPSTREAM_MODEL` | `kimi-k2.6` | Kimi 启用时必须是精确已编译 rate card；媒体路由 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
-| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
+| `KIMI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
 | `READ_POOL_MAX_CONNS` | 4 | >0 |
@@ -96,18 +96,18 @@ Secrets：`DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PA
 | key | 约束 / 缺失行为 |
 |---|---|
 | `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
-| `GEMINI_API_KEY` | 可选；同样支持逗号分隔多 key；为空则不构造 Gemini backend，文本/readiness 正常，合法多模态返回 `503 MULTIMODAL_UNAVAILABLE` |
+| `KIMI_API_KEY` | 可选；同样支持逗号分隔多 key；为空则不构造 Kimi backend，文本/readiness 正常，合法多模态返回 `503 MULTIMODAL_UNAVAILABLE` |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 同设或同空；半配 fail-fast；同设才启 dashboard auth |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 
-每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Gemini 缺 key 不是“坏 key”或 readiness fault，而是该 deployment 没有多模态 capability。
+每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Kimi 缺 key 不是“坏 key”或 readiness fault，而是该 deployment 没有多模态 capability。
 
 ## 5. 跨字段语义（每次 env-load / overlay / hot batch 都跑）
 
-1. 四个 spend cap 都 >0；`INSTALL_DAILY_SPEND_MICRO_USD` 与 DeepSeek provider cap 始终 ≤ `GLOBAL_DAILY_SPEND_MICRO_USD`；Gemini provider cap 仅在 `GEMINI_API_KEY` 已配置、该 provider 启用时要求 ≤ global（inactive 值不阻断纯文本启动）。
+1. 四个 spend cap 都 >0；`INSTALL_DAILY_SPEND_MICRO_USD` 与 DeepSeek provider cap 始终 ≤ `GLOBAL_DAILY_SPEND_MICRO_USD`；Kimi provider cap 仅在 `KIMI_API_KEY` 已配置、该 provider 启用时要求 ≤ global（inactive 值不阻断纯文本启动）。
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
 3. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入 install 日 cap。
-4. **仅当 `GEMINI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Gemini rate card，Gemini provider wallet 必须装入 global wallet，且按 audio rate 的完整 `1,048,576` input + `65,536` output quote（`622,592 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Gemini 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算媒体 token；媒体形状/bytes 单独受限并交 Gemini 判定实际 token。
+4. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，Kimi provider wallet 必须装入 global wallet，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。
 5. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 6. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 

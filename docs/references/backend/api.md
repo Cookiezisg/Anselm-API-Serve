@@ -47,7 +47,7 @@ audience: [human, ai]
 }
 ```
 
-未声明 top-level 字段构造性丢弃；`n>1` 拒绝。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop；其中 Gemini 3 返回在 `tool_calls[].extra_content.google.thought_signature` 的签名也原样回传，保证下一步 function call 不被 provider 以 400 拒绝。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Gemini adapter 内剥离。
+未声明 top-level 字段构造性丢弃；`n>1` 拒绝。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop；其中 Kimi 3 返回在 `tool_calls[].extra_content.google.thought_signature` 的签名也原样回传，保证下一步 function call 不被 provider 以 400 拒绝。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Kimi adapter 内剥离。
 
 `messages[].content` 是关闭联合类型：
 
@@ -83,18 +83,18 @@ message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`M
 - URL 必须是 inline data URI；MIME 仅 `image/jpeg`、`image/png`、`image/webp`；base64 必须 canonical/strict，MIME 必须匹配 decoded magic bytes。
 - `detail` 可省略；存在时仅 `auto|low|high`。
 
-音频：
+视频：
 
 ```json
 {
-  "type":"input_audio",
-  "input_audio":{"data":"<strict-base64>","format":"wav"}
+  "type":"video_url",
+  "video_url":{"url":"data:video/mp4;base64,<strict-base64>"}
 }
 ```
 
-- `data` 是 raw base64，不是 data URI；`format` 仅 `wav|mp3` 且必须匹配 magic bytes。
+- 仅接受 inline MP4 data URI；base64 必须 canonical/strict，声明 MIME 必须匹配 MP4 容器标识。
 
-message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+audio part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、video、file/file_id、未知 MIME/format/part、跨 variant 多余字段全部 400；gateway **不 fetch 客户端 URL**。
+message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+video part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、file/file_id、未知 MIME/format/part、跨 variant 多余字段，以及 `input_audio` 全部 400；gateway **不 fetch 客户端 URL**。
 
 ### 2.3 唯一路由表
 
@@ -103,11 +103,11 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 | 完整 content | provider | 实际模型 |
 |---|---|---|
 | 只有 string / text parts / 合法 tool-call 空内容 | DeepSeek | `TEXT_UPSTREAM_MODEL`=`deepseek-v4-flash` |
-| 任一 accepted image/audio part | Gemini | `MULTIMODAL_UPSTREAM_MODEL`=`gemini-3.1-flash-lite` |
+| 任一 accepted image/video part | Kimi | `MULTIMODAL_UPSTREAM_MODEL`=`kimi-k2.6` |
 
-`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。Gemini adapter 强制 `reasoning_effort:"minimal"`，但成本仍按完整模型 hard limits 预留。
+`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。Kimi adapter 剥离跨 provider 的 `reasoning_content`，并使用 K2.6 的默认 thinking 行为；成本仍按完整模型 hard limits 预留。
 
-`GEMINI_API_KEY` 未配置时不构造 Gemini backend：纯文本照常；合法多模态在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。Gemini 故障同样只返回自身归一错误，不跨 provider。
+`KIMI_API_KEY` 未配置时不构造 Kimi backend：纯文本照常；合法多模态在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。Kimi 故障同样只返回自身归一错误，不跨 provider。
 
 ### 2.4 clamp、stream 与账务可见行为
 
@@ -130,8 +130,8 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 
 | 方法 + 路径 | 说明 |
 |---|---|
-| `GET /metrics` | Prometheus；provider label 固定 `deepseek|gemini` |
-| `GET /readyz` | DB + disk + cached authenticated `/models` probe：DeepSeek key/固定模型永远必需；配置了 Gemini key 时 Gemini key/固定模型也必须通过；未配 Gemini 不使文本 deployment unready |
+| `GET /metrics` | Prometheus；provider label 固定 `deepseek|kimi` |
+| `GET /readyz` | DB + disk + cached authenticated `/models` probe：DeepSeek key/固定模型永远必需；配置了 Kimi key 时 Kimi key/固定模型也必须通过；未配 Kimi 不使文本 deployment unready |
 | `/debug/pprof/`、命名 pprof 路由 | CPU/heap/trace/cmdline/symbol |
 | `GET /debug/vars` | expvar runtime gauges |
 
@@ -144,7 +144,7 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 | `GET /healthz` | 否 | dashboard liveness |
 | `POST /login` / `POST /logout` | 否 | 建立/销毁 session；login 有 per-IP backoff |
 | `GET /api/session` | session | session + CSRF token |
-| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`；固定带 `providers.deepseek` / `providers.gemini`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`；固定带 `providers.deepseek` / `providers.kimi`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
 | `GET /api/config` | session | secret-free Dump |
 | `POST /api/config` | session + CSRF | runtime-hot batch，全有或全无 |
 | `GET /api/installs` | session | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |

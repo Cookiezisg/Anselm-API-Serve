@@ -116,11 +116,11 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 		body string
 	}{
 		{name: "truncated object", body: `{"model":"deepseek-v4-flash"`},
-		{name: "array", body: `["gemini-3.1-flash-lite"]`},
+		{name: "array", body: `["kimi-k2.6"]`},
 		{name: "scalar", body: `"deepseek-v4-flash"`},
 		{name: "null", body: `null`},
 		{name: "trailing garbage", body: `{"model":"deepseek-v4-flash"} provider-debug`},
-		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"gemini-3.1-flash-lite"}`},
+		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"kimi-k2.6"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,7 +138,7 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 			if sink.header("Content-Type") != "application/json" || !strings.Contains(sink.bodyString(), `"code":"UPSTREAM_ERROR"`) {
 				t.Fatalf("want normalized JSON 502 envelope, headers/body=%q/%q", sink.header("Content-Type"), sink.bodyString())
 			}
-			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.Gemini31FlashLite, "provider-debug"} {
+			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.KimiK26, "provider-debug"} {
 				if strings.Contains(sink.bodyString(), providerModel) {
 					t.Fatalf("provider payload leaked through normalized failure: %q", sink.bodyString())
 				}
@@ -639,9 +639,9 @@ func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
 		wantProvider billing.Provider
 		wantModel    string
 	}{
-		{"text", `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"hello"}]}`,
+		{"text", `{"model":"kimi-k2.6","messages":[{"role":"user","content":"hello"}]}`,
 			billing.ProviderDeepSeek, billing.DeepSeekV4Flash},
-		{"media anywhere in history", mediaBody, billing.ProviderGemini, billing.Gemini31FlashLite},
+		{"media anywhere in history", mediaBody, billing.ProviderKimi, billing.KimiK26},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -693,8 +693,8 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 	}{
 		{name: "DeepSeek non-stream", provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
 		{name: "DeepSeek stream", stream: true, provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
-		{name: "Gemini non-stream", media: true, provider: billing.ProviderGemini, upstreamModel: billing.Gemini31FlashLite},
-		{name: "Gemini stream", media: true, stream: true, provider: billing.ProviderGemini, upstreamModel: billing.Gemini31FlashLite},
+		{name: "Kimi non-stream", media: true, provider: billing.ProviderKimi, upstreamModel: billing.KimiK26},
+		{name: "Kimi stream", media: true, stream: true, provider: billing.ProviderKimi, upstreamModel: billing.KimiK26},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -737,13 +737,13 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 	}
 }
 
-func TestGeminiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
+func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
 	up := &fakeUpstream{available: map[billing.Provider]bool{
 		billing.ProviderDeepSeek: true,
-		billing.ProviderGemini:   false,
+		billing.ProviderKimi:     false,
 	}, body: `{}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
@@ -757,7 +757,7 @@ func TestGeminiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 		t.Fatalf("unavailable route must reject before reserve/open: reserved=%d calls=%+v", q.reservedPUSD, up.callSnapshot())
 	}
 
-	// The absent Gemini credential is isolated: text remains on DeepSeek.
+	// The absent Kimi credential is isolated: text remains on DeepSeek.
 	textQ := &fakeQuota{}
 	textSvc, textWG := build(Deps{Auth: okAuth(), Quota: textQ, Upstream: up, RL: &fakeRL{allow: true}})
 	textSink := newFakeSink()
@@ -781,8 +781,8 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 		openBreaker billing.Provider
 		wantRoute   billing.Provider
 	}{
-		{"DeepSeek open does not block Gemini", mediaBody, billing.ProviderDeepSeek, billing.ProviderGemini},
-		{"Gemini open does not block DeepSeek", goodBody, billing.ProviderGemini, billing.ProviderDeepSeek},
+		{"DeepSeek open does not block Kimi", mediaBody, billing.ProviderDeepSeek, billing.ProviderKimi},
+		{"Kimi open does not block DeepSeek", goodBody, billing.ProviderKimi, billing.ProviderDeepSeek},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -806,7 +806,7 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 	}
 }
 
-func TestGeminiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
+func TestKimiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	for _, tc := range []struct {
@@ -815,7 +815,7 @@ func TestGeminiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 		wantRollback bool
 	}{
 		{"open failure", &fakeUpstream{aerr: apierr.ErrUpstreamError}, false},
-		{"breaker open", &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderGemini: true}}, true},
+		{"breaker open", &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderKimi: true}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := &fakeQuota{}
@@ -824,7 +824,7 @@ func TestGeminiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
 			wg.Wait()
 			for _, call := range tc.up.callSnapshot() {
-				if call.Provider != billing.ProviderGemini {
+				if call.Provider != billing.ProviderKimi {
 					t.Fatalf("multimodal request fell back: calls=%+v", tc.up.callSnapshot())
 				}
 			}
@@ -884,17 +884,15 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 	})
 }
 
-func TestGeminiHardQuoteAndAudioInputClass(t *testing.T) {
+func TestKimiHardQuoteForImages(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
-	wav := base64.StdEncoding.EncodeToString([]byte("RIFF1234WAVE"))
 	tests := []struct {
 		name      string
 		body      string
 		wantClass billing.InputClass
 		inputRate int64
 	}{
-		{"image standard", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`, billing.InputStandard, 250_000},
-		{"audio higher rate", `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`, billing.InputAudio, 500_000},
+		{"image standard", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`, billing.InputStandard, 950_000},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -904,10 +902,10 @@ func TestGeminiHardQuoteAndAudioInputClass(t *testing.T) {
 			sink := newFakeSink()
 			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
-			if q.plan.Provider != billing.ProviderGemini || q.plan.PromptQuote != billing.GeminiInputLimit || q.plan.OutputQuote != billing.GeminiOutputLimit || q.plan.InputClass != tc.wantClass {
-				t.Fatalf("Gemini hard plan=%+v", q.plan)
+			if q.plan.Provider != billing.ProviderKimi || q.plan.PromptQuote != billing.KimiInputLimit || q.plan.OutputQuote != billing.KimiOutputLimit || q.plan.InputClass != tc.wantClass {
+				t.Fatalf("Kimi hard plan=%+v", q.plan)
 			}
-			wantCost := 10*tc.inputRate + 2*int64(1_500_000)
+			wantCost := 10*tc.inputRate + 2*int64(4_000_000)
 			if got := q.settles(); len(got) != 1 || got[0] != wantCost {
 				t.Fatalf("settles=%v want=%d", got, wantCost)
 			}
@@ -942,7 +940,7 @@ func TestPayloadMaxTokensClampedBySelectedModel(t *testing.T) {
 		want int64
 	}{
 		{"DeepSeek", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, billing.DeepSeekOutputLimit},
-		{"Gemini", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, billing.GeminiOutputLimit},
+		{"Kimi", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, billing.KimiOutputLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -976,16 +974,16 @@ func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
 	}
 }
 
-func TestGeminiHardQuoteOverInstallWalletIs400BeforeReserve(t *testing.T) {
-	plan, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
-		billing.InputAudio, billing.GeminiInputLimit, billing.GeminiOutputLimit)
+func TestKimiHardQuoteOverInstallWalletIs400BeforeReserve(t *testing.T) {
+	plan, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
+		billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	cfg := testCfg()
 	cfg.InstallDailySpendPUSD = plan.ReservedPUSD - 1
-	wav := base64.StdEncoding.EncodeToString([]byte("RIFF1234WAVE"))
-	body := `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`
+	png := base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
+	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + png + `"}}]}]}`
 	q := &fakeQuota{}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
@@ -996,12 +994,12 @@ func TestGeminiHardQuoteOverInstallWalletIs400BeforeReserve(t *testing.T) {
 	}
 }
 
-func TestGeminiPromptEstimateBeyondModelLimitIs400(t *testing.T) {
+func TestKimiPromptEstimateBeyondModelLimitIs400(t *testing.T) {
 	cfg := testCfg()
 	cfg.InputTokenCap = 0 // exercise the model hard-limit guard, not generic cap.
 	cfg.MaxMessageChars = 2_000_000
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
-	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.GeminiInputLimit)) +
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.KimiInputLimit)) +
 		`"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
 	up := &fakeUpstream{}

@@ -1,6 +1,6 @@
 # anselm-gateway 文档索引（会话入口）
 
-> 模块：`github.com/sunweilin/anselm/gateway`。一个**薄网关**（文本→DeepSeek、多模态→Gemini 的确定性 capability 路由 + 悲观成本记账 + install/PoW 身份 + 管理后台），Clean Arch 重写已落 `main`、线上运行。
+> 模块：`github.com/sunweilin/anselm/gateway`。一个**薄网关**（文本→DeepSeek、多模态→Kimi 的确定性 capability 路由 + 悲观成本记账 + install/PoW 身份 + 管理后台），Clean Arch 重写已落 `main`、线上运行。
 > 本文件是会话**起点**，只给指针、不放内容（≤50 行，`make docs` 强制）。任何深入都点链接到权威源。
 
 ## 先读

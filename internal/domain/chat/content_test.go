@@ -141,42 +141,10 @@ func TestValidateImagesMIMEBase64AndMagic(t *testing.T) {
 	}
 }
 
-func TestValidateAudioFormatBase64AndMagic(t *testing.T) {
-	valid := map[string][]byte{
-		"wav": []byte("RIFF1234WAVE"),
-		"mp3": []byte("ID3metadata"),
-	}
-	for format, data := range valid {
-		t.Run(format, func(t *testing.T) {
-			encoded := base64.StdEncoding.EncodeToString(data)
-			body := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":` + quotedJSON(encoded) + `,"format":` + quotedJSON(format) + `}}]}]}`)
-			in, aerr := DecodeInbound(body)
-			if aerr != nil {
-				t.Fatalf("decode: %v", aerr)
-			}
-			got, aerr := in.ValidateAndClassify(generousMediaLimits)
-			if aerr != nil || got != ModalityMultimodal {
-				t.Fatalf("valid %s: modality=%v err=%v", format, got, aerr)
-			}
-		})
-	}
-
-	for _, tc := range []struct {
-		data   string
-		format string
-	}{
-		{base64.StdEncoding.EncodeToString([]byte("ID3metadata")), "wav"},
-		{base64.StdEncoding.EncodeToString([]byte("RIFF1234WAVE")), "flac"},
-		{"not!base64", "mp3"},
-	} {
-		body := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":` + quotedJSON(tc.data) + `,"format":` + quotedJSON(tc.format) + `}}]}]}`)
-		in, decodeErr := DecodeInbound(body)
-		if decodeErr != nil {
-			t.Fatalf("validation case should structurally decode: %v", decodeErr)
-		}
-		if _, aerr := in.ValidateAndClassify(generousMediaLimits); aerr == nil || aerr.Status != 400 {
-			t.Fatalf("format=%s: expected 400, got %v", tc.format, aerr)
-		}
+func TestRejectsAudioParts(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}]}]}`)
+	if _, err := DecodeInbound(body); err == nil || err.Status != 400 {
+		t.Fatalf("audio must be rejected before provider routing, got %v", err)
 	}
 }
 
@@ -219,14 +187,27 @@ func TestMessageRoleIsClosedAndToolCallIDIsRequired(t *testing.T) {
 	}
 }
 
-func TestUnknownVideoAndFilePartsAreRejected(t *testing.T) {
+func TestVideoAndUnknownFileParts(t *testing.T) {
+	validMP4 := base64.StdEncoding.EncodeToString([]byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+	valid := []byte(`{"messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":"data:video/mp4;base64,` + validMP4 + `"}}]}]}`)
+	in, err := DecodeInbound(valid)
+	if err != nil {
+		t.Fatalf("decode valid video: %v", err)
+	}
+	if modality, err := in.ValidateAndClassify(generousMediaLimits); err != nil || modality != ModalityMultimodal {
+		t.Fatalf("valid video: modality=%v err=%v", modality, err)
+	}
 	for _, part := range []string{
 		`{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA"}}`,
 		`{"type":"file","file":{"file_data":"data:application/pdf;base64,JVBERg=="}}`,
 		`{"type":"future_media","data":"AAAA"}`,
 	} {
 		body := []byte(`{"messages":[{"role":"user","content":[` + part + `]}]}`)
-		if _, aerr := DecodeInbound(body); aerr == nil || aerr.Status != 400 {
+		in, aerr := DecodeInbound(body)
+		if aerr != nil {
+			continue // unknown variants are rejected by the structural decoder.
+		}
+		if _, aerr := in.ValidateAndClassify(generousMediaLimits); aerr == nil || aerr.Status != 400 {
 			t.Fatalf("part=%s: expected 400, got %v", part, aerr)
 		}
 	}
@@ -268,7 +249,7 @@ func TestPromptEstimateChargesMediaBase64(t *testing.T) {
 	}
 	textContextEstimate := in.TextPromptEstimate()
 	if textContextEstimate >= mediaEstimate/2 {
-		t.Fatalf("Gemini text-context estimate must not treat transport base64 as text tokens: full=%d text=%d", mediaEstimate, textContextEstimate)
+		t.Fatalf("Kimi text-context estimate must not treat transport base64 as text tokens: full=%d text=%d", mediaEstimate, textContextEstimate)
 	}
 }
 

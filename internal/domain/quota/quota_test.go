@@ -63,12 +63,12 @@ func TestPeriodIsAPlainValueReusable(t *testing.T) {
 func TestProviderDailyLimitFailsClosed(t *testing.T) {
 	lim := Limits{ProviderDailySpendPUSD: map[billing.Provider]int64{
 		billing.ProviderDeepSeek: 123,
-		billing.ProviderGemini:   0,
+		billing.ProviderKimi:   0,
 	}}
 	if got, ok := lim.ProviderDailyLimit(billing.ProviderDeepSeek); !ok || got != 123 {
 		t.Fatalf("DeepSeek limit=(%d,%v), want (123,true)", got, ok)
 	}
-	if _, ok := lim.ProviderDailyLimit(billing.ProviderGemini); ok {
+	if _, ok := lim.ProviderDailyLimit(billing.ProviderKimi); ok {
 		t.Fatal("zero provider cap must fail closed")
 	}
 	if _, ok := lim.ProviderDailyLimit(billing.Provider("unknown")); ok {

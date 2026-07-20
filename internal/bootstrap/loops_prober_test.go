@@ -47,13 +47,13 @@ func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T
 	t.Cleanup(deepSeek.Close)
 	// Google returns OpenAI-compatible model discovery IDs with a "models/"
 	// prefix even though chat/completions accepts the unprefixed model name.
-	gemini := modelServer(t, "gem-key", "models/"+billing.Gemini31FlashLite)
-	t.Cleanup(gemini.Close)
+	kimi := modelServer(t, "gem-key", "models/"+billing.KimiK26)
+	t.Cleanup(kimi.Close)
 
 	cfg := probeConfig(deepSeek.URL)
-	cfg.GeminiBaseURL = gemini.URL
-	cfg.GeminiAPIKeys = []string{"gem-key"}
-	cfg.MultimodalUpstreamModel = billing.Gemini31FlashLite
+	cfg.KimiBaseURL = kimi.URL
+	cfg.KimiAPIKeys = []string{"gem-key"}
+	cfg.MultimodalUpstreamModel = billing.KimiK26
 	p := newUpstreamProber(cfg)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
@@ -61,11 +61,11 @@ func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T
 	}
 
 	bad := cfg
-	bad.GeminiAPIKeys = []string{"wrong-key"}
+	bad.KimiAPIKeys = []string{"wrong-key"}
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured Gemini auth failure must keep aggregate readiness cold")
+		t.Fatal("a configured Kimi auth failure must keep aggregate readiness cold")
 	}
 
 	bad = cfg
@@ -73,7 +73,7 @@ func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured but unavailable Gemini model must fail readiness")
+		t.Fatal("a configured but unavailable Kimi model must fail readiness")
 	}
 }
 
@@ -86,7 +86,7 @@ func TestUpstreamProberAllowsTextOnlyDeploymentAndSiblingKey(t *testing.T) {
 	p := newUpstreamProber(cfg)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
-		t.Fatal("one working DeepSeek key should make a Gemini-disabled deployment ready")
+		t.Fatal("one working DeepSeek key should make a Kimi-disabled deployment ready")
 	}
 }
 

@@ -85,12 +85,12 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 		DeepSeekBaseURL:         strings.TrimRight(upstreamURL, "/"),
 		PublicModelID:           "anselm-auto",
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
-		MultimodalUpstreamModel: billing.Gemini31FlashLite,
+		MultimodalUpstreamModel: billing.KimiK26,
 		MonthlyQuota:            100,
 		GlobalDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
 		InstallDailySpendPUSD:   2 * billing.PicoUSDPerUSD,
 		DeepSeekDailySpendPUSD:  10 * billing.PicoUSDPerUSD,
-		GeminiDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
+		KimiDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
 		MaxTokensCap:            4096,
 		InputTokenCap:           16384,
 		MaxMessages:             256,
@@ -125,15 +125,15 @@ func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config
 	return buildStackWithProviders(t, upstreamURL, "", mutate)
 }
 
-// buildStackWithProviders additionally wires a Gemini compatibility endpoint.
+// buildStackWithProviders additionally wires a Kimi compatibility endpoint.
 // Most legacy e2e cases leave it blank to prove text service remains independent;
 // multimodal cases opt in and exercise the same two-client registry as bootstrap.
-func buildStackWithProviders(t *testing.T, upstreamURL, geminiURL string, mutate func(*config.Config)) *stack {
+func buildStackWithProviders(t *testing.T, upstreamURL, kimiURL string, mutate func(*config.Config)) *stack {
 	t.Helper()
 	cfg := baseConfig(t, upstreamURL)
-	if geminiURL != "" {
-		cfg.GeminiAPIKeys = []string{"gemini-test-key-never-leaks"}
-		cfg.GeminiBaseURL = strings.TrimRight(geminiURL, "/")
+	if kimiURL != "" {
+		cfg.KimiAPIKeys = []string{"kimi-test-key-never-leaks"}
+		cfg.KimiBaseURL = strings.TrimRight(kimiURL, "/")
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -184,17 +184,17 @@ func buildStackWithProviders(t *testing.T, upstreamURL, geminiURL string, mutate
 		HeaderTimeout:      cfg.UpstreamHeaderTimeout,
 		Logger:             logger,
 	})
-	var geminiClient upstream.BackendClient
-	if len(cfg.GeminiAPIKeys) > 0 {
-		geminiClient = upstream.NewBackend(upstream.Options{
-			Backend:            upstream.BackendGemini,
-			ChatCompletionsURL: cfg.GeminiBaseURL + "/chat/completions",
-			APIKeys:            cfg.GeminiAPIKeys,
+	var kimiClient upstream.BackendClient
+	if len(cfg.KimiAPIKeys) > 0 {
+		kimiClient = upstream.NewBackend(upstream.Options{
+			Backend:            upstream.BackendKimi,
+			ChatCompletionsURL: cfg.KimiBaseURL + "/chat/completions",
+			APIKeys:            cfg.KimiAPIKeys,
 			HeaderTimeout:      cfg.UpstreamHeaderTimeout,
 			Logger:             logger,
 		})
 	}
-	providers := chatprovider.New(deepSeekClient, geminiClient)
+	providers := chatprovider.New(deepSeekClient, kimiClient)
 
 	// Shared rate limiter (the bucket the chat RL gate reaches through).
 	rl := ratelimit.New(cfg.RatePerMin)
@@ -271,7 +271,7 @@ func (q quotaCfg) Limits() appquota.Limits {
 		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
 		ProviderDailySpendPUSD: map[billing.Provider]int64{
 			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
-			billing.ProviderGemini:   c.GeminiDailySpendPUSD,
+			billing.ProviderKimi:   c.KimiDailySpendPUSD,
 		},
 		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
 		DailySublimit:        c.DailySublimit,
@@ -474,19 +474,19 @@ func deepSeekCostPUSD(t *testing.T, prompt, completion int64) int64 {
 	return cost
 }
 
-func geminiCostPUSD(t *testing.T, prompt, completion int64) int64 {
+func kimiCostPUSD(t *testing.T, prompt, completion int64) int64 {
 	t.Helper()
-	plan, err := billing.NewPlan(billing.ProviderGemini, billing.Gemini31FlashLite,
+	plan, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
 		billing.InputStandard, prompt, completion)
 	if err != nil {
-		t.Fatalf("build Gemini cost plan: %v", err)
+		t.Fatalf("build Kimi cost plan: %v", err)
 	}
 	cost, ok, err := plan.Cost(billing.Usage{
 		Present: true, PromptTokens: prompt, CompletionTokens: completion,
 		TotalTokens: prompt + completion,
 	})
 	if err != nil || !ok {
-		t.Fatalf("price Gemini usage: cost=%d ok=%v err=%v", cost, ok, err)
+		t.Fatalf("price Kimi usage: cost=%d ok=%v err=%v", cost, ok, err)
 	}
 	return cost
 }
@@ -593,7 +593,7 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	}
 }
 
-func TestE2EMultimodalRoutesOnlyToGeminiAndSettlesGeminiCost(t *testing.T) {
+func TestE2EMultimodalRoutesOnlyToKimiAndSettlesKimiCost(t *testing.T) {
 	var deepSeekHits atomic.Int32
 	deepSeek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		deepSeekHits.Add(1)
@@ -603,18 +603,18 @@ func TestE2EMultimodalRoutesOnlyToGeminiAndSettlesGeminiCost(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotPath, gotAuth, gotBody string
-	gemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	kimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(body)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"model":"`+billing.Gemini31FlashLite+`","choices":[{"message":{"role":"assistant","content":"an image"}}],`+
+		_, _ = io.WriteString(w, `{"model":"`+billing.KimiK26+`","choices":[{"message":{"role":"assistant","content":"an image"}}],`+
 			`"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
 	}))
-	defer gemini.Close()
+	defer kimi.Close()
 
-	s := buildStackWithProviders(t, deepSeek.URL, gemini.URL, nil)
+	s := buildStackWithProviders(t, deepSeek.URL, kimi.URL, nil)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := srv.Client()
@@ -639,8 +639,8 @@ func TestE2EMultimodalRoutesOnlyToGeminiAndSettlesGeminiCost(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("multimodal chat want 200 got %d body=%s", resp.StatusCode, responseBody)
 	}
-	if !strings.Contains(string(responseBody), `"model":"anselm-auto"`) || strings.Contains(string(responseBody), billing.Gemini31FlashLite) {
-		t.Fatalf("Gemini response must expose only PUBLIC_MODEL_ID, got: %s", responseBody)
+	if !strings.Contains(string(responseBody), `"model":"anselm-auto"`) || strings.Contains(string(responseBody), billing.KimiK26) {
+		t.Fatalf("Kimi response must expose only PUBLIC_MODEL_ID, got: %s", responseBody)
 	}
 	if deepSeekHits.Load() != 0 {
 		t.Fatalf("multimodal request reached DeepSeek %d times", deepSeekHits.Load())
@@ -649,25 +649,24 @@ func TestE2EMultimodalRoutesOnlyToGeminiAndSettlesGeminiCost(t *testing.T) {
 	mu.Lock()
 	path, auth, upstreamBody := gotPath, gotAuth, gotBody
 	mu.Unlock()
-	if path != "/chat/completions" || auth != "Bearer gemini-test-key-never-leaks" {
-		t.Fatalf("Gemini wire target path=%q auth=%q", path, auth)
+	if path != "/chat/completions" || auth != "Bearer kimi-test-key-never-leaks" {
+		t.Fatalf("Kimi wire target path=%q auth=%q", path, auth)
 	}
 	for _, want := range []string{
-		`"model":"` + billing.Gemini31FlashLite + `"`,
-		`"reasoning_effort":"minimal"`,
+		`"model":"` + billing.KimiK26 + `"`,
 		`"type":"image_url"`,
 	} {
 		if !strings.Contains(upstreamBody, want) {
-			t.Fatalf("Gemini payload missing %q: %s", want, upstreamBody)
+			t.Fatalf("Kimi payload missing %q: %s", want, upstreamBody)
 		}
 	}
 	if strings.Contains(upstreamBody, "please-use-deepseek") || strings.Contains(upstreamBody, "provider-private-state") {
-		t.Fatalf("client model or DeepSeek reasoning state leaked to Gemini: %s", upstreamBody)
+		t.Fatalf("client model or DeepSeek reasoning state leaked to Kimi: %s", upstreamBody)
 	}
 
-	wantSpend := geminiCostPUSD(t, 11, 3)
+	wantSpend := kimiCostPUSD(t, 11, 3)
 	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
-		t.Fatalf("Gemini spend settled to %d pUSD, want %d", got, wantSpend)
+		t.Fatalf("Kimi spend settled to %d pUSD, want %d", got, wantSpend)
 	}
 }
 

@@ -19,18 +19,18 @@ type Provider string
 
 const (
 	ProviderDeepSeek Provider = "deepseek"
-	ProviderGemini   Provider = "gemini"
+	ProviderKimi     Provider = "kimi"
 )
 
 const (
 	DeepSeekV4Flash       = "deepseek-v4-flash"
-	Gemini31FlashLite     = "gemini-3.1-flash-lite"
+	KimiK26               = "kimi-k2.6"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
 	DeepSeekOutputLimit   = int64(384_000)
-	GeminiInputLimit      = int64(1_048_576)
-	GeminiOutputLimit     = int64(65_536)
+	KimiInputLimit        = int64(262_144)
+	KimiOutputLimit       = int64(32_768)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -44,13 +44,13 @@ var (
 // dimension (output), so migrated balances can only overstate old spend.
 func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 
-// InputClass captures the only request fact that changes the Gemini input rate.
-// Image/video share the standard rate; audio has its own higher rate.
+// InputClass is retained in the frozen Plan wire shape. Kimi K2.6 image input
+// uses its standard token rate; audio is deliberately not an accepted gateway
+// capability and therefore has no billable input class.
 type InputClass uint8
 
 const (
 	InputStandard InputClass = iota
-	InputAudio
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -110,14 +110,14 @@ var rateCards = map[Provider]map[string]RateCard{
 			InputPUSD: 140_000, CacheHitInputPUSD: 2_800, OutputPUSD: 280_000,
 		},
 	},
-	ProviderGemini: {
-		Gemini31FlashLite: {
-			ID: "gemini-3.1-flash-lite-2026-05-07", Provider: ProviderGemini, Model: Gemini31FlashLite,
-			InputLimit: GeminiInputLimit, OutputLimit: GeminiOutputLimit,
-			// Official standard pricing per 1M tokens: text/image/video
-			// input $0.25, audio input $0.50, output incl. thinking $1.50.
-			InputPUSD: 250_000, AudioInputPUSD: 500_000,
-			CacheHitInputPUSD: 25_000, OutputPUSD: 1_500_000,
+	ProviderKimi: {
+		KimiK26: {
+			ID: "kimi-k2.6-2026-07-20", Provider: ProviderKimi, Model: KimiK26,
+			InputLimit: KimiInputLimit, OutputLimit: KimiOutputLimit,
+			// Official Kimi K2.6 pricing per 1M tokens: cache hit $0.16,
+			// cache miss $0.95, output $4.00. This gateway routes K2.6's
+			// supported image and video inputs; audio is deliberately excluded.
+			InputPUSD: 950_000, CacheHitInputPUSD: 160_000, OutputPUSD: 4_000_000,
 		},
 	},
 }
@@ -174,24 +174,13 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	}
 	switch inputClass {
 	case InputStandard:
-	case InputAudio:
-		// Audio is a Gemini request class. Accepting it on another provider would
-		// make a forged/misrouted plan appear self-validating under an unrelated
-		// rate card.
-		if provider != ProviderGemini {
-			return Plan{}, ErrUnknownRateCard
-		}
 	default:
 		return Plan{}, ErrUnknownRateCard
 	}
 	if promptBound < 0 || outputBound < 0 || promptBound > card.InputLimit || outputBound > card.OutputLimit {
 		return Plan{}, ErrUnknownRateCard
 	}
-	inputRate := card.InputPUSD
-	if inputClass == InputAudio && card.AudioInputPUSD > inputRate {
-		inputRate = card.AudioInputPUSD
-	}
-	inCost, err := checkedMul(promptBound, inputRate)
+	inCost, err := checkedMul(promptBound, card.InputPUSD)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -224,7 +213,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 	completion := nonNegative(u.CompletionTokens)
 	// A refundable usage vector must be internally self-consistent. In
 	// particular, total_tokens is the only compatibility field that bounds
-	// Gemini's hidden thinking output; a visible completion count alone cannot
+	// Kimi's hidden thinking output; a visible completion count alone cannot
 	// prove the provider's bill. Treat absence, overflow, or a total smaller than
 	// prompt+completion as malformed evidence and retain the full quote.
 	if u.TotalTokens <= 0 {
@@ -247,7 +236,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		return 0, false, nil
 	}
 	if derivedOutput > completion {
-		// Gemini compatibility does not formally specify how thinking tokens map
+		// Kimi compatibility does not formally specify how thinking tokens map
 		// onto completion_tokens. total-prompt is the conservative output view.
 		completion = derivedOutput
 	}
@@ -276,16 +265,23 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		if e != nil {
 			return 0, false, e
 		}
-	case ProviderGemini:
-		// The OpenAI compatibility usage contract does not reliably expose
-		// modality/cache splits. Price every prompt token at the request's highest
-		// possible input class; this is conservative and wallet-safe.
-		rate := p.card.InputPUSD
-		if p.InputClass == InputAudio && p.card.AudioInputPUSD > rate {
-			rate = p.card.AudioInputPUSD
+	case ProviderKimi:
+		// The compatibility response may omit cache details. Treat such prompt
+		// tokens as cache misses; when it reports cached tokens, charge the exact
+		// lower K2.6 hit rate without ever undercharging unknown tokens.
+		hit := nonNegative(u.CachedPromptTokens)
+		if hit > prompt {
+			return 0, false, nil
 		}
-		var e error
-		inputCost, e = checkedMul(prompt, rate)
+		hitCost, e := checkedMul(hit, p.card.CacheHitInputPUSD)
+		if e != nil {
+			return 0, false, e
+		}
+		missCost, e := checkedMul(prompt-hit, p.card.InputPUSD)
+		if e != nil {
+			return 0, false, e
+		}
+		inputCost, e = checkedAdd(hitCost, missCost)
 		if e != nil {
 			return 0, false, e
 		}

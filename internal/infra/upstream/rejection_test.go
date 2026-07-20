@@ -66,17 +66,17 @@ func TestRejectionReason(t *testing.T) {
 			want: apierr.RejectedMaxTokens,
 		},
 		{
-			name: "gemini array context overflow",
+			name: "kimi array context overflow",
 			body: `[{"error":{"code":400,"message":"The request exceeds this model's context length.","status":"INVALID_ARGUMENT"}}]`,
 			want: apierr.RejectedContextLength,
 		},
 		{
-			name: "gemini array max_tokens range",
+			name: "kimi array max_tokens range",
 			body: `[{"error":{"code":400,"message":"Invalid max_tokens for this model.","status":"INVALID_ARGUMENT"}}]`,
 			want: apierr.RejectedMaxTokens,
 		},
 		{
-			name: "gemini empty array",
+			name: "kimi empty array",
 			body: `[]`,
 			want: apierr.RejectedInvalid,
 		},

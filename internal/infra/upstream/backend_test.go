@@ -29,13 +29,13 @@ func TestBackendConstructionFreezesEndpointKeysAndIdentity(t *testing.T) {
 	}))
 	defer deepSeekServer.Close()
 
-	geminiSeen := make(chan observedRequest, 8)
-	geminiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		geminiSeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
+	kimiSeen := make(chan observedRequest, 8)
+	kimiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		kimiSeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"backend":"gemini"}`)
+		_, _ = io.WriteString(w, `{"backend":"kimi"}`)
 	}))
-	defer geminiServer.Close()
+	defer kimiServer.Close()
 
 	deepSeekKeys := []string{"  deepseek-key  "}
 	deepSeekOpts := Options{
@@ -46,34 +46,34 @@ func TestBackendConstructionFreezesEndpointKeysAndIdentity(t *testing.T) {
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	deepSeek := NewBackend(deepSeekOpts).(*client)
-	gemini := NewBackend(Options{
-		Backend:            BackendGemini,
-		ChatCompletionsURL: geminiServer.URL + "/v1beta/openai/chat/completions",
-		APIKeys:            []string{"gemini-key"},
+	kimi := NewBackend(Options{
+		Backend:            BackendKimi,
+		ChatCompletionsURL: kimiServer.URL + "/v1beta/openai/chat/completions",
+		APIKeys:            []string{"kimi-key"},
 		HeaderTimeout:      2 * time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
 
 	// Mutating the caller-owned options and slice after construction must not
 	// alter any wire or resilience fact held by the client.
-	deepSeekOpts.Backend = BackendGemini
-	deepSeekOpts.ChatCompletionsURL = geminiServer.URL + "/wrong"
+	deepSeekOpts.Backend = BackendKimi
+	deepSeekOpts.ChatCompletionsURL = kimiServer.URL + "/wrong"
 	deepSeekOpts.HeaderTimeout = 10 * time.Second
 	deepSeekKeys[0] = "mutated-key"
 
-	if deepSeek.backend != BackendDeepSeek || gemini.backend != BackendGemini {
-		t.Fatalf("backend identities were not frozen: deepseek=%q gemini=%q", deepSeek.backend, gemini.backend)
+	if deepSeek.backend != BackendDeepSeek || kimi.backend != BackendKimi {
+		t.Fatalf("backend identities were not frozen: deepseek=%q kimi=%q", deepSeek.backend, kimi.backend)
 	}
-	if deepSeek.timeout != time.Second || gemini.timeout != 2*time.Second {
-		t.Fatalf("header timeouts were not frozen: deepseek=%v gemini=%v", deepSeek.timeout, gemini.timeout)
+	if deepSeek.timeout != time.Second || kimi.timeout != 2*time.Second {
+		t.Fatalf("header timeouts were not frozen: deepseek=%v kimi=%v", deepSeek.timeout, kimi.timeout)
 	}
-	if deepSeek.transport == gemini.transport {
+	if deepSeek.transport == kimi.transport {
 		t.Fatal("backends must not share a transport")
 	}
-	if deepSeek.breaker == gemini.breaker {
+	if deepSeek.breaker == kimi.breaker {
 		t.Fatal("backends must not share a process breaker")
 	}
-	if deepSeek.transport.keys[0].cb == gemini.transport.keys[0].cb {
+	if deepSeek.transport.keys[0].cb == kimi.transport.keys[0].cb {
 		t.Fatal("backends must not share per-key breakers")
 	}
 
@@ -85,12 +85,12 @@ func TestBackendConstructionFreezesEndpointKeysAndIdentity(t *testing.T) {
 		t.Fatalf("deepseek response = %q", got)
 	}
 
-	geminiStream, geminiErr := gemini.DoCall(context.Background(), Call{Payload: []byte(`{"model":"gemini"}`)})
-	if geminiErr != nil {
-		t.Fatalf("gemini call failed: %v", geminiErr)
+	kimiStream, kimiErr := kimi.DoCall(context.Background(), Call{Payload: []byte(`{"model":"kimi"}`)})
+	if kimiErr != nil {
+		t.Fatalf("kimi call failed: %v", kimiErr)
 	}
-	if got := drain(t, geminiStream); got != `{"backend":"gemini"}` {
-		t.Fatalf("gemini response = %q", got)
+	if got := drain(t, kimiStream); got != `{"backend":"kimi"}` {
+		t.Fatalf("kimi response = %q", got)
 	}
 
 	if len(deepSeekSeen) != 1 {
@@ -99,11 +99,11 @@ func TestBackendConstructionFreezesEndpointKeysAndIdentity(t *testing.T) {
 	if got := <-deepSeekSeen; got != (observedRequest{path: "/deepseek/chat/completions", auth: "Bearer deepseek-key"}) {
 		t.Fatalf("deepseek request = %#v", got)
 	}
-	if len(geminiSeen) != 1 {
-		t.Fatalf("Gemini server calls = %d, want 1", len(geminiSeen))
+	if len(kimiSeen) != 1 {
+		t.Fatalf("Kimi server calls = %d, want 1", len(kimiSeen))
 	}
-	if got := <-geminiSeen; got != (observedRequest{path: "/v1beta/openai/chat/completions", auth: "Bearer gemini-key"}) {
-		t.Fatalf("gemini request = %#v", got)
+	if got := <-kimiSeen; got != (observedRequest{path: "/v1beta/openai/chat/completions", auth: "Bearer kimi-key"}) {
+		t.Fatalf("kimi request = %#v", got)
 	}
 }
 
@@ -128,15 +128,15 @@ func TestBackendProcessBreakersAreIndependent(t *testing.T) {
 		HeaderTimeout:      time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
-	gemini := NewBackend(Options{
-		Backend:            BackendGemini,
+	kimi := NewBackend(Options{
+		Backend:            BackendKimi,
 		ChatCompletionsURL: healthyServer.URL + "/v1beta/openai/chat/completions",
-		APIKeys:            []string{"gemini-key"},
+		APIKeys:            []string{"kimi-key"},
 		HeaderTimeout:      time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
 	deepSeek.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
-	gemini.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
+	kimi.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
 
 	for i := 0; i < 6; i++ {
 		_, _ = deepSeek.DoCall(context.Background(), Call{Payload: []byte("{}")})
@@ -144,13 +144,13 @@ func TestBackendProcessBreakersAreIndependent(t *testing.T) {
 	if !deepSeek.BreakerOpen() {
 		t.Fatal("persistent DeepSeek faults should open only the DeepSeek breaker")
 	}
-	if gemini.BreakerOpen() {
-		t.Fatal("the Gemini breaker must be independent of DeepSeek health")
+	if kimi.BreakerOpen() {
+		t.Fatal("the Kimi breaker must be independent of DeepSeek health")
 	}
 
-	stream, ae := gemini.DoCall(context.Background(), Call{Payload: []byte("{}")})
+	stream, ae := kimi.DoCall(context.Background(), Call{Payload: []byte("{}")})
 	if ae != nil {
-		t.Fatalf("healthy Gemini backend was contaminated by DeepSeek breaker: %v", ae)
+		t.Fatalf("healthy Kimi backend was contaminated by DeepSeek breaker: %v", ae)
 	}
 	_ = drain(t, stream)
 	if got := healthyCalls.Load(); got != 1 {
@@ -178,7 +178,7 @@ func TestNilEmptyAndBlankKeyPoolsFailClosed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name+"/backend", func(t *testing.T) {
 			c := NewBackend(Options{
-				Backend:            BackendGemini,
+				Backend:            BackendKimi,
 				ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
 				APIKeys:            tc.keys,
 				HeaderTimeout:      time.Second,
@@ -208,7 +208,7 @@ func TestNilEmptyAndBlankKeyPoolsFailClosed(t *testing.T) {
 }
 
 func TestEmptyTransportRoundTripReturnsErrorInsteadOfPanicking(t *testing.T) {
-	transport := newRedactingTransport(nil, nil, nil, BackendGemini)
+	transport := newRedactingTransport(nil, nil, nil, BackendKimi)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -237,9 +237,9 @@ func TestInvalidEndpointsFailClosedBeforeBreaker(t *testing.T) {
 	for name, endpoint := range cases {
 		t.Run(name, func(t *testing.T) {
 			c := NewBackend(Options{
-				Backend:            BackendGemini,
+				Backend:            BackendKimi,
 				ChatCompletionsURL: endpoint,
-				APIKeys:            []string{"gemini-key"},
+				APIKeys:            []string{"kimi-key"},
 				HeaderTimeout:      time.Second,
 			}).(*client)
 			stream, ae := c.DoCall(context.Background(), Call{Payload: []byte("{}")})
@@ -261,9 +261,9 @@ func TestEndpointTransportPolicyAllowsHTTPSAndLoopbackHTTP(t *testing.T) {
 	for name, endpoint := range cases {
 		t.Run(name, func(t *testing.T) {
 			c := NewBackend(Options{
-				Backend:            BackendGemini,
+				Backend:            BackendKimi,
 				ChatCompletionsURL: endpoint,
-				APIKeys:            []string{"gemini-key"},
+				APIKeys:            []string{"kimi-key"},
 				HeaderTimeout:      time.Second,
 			}).(*client)
 			if c.endpoint != endpoint {
@@ -283,7 +283,7 @@ func TestBlankKeysAreSkippedWhenUsableKeysRemain(t *testing.T) {
 	defer srv.Close()
 
 	c := NewBackend(Options{
-		Backend:            BackendGemini,
+		Backend:            BackendKimi,
 		ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
 		APIKeys:            []string{"", "  usable-key  ", "\t"},
 		HeaderTimeout:      time.Second,
@@ -301,7 +301,7 @@ func TestBlankKeysAreSkippedWhenUsableKeysRemain(t *testing.T) {
 	}
 }
 
-func TestGeminiArrayRejectionThroughDoCall(t *testing.T) {
+func TestKimiArrayRejectionThroughDoCall(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -312,9 +312,9 @@ func TestGeminiArrayRejectionThroughDoCall(t *testing.T) {
 	defer srv.Close()
 
 	c := NewBackend(Options{
-		Backend:            BackendGemini,
+		Backend:            BackendKimi,
 		ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
-		APIKeys:            []string{"gemini-key"},
+		APIKeys:            []string{"kimi-key"},
 		HeaderTimeout:      time.Second,
 	}).(*client)
 	stream, ae := c.DoCall(context.Background(), Call{Payload: []byte("{}")})
@@ -323,7 +323,7 @@ func TestGeminiArrayRejectionThroughDoCall(t *testing.T) {
 		t.Fatal("a rejected call must not return a stream")
 	}
 	if ae == nil || ae.APIError == nil || ae.APIError.Code != apierr.CodeUpstreamRejected {
-		t.Fatalf("Gemini rejection = %v, want %s", ae, apierr.CodeUpstreamRejected)
+		t.Fatalf("Kimi rejection = %v, want %s", ae, apierr.CodeUpstreamRejected)
 	}
 	if got := ae.APIError.Details["reason"]; got != apierr.RejectedMaxTokens {
 		t.Fatalf("rejection reason = %v, want %s", got, apierr.RejectedMaxTokens)
@@ -332,10 +332,10 @@ func TestGeminiArrayRejectionThroughDoCall(t *testing.T) {
 		t.Fatalf("rejection exposure = %v, want definitely unbilled", ae.Exposure)
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("Gemini rejection calls = %d, want 1", calls.Load())
+		t.Fatalf("Kimi rejection calls = %d, want 1", calls.Load())
 	}
 	if c.BreakerOpen() {
-		t.Fatal("a Gemini request rejection must not charge its process breaker")
+		t.Fatal("a Kimi request rejection must not charge its process breaker")
 	}
 }
 
@@ -359,9 +359,9 @@ func TestBackendFailureExposureIsIndependentOfNormalizedCode(t *testing.T) {
 			defer srv.Close()
 
 			c := NewBackend(Options{
-				Backend:            BackendGemini,
+				Backend:            BackendKimi,
 				ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
-				APIKeys:            []string{"gemini-key"},
+				APIKeys:            []string{"kimi-key"},
 				HeaderTimeout:      time.Second,
 			}).(*client)
 			c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
@@ -400,7 +400,7 @@ func TestBackendNeverFollowsRedirectOrLeaksKeyToLocation(t *testing.T) {
 	defer origin.Close()
 
 	c := NewBackend(Options{
-		Backend:            BackendGemini,
+		Backend:            BackendKimi,
 		ChatCompletionsURL: origin.URL + "/v1beta/openai/chat/completions",
 		APIKeys:            []string{"redirect-secret"},
 		HeaderTimeout:      time.Second,

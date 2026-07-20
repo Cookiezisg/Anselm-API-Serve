@@ -46,7 +46,7 @@ type Spec struct {
 // Specs is the registry of every dashboard-surfaced config item, returned in a
 // stable order. Runtime ones (TierRuntimeHot) are exactly the hot-editable set;
 // startup-hard ones are surfaced read-only (incl. the memory-budget inputs which
-// must NEVER hot-reload). Secrets (DEEPSEEK_API_KEY, GEMINI_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
+// must NEVER hot-reload). Secrets (DEEPSEEK_API_KEY, KIMI_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
 // are deliberately absent — env-only, never persisted, never dumped.
 func Specs() []Spec {
 	return []Spec{
@@ -87,15 +87,15 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.DeepSeekDailySpendPUSD/1_000_000, 10) }},
-		{Key: "GEMINI_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
+		{Key: "KIMI_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("GEMINI_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
+				n, err := reqInt64("KIMI_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
 				if err == nil {
-					c.GeminiDailySpendPUSD = n * 1_000_000
+					c.KimiDailySpendPUSD = n * 1_000_000
 				}
 				return err
 			},
-			get: func(c *Config) string { return strconv.FormatInt(c.GeminiDailySpendPUSD/1_000_000, 10) }},
+			get: func(c *Config) string { return strconv.FormatInt(c.KimiDailySpendPUSD/1_000_000, 10) }},
 		{Key: "MONTHLY_QUOTA", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxMonthlyQuota,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("MONTHLY_QUOTA", raw, 1, MaxMonthlyQuota)
@@ -340,7 +340,7 @@ func Specs() []Spec {
 		{Key: "TEXT_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TextUpstreamModel }},
 		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
 		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
-		{Key: "GEMINI_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.GeminiBaseURL }},
+		{Key: "KIMI_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.KimiBaseURL }},
 		{Key: "GOMEMLIMIT_MIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.GoMemLimitMiB) }},
 		{Key: "SQLITE_CACHE_KIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.SQLiteCacheKiB) }},
 		{Key: "READ_POOL_MAX_CONNS", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.ReadPoolMaxConns) }},

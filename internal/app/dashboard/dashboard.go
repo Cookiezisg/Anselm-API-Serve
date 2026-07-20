@@ -94,7 +94,7 @@ type ProviderStatus struct {
 // from a field being absent.
 type ProviderStatuses struct {
 	DeepSeek ProviderStatus `json:"deepseek"`
-	Gemini   ProviderStatus `json:"gemini"`
+	Kimi   ProviderStatus `json:"kimi"`
 }
 
 // Overview assembles the live snapshot. Provider state comes through the
@@ -124,10 +124,10 @@ func (s *Service) Overview(ctx context.Context, diskDegraded bool) Overview {
 		o.InflightConcurrency = s.d.Inflight.InflightConcurrency()
 	}
 	o.Providers.DeepSeek = s.providerStatus(billing.ProviderDeepSeek)
-	o.Providers.Gemini = s.providerStatus(billing.ProviderGemini)
+	o.Providers.Kimi = s.providerStatus(billing.ProviderKimi)
 	// Kept as a compatibility aggregate for older dashboard/API consumers. New
 	// consumers use the provider-specific states above.
-	o.UpstreamBreakerOpen = o.Providers.DeepSeek.BreakerOpen || o.Providers.Gemini.BreakerOpen
+	o.UpstreamBreakerOpen = o.Providers.DeepSeek.BreakerOpen || o.Providers.Kimi.BreakerOpen
 	o.DiskDegraded = diskDegraded
 	if s.d.Alerts != nil {
 		o.Alerts = s.d.Alerts.CurrentStatus()

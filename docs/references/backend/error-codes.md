@@ -31,7 +31,7 @@ audience: [human, ai]
 | `UPSTREAM_BUSY` | 429 | upstream capacity is busy, retry shortly | shared queue 满/超时、provider/process breaker open、provider 429；当前 CallFailure 为明确未计费，rollback；429 本身不自动 retry |
 | `BUDGET_EXHAUSTED` | **402** | daily service budget reached, try again tomorrow | 所选 provider 或 shared global 日 pUSD 钱包到顶；注意是 402 非 429 |
 | `BAD_REQUEST` | 400 | invalid request body | body/shape/content 非法，含 n>1、unsupported/remote media、media limits、文本输入 cap、quote 超 install 日容量；生产 Caddy 的 5MiB edge cap 也把原生 413 归一为同一 JSON/status，不暴露第二套 wire 契约 |
-| `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 请求含合法 media，但 deployment 未配置 `GEMINI_API_KEY`；reserve/Open 前拒绝；文本能力仍正常；无 fallback |
+| `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 请求含合法 media，但 deployment 未配置 `KIMI_API_KEY`；reserve/Open 前拒绝；文本能力仍正常；无 fallback |
 | `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
 | `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
 | `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | ChargePossible；不 retry，保留 full quote |

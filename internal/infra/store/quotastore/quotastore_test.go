@@ -40,7 +40,7 @@ func newTestStore(t *testing.T) *Store {
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
 			PRIMARY KEY(install_id, period_day))`,
 		`CREATE TABLE provider_spend_daily (
-			provider TEXT NOT NULL CHECK(provider IN ('deepseek','gemini')),
+			provider TEXT NOT NULL CHECK(provider IN ('deepseek','kimi')),
 			period_day TEXT NOT NULL, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
 			PRIMARY KEY(provider, period_day))`,
@@ -49,7 +49,7 @@ func newTestStore(t *testing.T) *Store {
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0))`,
 		`CREATE TABLE spend_ledger (
 			request_id TEXT PRIMARY KEY, install_id TEXT NOT NULL,
-			provider TEXT NOT NULL CHECK(provider IN ('deepseek','gemini')),
+			provider TEXT NOT NULL CHECK(provider IN ('deepseek','kimi')),
 			model TEXT NOT NULL, rate_card_id TEXT NOT NULL,
 			period_month TEXT NOT NULL, period_day TEXT NOT NULL,
 			reserved_pusd INTEGER NOT NULL CHECK(reserved_pusd > 0),
@@ -78,8 +78,8 @@ func testPeriod() quota.Period { return quota.Period{Month: "2026-06", Day: "202
 func mustPlan(t *testing.T, provider billing.Provider, prompt, output int64) billing.Plan {
 	t.Helper()
 	model := billing.DeepSeekV4Flash
-	if provider == billing.ProviderGemini {
-		model = billing.Gemini31FlashLite
+	if provider == billing.ProviderKimi {
+		model = billing.KimiK26
 	}
 	p, err := billing.NewPlan(provider, model, billing.InputStandard, prompt, output)
 	if err != nil {
@@ -94,7 +94,7 @@ func limits() quota.Limits {
 		InstallDailySpendPUSD: 1_000_000_000_000_000,
 		ProviderDailySpendPUSD: map[billing.Provider]int64{
 			billing.ProviderDeepSeek: 1_000_000_000_000_000,
-			billing.ProviderGemini:   1_000_000_000_000_000,
+			billing.ProviderKimi:   1_000_000_000_000_000,
 		},
 		GlobalDailySpendPUSD: 1_000_000_000_000_000,
 	}
@@ -299,8 +299,8 @@ func TestReserveHonorsPreexistingConservativeWalletFloor(t *testing.T) {
 func TestReserveMissingProviderCapFailsClosed(t *testing.T) {
 	s := newTestStore(t)
 	lim := limits()
-	delete(lim.ProviderDailySpendPUSD, billing.ProviderGemini)
-	_, err := s.Reserve(context.Background(), "ins_1", mustPlan(t, billing.ProviderGemini, 1, 1), testPeriod(), lim)
+	delete(lim.ProviderDailySpendPUSD, billing.ProviderKimi)
+	_, err := s.Reserve(context.Background(), "ins_1", mustPlan(t, billing.ProviderKimi, 1, 1), testPeriod(), lim)
 	if !errors.Is(err, quota.ErrProviderLimitMissing) {
 		t.Fatalf("err=%v want ErrProviderLimitMissing", err)
 	}
@@ -325,10 +325,10 @@ func TestReserveRejectsForgedPlanWithoutFrozenRateCard(t *testing.T) {
 func TestProviderWalletsAreIsolatedButGlobalIsShared(t *testing.T) {
 	s := newTestStore(t)
 	ds := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
-	gm := mustPlan(t, billing.ProviderGemini, 1, 1)
+	gm := mustPlan(t, billing.ProviderKimi, 1, 1)
 	lim := limits()
 	lim.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = ds.ReservedPUSD
-	lim.ProviderDailySpendPUSD[billing.ProviderGemini] = gm.ReservedPUSD
+	lim.ProviderDailySpendPUSD[billing.ProviderKimi] = gm.ReservedPUSD
 	lim.GlobalDailySpendPUSD = ds.ReservedPUSD + gm.ReservedPUSD
 	reserve(t, s, "ins_ds", ds, lim)
 	if _, err := s.Reserve(context.Background(), "ins_ds2", ds, testPeriod(), lim); !errors.Is(err, quota.ErrProviderSpendExceeded) {
@@ -379,7 +379,7 @@ func TestConcurrentGlobalReserveNoOversell(t *testing.T) {
 
 func TestRollbackExactConservation(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderGemini, 10, 5)
+	p := mustPlan(t, billing.ProviderKimi, 10, 5)
 	lim := limits()
 	lim.DailySublimit = 3
 	r := reserve(t, s, "ins_1", p, lim)
@@ -515,7 +515,7 @@ func TestTerminalCASIsIdempotent(t *testing.T) {
 
 func TestOrphanKeepsFullReservedSpend(t *testing.T) {
 	s := newTestStore(t)
-	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderGemini, 10, 10), limits())
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderKimi, 10, 10), limits())
 	if _, err := s.writer.Exec(context.Background(),
 		`UPDATE spend_ledger SET created_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Hour), r.RequestID); err != nil {
 		t.Fatalf("backdate: %v", err)
