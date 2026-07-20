@@ -130,7 +130,7 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 		model    string
 		class    InputClass
 	}{
-		"unknown class":          {ProviderKimi, KimiK26, InputClass(255)},
+		"unknown class": {ProviderKimi, KimiK26, InputClass(255)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewPlan(tc.provider, tc.model, tc.class, 1, 1); !errors.Is(err, ErrUnknownRateCard) {

@@ -266,7 +266,7 @@ func testCfg() *config.Config {
 		InstallDailySpendPUSD:   10 * billing.PicoUSDPerUSD,
 		GlobalDailySpendPUSD:    100 * billing.PicoUSDPerUSD,
 		DeepSeekDailySpendPUSD:  100 * billing.PicoUSDPerUSD,
-		KimiDailySpendPUSD:    100 * billing.PicoUSDPerUSD,
+		KimiDailySpendPUSD:      100 * billing.PicoUSDPerUSD,
 		MaxTokensCap:            1000,
 		InputTokenCap:           1_000_000,
 		MaxMessages:             100,

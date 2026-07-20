@@ -94,7 +94,7 @@ type ProviderStatus struct {
 // from a field being absent.
 type ProviderStatuses struct {
 	DeepSeek ProviderStatus `json:"deepseek"`
-	Kimi   ProviderStatus `json:"kimi"`
+	Kimi     ProviderStatus `json:"kimi"`
 }
 
 // Overview assembles the live snapshot. Provider state comes through the

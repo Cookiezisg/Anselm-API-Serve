@@ -44,7 +44,7 @@ type BackendID string
 
 const (
 	BackendDeepSeek BackendID = "deepseek"
-	BackendKimi   BackendID = "kimi"
+	BackendKimi     BackendID = "kimi"
 )
 
 // Options freezes everything that belongs to one upstream account. In

@@ -136,7 +136,7 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 		Providers: fakeProviders{
 			configured: map[billing.Provider]bool{
 				billing.ProviderDeepSeek: true,
-				billing.ProviderKimi:   true,
+				billing.ProviderKimi:     true,
 			},
 			open: map[billing.Provider]bool{billing.ProviderKimi: true},
 		},

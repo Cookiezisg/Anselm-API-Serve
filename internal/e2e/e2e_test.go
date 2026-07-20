@@ -90,7 +90,7 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 		GlobalDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
 		InstallDailySpendPUSD:   2 * billing.PicoUSDPerUSD,
 		DeepSeekDailySpendPUSD:  10 * billing.PicoUSDPerUSD,
-		KimiDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
+		KimiDailySpendPUSD:      10 * billing.PicoUSDPerUSD,
 		MaxTokensCap:            4096,
 		InputTokenCap:           16384,
 		MaxMessages:             256,
@@ -271,7 +271,7 @@ func (q quotaCfg) Limits() appquota.Limits {
 		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
 		ProviderDailySpendPUSD: map[billing.Provider]int64{
 			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
-			billing.ProviderKimi:   c.KimiDailySpendPUSD,
+			billing.ProviderKimi:     c.KimiDailySpendPUSD,
 		},
 		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
 		DailySublimit:        c.DailySublimit,

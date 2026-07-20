@@ -94,7 +94,7 @@ func limits() quota.Limits {
 		InstallDailySpendPUSD: 1_000_000_000_000_000,
 		ProviderDailySpendPUSD: map[billing.Provider]int64{
 			billing.ProviderDeepSeek: 1_000_000_000_000_000,
-			billing.ProviderKimi:   1_000_000_000_000_000,
+			billing.ProviderKimi:     1_000_000_000_000_000,
 		},
 		GlobalDailySpendPUSD: 1_000_000_000_000_000,
 	}

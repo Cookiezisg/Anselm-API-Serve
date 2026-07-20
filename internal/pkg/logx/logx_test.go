@@ -25,7 +25,7 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 	secrets := map[string]string{
 		"authorization":  "Bearer sk-super-secret-deepseek-key",
 		"api_key":        "sk-another-key",
-		"kimi_api_key": "AIza-secret",
+		"kimi_api_key":   "AIza-secret",
 		"x-goog-api-key": "AIza-header-secret",
 		"token":          "gwk_install_token_value",
 		"prompt":         "the user's private prompt text",
@@ -64,7 +64,7 @@ func TestRedactionNormalizesProviderAPIKeyCase(t *testing.T) {
 	secrets := map[string]string{
 		"DEEPSEEK_API_KEY": "sk-deepseek-uppercase-secret",
 		"dEePsEeK_aPi_KeY": "sk-deepseek-mixed-case-secret",
-		"KIMI_API_KEY":   "AIza-kimi-uppercase-secret",
+		"KIMI_API_KEY":     "AIza-kimi-uppercase-secret",
 		"gEmInI_aPi_KeY":   "AIza-kimi-mixed-case-secret",
 	}
 	args := make([]any, 0, len(secrets)*2)

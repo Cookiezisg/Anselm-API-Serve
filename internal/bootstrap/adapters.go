@@ -61,7 +61,7 @@ func (q quotaCfgSource) Limits() appquota.Limits {
 		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
 		ProviderDailySpendPUSD: map[billing.Provider]int64{
 			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
-			billing.ProviderKimi:   c.KimiDailySpendPUSD,
+			billing.ProviderKimi:     c.KimiDailySpendPUSD,
 		},
 		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
 		DailySublimit:        c.DailySublimit,
