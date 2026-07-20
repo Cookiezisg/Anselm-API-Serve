@@ -45,7 +45,9 @@ func probeConfig(deepSeekURL string) config.Config {
 func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T) {
 	deepSeek := modelServer(t, "ds-key", billing.DeepSeekV4Flash)
 	t.Cleanup(deepSeek.Close)
-	gemini := modelServer(t, "gem-key", billing.Gemini31FlashLite)
+	// Google returns OpenAI-compatible model discovery IDs with a "models/"
+	// prefix even though chat/completions accepts the unprefixed model name.
+	gemini := modelServer(t, "gem-key", "models/"+billing.Gemini31FlashLite)
 	t.Cleanup(gemini.Close)
 
 	cfg := probeConfig(deepSeek.URL)

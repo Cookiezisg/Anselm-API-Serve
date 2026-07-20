@@ -262,7 +262,12 @@ func responseAdvertisesModel(resp *http.Response, modelID string) bool {
 		return false
 	}
 	for _, model := range list.Data {
-		if model.ID == modelID {
+		// Google's OpenAI-compatible /models endpoint advertises IDs as
+		// "models/<name>", while its chat/completions endpoint accepts the
+		// unprefixed model name. Preserve the configured public/provider name and
+		// normalize only this discovery representation.
+		advertisedID := strings.TrimPrefix(model.ID, "models/")
+		if advertisedID == modelID {
 			return true
 		}
 	}
