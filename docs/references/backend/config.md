@@ -35,7 +35,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | `DEEPSEEK_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | DeepSeek provider 日钱包 |
 | `KIMI_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | Kimi provider 日钱包 |
 | `MONTHLY_QUOTA` | 5000 | 1 | 1,000,000,000 | 否 | per-install 月请求次数 |
-| `MAX_TOKENS_CAP` | 4096 | 1 | 1,000,000 | 否 | 统一产品档位的输出上限；client `max_tokens` 不参与，最终再受实际模型 limit 限制 |
+| `MAX_TOKENS_CAP` | 4096 | 1 | 1,000,000 | 否 | caller `max_tokens` 的 operator 保险丝；缺省请求不主动写 wire `max_tokens`，账务仍按此上限保守预留 |
 | `INPUT_TOKEN_CAP` | 16384 | 0 | 10,000,000 | 否 | 文本/tools 保守 estimate 上限；0=禁用；**不是媒体 token 上限** |
 | `MAX_MESSAGES` | 256 | 1 | 100,000 | 否 | 完整 history 的 message 数上限 |
 | `MAX_MESSAGE_CHARS` | 131072 | 1 | 16,777,216 | 否 | 单 message 文本 rune 上限 |
@@ -106,7 +106,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 
 1. 四个 spend cap 都 >0；`INSTALL_DAILY_SPEND_MICRO_USD` 与 DeepSeek provider cap 始终 ≤ `GLOBAL_DAILY_SPEND_MICRO_USD`；Kimi provider cap 仅在 `KIMI_API_KEY` 已配置、该 provider 启用时要求 ≤ global（inactive 值不阻断纯文本启动）。
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
-3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Kimi route 注入 `thinking.enabled` 且不传 `reasoning_effort`。client-supplied thinking/effort/max_tokens 均不改变该档位。
+3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Kimi route 注入 `thinking.enabled` 且不传 `reasoning_effort`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
 4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入 install 日 cap。
 5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，Kimi provider wallet 必须装入 global wallet，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。

@@ -9,6 +9,8 @@ import (
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 )
 
+func ptrInt64(v int64) *int64 { return &v }
+
 func canonicalRequest(t *testing.T) domchat.CompletionRequest {
 	t.Helper()
 	in, ae := domchat.DecodeInbound([]byte(`{
@@ -20,7 +22,7 @@ func canonicalRequest(t *testing.T) domchat.CompletionRequest {
 	if ae != nil {
 		t.Fatal(ae)
 	}
-	return domchat.Sanitize(in, 64)
+	return domchat.Sanitize(in, ptrInt64(64))
 }
 
 func TestDeepSeekEncodingPreservesReasoningAndForcesModel(t *testing.T) {
@@ -78,7 +80,7 @@ func TestKimiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
 	if ae != nil {
 		t.Fatal(ae)
 	}
-	raw, err := encode(billing.ProviderKimi, billing.KimiK26, domchat.Sanitize(in, 64))
+	raw, err := encode(billing.ProviderKimi, billing.KimiK26, domchat.Sanitize(in, ptrInt64(64)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,7 +36,8 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 端到端(领号,然后当成任意 OpenAI 兼容端点用):
 
 ```sh
-TOKEN=$(curl -s -XPOST localhost:8080/v1/install | jq -r .token)
+TOKEN=$(curl -s -XPOST localhost:8080/v1/install \
+  -H 'Content-Type: application/json' -d '{}' | jq -r .token)
 
 curl -s localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -55,7 +56,7 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 
 Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI。远程 URL、PDF、文件、音频、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。未配 `KIMI_API_KEY` 时纯文本仍可用，多模态请求返回 `503 MULTIMODAL_UNAVAILABLE`。
 
-网关拥有唯一产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort`、`max_tokens` 不改变这个档位。纯文本实际有 DeepSeek 的 1M input context；媒体实际有 Kimi 的 262K input context，所以产品侧如果只展示一个上下文数字，应保守写 256K。生产输出由 `MAX_TOKENS_CAP` 限制（部署为 16K），再受所选模型 output hard limit 限制。
+网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。`max_tokens` 这类调用参数仍保持 OpenAI 兼容透传：正数 `max_tokens` 会在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp 后转发；未传时 wire 不主动塞值，但账务按保守上限预留。纯文本实际有 DeepSeek 的 1M input context；媒体实际有 Kimi 的 262K input context，所以产品侧如果只展示一个上下文数字，应保守写 256K。
 
 ## 管理后台
 

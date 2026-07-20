@@ -30,14 +30,14 @@ audience: [human, ai]
 
 客户端 `model` 不参与 provider、实际模型或价格选择；服务端配置的实际模型必须存在精确 rate card。路由没有“高级/普通”判断，也不按用户、文本语义、顺序或健康状态改选 provider。
 
-该逻辑模型同时固定唯一产品档位，客户端不能通过 `thinking`、`reasoning_effort` 或 `max_tokens` 改变能力/成本：
+该逻辑模型同时固定 reasoning 产品档位，客户端不能通过 `thinking` 或 `reasoning_effort` 改变模型思考规格；`max_tokens` 保持 OpenAI 兼容调用参数，但只能在服务端和模型硬上限内生效：
 
-| route | context / output hard limit | gateway output cap | provider knobs |
+| route | context / output hard limit | `max_tokens` behavior | provider knobs |
 |---|---:|---:|---|
-| DeepSeek V4 Flash text | 1,000,000 input / 384,000 output | `min(MAX_TOKENS_CAP,384000)` | `thinking={"type":"enabled"}` + `reasoning_effort="high"` |
-| Kimi K2.6 media | 262,144 input / 32,768 output | `min(MAX_TOKENS_CAP,32768)` | `thinking={"type":"enabled"}`；不传 `reasoning_effort` |
+| DeepSeek V4 Flash text | 1,000,000 input / 384,000 output | positive client value forwarded as `min(client,MAX_TOKENS_CAP,384000)`; absent omitted on wire and quoted at `min(MAX_TOKENS_CAP,384000)` | `thinking={"type":"enabled"}` + `reasoning_effort="high"` |
+| Kimi K2.6 media | 262,144 input / 32,768 output | positive client value forwarded as `min(client,MAX_TOKENS_CAP,32768)`; cost reservation remains full hard-limit | `thinking={"type":"enabled"}`；不传 `reasoning_effort` |
 
-产品若只展示一个上下文值，应展示保守的 `256K`；纯文本 route 实际可用 DeepSeek 的 `1M` context。`MAX_TOKENS_CAP` 是服务端统一输出档，不是 client-selectable 输出额度。
+产品若只展示一个上下文值，应展示保守的 `256K`；纯文本 route 实际可用 DeepSeek 的 `1M` context。`MAX_TOKENS_CAP` 是 operator 防爆保险丝，不是默认输出长度。
 
 ### 2. 多模态输入是关闭的联合类型
 

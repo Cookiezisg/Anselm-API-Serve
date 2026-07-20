@@ -106,7 +106,7 @@ type Config struct {
 	InstallDailySpendPUSD  int64 // INSTALL_DAILY_SPEND_MICRO_USD converted to pUSD
 	DeepSeekDailySpendPUSD int64 // DEEPSEEK_DAILY_SPEND_MICRO_USD provider wallet
 	KimiDailySpendPUSD     int64 // KIMI_DAILY_SPEND_MICRO_USD provider wallet
-	MaxTokensCap           int64 // MAX_TOKENS_CAP(统一产品档位输出上限;兼预留额输出分量)
+	MaxTokensCap           int64 // MAX_TOKENS_CAP(caller max_tokens 保险丝;兼缺省请求预留额输出分量)
 	InputTokenCap          int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
 	MaxMessages            int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
 	MaxMessageChars        int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)

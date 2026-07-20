@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 )
 
+func ptrInt64(v int64) *int64 { return &v }
+
 func TestDecodeInbound_ToolsAndToolChoiceSurvive(t *testing.T) {
 	body := []byte(`{
 		"model":"x","stream":true,
@@ -21,7 +23,7 @@ func TestDecodeInbound_ToolsAndToolChoiceSurvive(t *testing.T) {
 	if len(in.Tools) == 0 || len(in.ToolChoice) == 0 {
 		t.Fatalf("tools/tool_choice dropped: tools=%q choice=%q", in.Tools, in.ToolChoice)
 	}
-	out := SanitizeUpstream(in, "real", 100)
+	out := SanitizeUpstream(in, "real", ptrInt64(100))
 	raw, _ := json.Marshal(out)
 	s := string(raw)
 	if !strings.Contains(s, `"tools"`) || !strings.Contains(s, `"tool_choice"`) {
@@ -41,7 +43,7 @@ func TestSanitize_ToolCallsAndNamePreservedPerMessage(t *testing.T) {
 	if ae != nil {
 		t.Fatalf("reject: %v", ae)
 	}
-	out := SanitizeUpstream(in, "real", 50)
+	out := SanitizeUpstream(in, "real", ptrInt64(50))
 	raw, _ := json.Marshal(out)
 	s := string(raw)
 	for _, want := range []string{`"tool_calls"`, `"tool_call_id":"c1"`, `"name":"f"`} {
@@ -61,7 +63,7 @@ func TestSanitize_DangerFieldsStripped(t *testing.T) {
 	if ae != nil {
 		t.Fatalf("reject: %v", ae)
 	}
-	out := SanitizeUpstream(in, "real", 50)
+	out := SanitizeUpstream(in, "real", ptrInt64(50))
 	raw, _ := json.Marshal(out)
 	s := string(raw)
 	for _, banned := range []string{"logit_bias", "function_call", "response_format", "top_p", "frequency_penalty"} {
@@ -185,9 +187,20 @@ func TestEstimateBoundsEveryForwardedMessageByte(t *testing.T) {
 	}
 }
 
-func TestFixedMaxTokens(t *testing.T) {
-	if got := FixedMaxTokens(100); got != 100 {
-		t.Fatalf("gateway cap should be fixed: %d", got)
+func TestBoundMaxTokens(t *testing.T) {
+	wire, quote := BoundMaxTokens(nil, 100)
+	if wire != nil || quote != 100 {
+		t.Fatalf("absent client max_tokens: wire=%v quote=%d", wire, quote)
+	}
+	client := int64(7)
+	wire, quote = BoundMaxTokens(&client, 100)
+	if wire == nil || *wire != 7 || quote != 7 {
+		t.Fatalf("client max_tokens should pass through under cap: wire=%v quote=%d", wire, quote)
+	}
+	client = 1000
+	wire, quote = BoundMaxTokens(&client, 100)
+	if wire == nil || *wire != 100 || quote != 100 {
+		t.Fatalf("client max_tokens should be capped: wire=%v quote=%d", wire, quote)
 	}
 }
 
@@ -266,7 +279,7 @@ func FuzzDecodeInbound(f *testing.F) {
 		// Validation/classification shares the decoded canonical union and must
 		// remain panic-free on arbitrary structurally accepted input.
 		_, _ = in.ValidateAndClassify(MediaLimits{MaxParts: 8, MaxDecodedBytes: 1 << 20})
-		out := SanitizeUpstream(in, "real-model", 64)
+		out := SanitizeUpstream(in, "real-model", ptrInt64(64))
 		raw, err := json.Marshal(out)
 		if err != nil {
 			t.Fatalf("sanitized body must marshal: %v", err)

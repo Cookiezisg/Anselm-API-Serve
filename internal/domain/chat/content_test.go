@@ -38,7 +38,7 @@ func TestContentUnionPreservesMissingNullStringAndParts(t *testing.T) {
 	if _, aerr := in.ValidateAndClassify(generousMediaLimits); aerr != nil {
 		t.Fatalf("valid tool/text history rejected: %v", aerr)
 	}
-	raw, err := json.Marshal(Sanitize(in, 64))
+	raw, err := json.Marshal(Sanitize(in, ptrInt64(64)))
 	if err != nil {
 		t.Fatalf("marshal canonical request: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestClassifyStringsAndTextPartsAsText(t *testing.T) {
 	if aerr != nil || got != ModalityText {
 		t.Fatalf("text-only request: modality=%v err=%v", got, aerr)
 	}
-	raw, err := json.Marshal(Sanitize(in, 64))
+	raw, err := json.Marshal(Sanitize(in, ptrInt64(64)))
 	if err != nil {
 		t.Fatalf("marshal sanitized text request: %v", err)
 	}
@@ -258,14 +258,14 @@ func TestCompletionRequestAttachesModelOnlyAtProviderBoundary(t *testing.T) {
 	if aerr != nil {
 		t.Fatalf("decode: %v", aerr)
 	}
-	canonical, err := json.Marshal(Sanitize(in, 64))
+	canonical, err := json.Marshal(Sanitize(in, ptrInt64(64)))
 	if err != nil {
 		t.Fatalf("marshal canonical: %v", err)
 	}
 	if strings.Contains(string(canonical), `"model"`) {
 		t.Fatalf("client/provider model leaked into canonical request: %s", canonical)
 	}
-	provider, err := json.Marshal(Sanitize(in, 64).WithModel("provider-model"))
+	provider, err := json.Marshal(Sanitize(in, ptrInt64(64)).WithModel("provider-model"))
 	if err != nil {
 		t.Fatalf("marshal provider request: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestSanitizeWireGolden_TextAndAssistantToolCalls(t *testing.T) {
 			if aerr != nil {
 				t.Fatalf("decode: %v", aerr)
 			}
-			got, err := json.Marshal(Sanitize(in, 64))
+			got, err := json.Marshal(Sanitize(in, ptrInt64(64)))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}

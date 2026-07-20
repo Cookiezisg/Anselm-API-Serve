@@ -1,6 +1,6 @@
 // Package chat is the PURE chat-completions request domain: the inbound/upstream
 // body shapes, the strict whitelist decode + n>1 reject, the SEC-1 shape gate,
-// the conservative token estimate, the fixed max_tokens cap, model resolution, and
+// the conservative token estimate, bounded max_tokens passthrough, model resolution, and
 // the upstream-body sanitizer. It has ZERO I/O — stdlib + encoding/json only, NO
 // net/http, NO os, NO sql. The app layer (app/chat) drives the saga over these
 // pure transforms; transport renders the result. Keeping the decode/sanitize/
@@ -31,9 +31,9 @@ const BodyDecodeLimit int64 = 256 * 1024
 
 // InboundRequest mirrors ONLY the whitelisted top-level fields. Unknown fields
 // are dropped by NOT being declared (strict whitelist, §5.2). n is decoded only
-// to reject n>1. MaxTokens is decoded for compatibility but ignored by the
-// product-tier policy. Tools/ToolChoice are kept as RawMessage and forwarded
-// verbatim.
+// to reject n>1. MaxTokens is decoded as a caller-owned OpenAI-compatible
+// request knob; app/chat bounds it against the selected provider/model before
+// forwarding. Tools/ToolChoice are kept as RawMessage and forwarded verbatim.
 type InboundRequest struct {
 	Model       string          `json:"model"`
 	Messages    []Message       `json:"messages"`
@@ -53,7 +53,7 @@ type CompletionRequest struct {
 	Messages      []Message       `json:"messages"`
 	Stream        bool            `json:"stream"`
 	Temperature   *float64        `json:"temperature,omitempty"`
-	MaxTokens     int64           `json:"max_tokens"`
+	MaxTokens     *int64          `json:"max_tokens,omitempty"`
 	Tools         json.RawMessage `json:"tools,omitempty"`
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
 	StreamOptions *StreamOptions  `json:"stream_options,omitempty"`
@@ -206,21 +206,29 @@ func estimatePromptTokens(msgs []Message, includeMediaPayload bool) int64 {
 	return bytes
 }
 
-// FixedMaxTokens returns the upstream output cap chosen by the gateway product
-// tier. Client max_tokens is intentionally ignored so all callers receive the
-// same capability and accounting envelope.
-func FixedMaxTokens(capTok int64) int64 {
-	return capTok
+// BoundMaxTokens returns the provider wire max_tokens plus the output-token quote
+// used by accounting. A positive client max_tokens is respected, but never above
+// the operator/model cap. An absent or non-positive client value is omitted on
+// the wire while accounting still reserves the cap as the conservative bound.
+func BoundMaxTokens(client *int64, capTok int64) (*int64, int64) {
+	if client != nil && *client > 0 {
+		v := *client
+		if v > capTok {
+			v = capTok
+		}
+		return &v, v
+	}
+	return nil, capTok
 }
 
 // Sanitize builds the provider-independent body from a decoded inbound request:
-// ONLY whitelisted fields survive (messages / stream / temperature / fixed
+// ONLY whitelisted fields survive (messages / stream / temperature / bounded
 // max_tokens / tools / tool_choice) plus the gateway-forced
 // stream_options.include_usage on a stream (so the upstream emits a final usage
 // frame we settle against). Everything else the client sent is dropped by
 // construction — this is the single sanitization path the app + fuzz share.
 // Tools/ToolChoice pass through verbatim (GW); they are NOT inspected or reshaped.
-func Sanitize(in InboundRequest, maxTok int64) CompletionRequest {
+func Sanitize(in InboundRequest, maxTok *int64) CompletionRequest {
 	out := CompletionRequest{
 		Messages:    canonicalMessages(in.Messages),
 		Stream:      in.Stream,
@@ -265,7 +273,7 @@ func canonicalMessages(messages []Message) []Message {
 // SanitizeUpstream is the compatibility wrapper for the existing app path.
 // Provider-aware callers should use Sanitize and attach a model only inside the
 // selected adapter.
-func SanitizeUpstream(in InboundRequest, model string, maxTok int64) UpstreamRequest {
+func SanitizeUpstream(in InboundRequest, model string, maxTok *int64) UpstreamRequest {
 	return Sanitize(in, maxTok).WithModel(model)
 }
 

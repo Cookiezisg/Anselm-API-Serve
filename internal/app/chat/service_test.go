@@ -14,6 +14,8 @@ import (
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 )
 
+func ptrInt64(v int64) *int64 { return &v }
+
 // okAuth is an authenticated active install.
 func okAuth() fakeAuth { return fakeAuth{id: "inst1", status: dominstall.StatusActive, found: true} }
 
@@ -934,16 +936,18 @@ func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
 	}
 }
 
-func TestPayloadMaxTokensClampedBySelectedModel(t *testing.T) {
+func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	tests := []struct {
-		name string
-		body string
-		want int64
+		name      string
+		body      string
+		wantWire  *int64
+		wantQuote int64
 	}{
-		{"DeepSeek", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, billing.DeepSeekOutputLimit},
-		{"Kimi", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, billing.KimiOutputLimit},
-		{"Client lower max_tokens ignored", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, billing.DeepSeekOutputLimit},
+		{"DeepSeek absent max_tokens omitted on wire but quoted at cap", `{"messages":[{"role":"user","content":"hi"}]}`, nil, billing.DeepSeekOutputLimit},
+		{"DeepSeek high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
+		{"DeepSeek lower client max_tokens respected", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, ptrInt64(1), 1},
+		{"Kimi high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.KimiOutputLimit), billing.KimiOutputLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -955,8 +959,17 @@ func TestPayloadMaxTokensClampedBySelectedModel(t *testing.T) {
 			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, newFakeSink())
 			wg.Wait()
 			calls := up.callSnapshot()
-			if len(calls) != 1 || calls[0].Request.MaxTokens != tc.want {
-				t.Fatalf("calls=%+v want max_tokens=%d", calls, tc.want)
+			if len(calls) != 1 {
+				t.Fatalf("calls=%+v", calls)
+			}
+			if (calls[0].Request.MaxTokens == nil) != (tc.wantWire == nil) {
+				t.Fatalf("wire max_tokens=%v want %v", calls[0].Request.MaxTokens, tc.wantWire)
+			}
+			if tc.wantWire != nil && *calls[0].Request.MaxTokens != *tc.wantWire {
+				t.Fatalf("wire max_tokens=%v want %d", calls[0].Request.MaxTokens, *tc.wantWire)
+			}
+			if q.plan.OutputQuote != tc.wantQuote {
+				t.Fatalf("plan=%+v want quote=%d", q.plan, tc.wantQuote)
 			}
 		})
 	}

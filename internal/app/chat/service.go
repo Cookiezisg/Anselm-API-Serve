@@ -205,13 +205,13 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
-	// 6) Fix the payload to the gateway product tier's output cap for this exact
-	// model, then freeze a provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
+	// 6) Bound caller-owned max_tokens for this exact model, then freeze a
+	// provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
 	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
 	// input/output hard limits. DeepSeek can use the request prompt estimate and
-	// fixed output bound.
-	maxTok := domchat.FixedMaxTokens(min64(cfg.MaxTokensCap, modelOutputLimit))
-	plan, planAPIError := billingPlan(provider, model, req, promptEst, maxTok)
+	// conservative output quote.
+	wireMaxTok, quoteMaxTok := domchat.BoundMaxTokens(req.MaxTokens, min64(cfg.MaxTokensCap, modelOutputLimit))
+	plan, planAPIError := billingPlan(provider, model, req, promptEst, quoteMaxTok)
 	if planAPIError != nil {
 		writeErr(sink, planAPIError)
 		return
@@ -221,7 +221,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 			"request exceeds the per-install daily spend capacity"))
 		return
 	}
-	out := domchat.Sanitize(req, maxTok)
+	out := domchat.Sanitize(req, wireMaxTok)
 
 	// 7) Reserve atomically (count / install/provider/global pUSD wallets). The
 	// period is snapshotted ONCE and threaded unchanged through settle/rollback.

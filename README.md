@@ -36,7 +36,8 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 End to end (claim a token, then use it like any OpenAI-compatible endpoint):
 
 ```sh
-TOKEN=$(curl -s -XPOST localhost:8080/v1/install | jq -r .token)
+TOKEN=$(curl -s -XPOST localhost:8080/v1/install \
+  -H 'Content-Type: application/json' -d '{}' | jq -r .token)
 
 curl -s localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -55,7 +56,7 @@ Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level
 
 Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4. Remote URLs, PDFs, files, audio, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and multimodal requests return `503 MULTIMODAL_UNAVAILABLE`.
 
-The gateway owns the only product tier. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking`, `reasoning_effort`, and `max_tokens` do not change this tier. Text has DeepSeek's 1M input context; media has Kimi's 262K input context, so a single product-facing context number should be the conservative 256K. Production output is capped by `MAX_TOKENS_CAP` (16K in deploy) and then by the selected model's output hard limit.
+The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking` and `reasoning_effort` do not change this tier. Caller request knobs such as `max_tokens` remain OpenAI-compatible passthrough fields: a positive `max_tokens` is forwarded after clamping to `MAX_TOKENS_CAP` and the selected model's hard output limit, while an absent value is omitted on the wire and reserved conservatively for accounting. Text has DeepSeek's 1M input context; media has Kimi's 262K input context, so a single product-facing context number should be the conservative 256K.
 
 ## Dashboard
 

@@ -20,7 +20,7 @@ func TestToolCallTurnOmitsEmptyContent(t *testing.T) {
 	if aerr != nil {
 		t.Fatalf("decode: %v", aerr)
 	}
-	out, err := json.Marshal(SanitizeUpstream(in, "m", 64))
+	out, err := json.Marshal(SanitizeUpstream(in, "m", ptrInt64(64)))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestToolCallTurnOmitsEmptyContent(t *testing.T) {
 func TestNormalAssistantKeepsContent(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"assistant","content":"hello"}]}`)
 	in, _ := DecodeInbound(body)
-	out, _ := json.Marshal(SanitizeUpstream(in, "m", 64))
+	out, _ := json.Marshal(SanitizeUpstream(in, "m", ptrInt64(64)))
 	if !strings.Contains(string(out), `"content":"hello"`) {
 		t.Fatalf("normal assistant lost content: %s", out)
 	}
@@ -59,7 +59,7 @@ func TestReasoningContentPassesThrough(t *testing.T) {
 	if aerr != nil {
 		t.Fatalf("decode: %v", aerr)
 	}
-	out, _ := json.Marshal(SanitizeUpstream(in, "m", 64))
+	out, _ := json.Marshal(SanitizeUpstream(in, "m", ptrInt64(64)))
 	if !strings.Contains(string(out), `"reasoning_content":"I should call the weather tool."`) {
 		t.Fatalf("reasoning_content stripped: %s", out)
 	}
