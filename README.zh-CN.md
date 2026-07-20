@@ -55,6 +55,8 @@ curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
 
 Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI。远程 URL、PDF、文件、音频、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。未配 `KIMI_API_KEY` 时纯文本仍可用，多模态请求返回 `503 MULTIMODAL_UNAVAILABLE`。
 
+网关拥有唯一产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort`、`max_tokens` 不改变这个档位。纯文本实际有 DeepSeek 的 1M input context；媒体实际有 Kimi 的 262K input context，所以产品侧如果只展示一个上下文数字，应保守写 256K。生产输出由 `MAX_TOKENS_CAP` 限制（部署为 16K），再受所选模型 output hard limit 限制。
+
 ## 管理后台
 
 内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出),由二进制提供,在一个 loopback 端口上经会话 + CSRF 鉴权。仅当 `DASHBOARD_USER` 和 `DASHBOARD_PASSWORD` 都配置时才启动,且**不对公网暴露** —— 运维经 SSH 隧道访问:

@@ -185,21 +185,9 @@ func TestEstimateBoundsEveryForwardedMessageByte(t *testing.T) {
 	}
 }
 
-func TestClampMaxTokens(t *testing.T) {
-	five := int64(5)
-	big := int64(9999)
-	if got := ClampMaxTokens(&five, 100); got != 5 {
-		t.Fatalf("smaller client request should win: %d", got)
-	}
-	if got := ClampMaxTokens(&big, 100); got != 100 {
-		t.Fatalf("larger client request must clamp to cap: %d", got)
-	}
-	if got := ClampMaxTokens(nil, 100); got != 100 {
-		t.Fatalf("nil → cap: %d", got)
-	}
-	zero := int64(0)
-	if got := ClampMaxTokens(&zero, 100); got != 100 {
-		t.Fatalf("zero/negative → cap: %d", got)
+func TestFixedMaxTokens(t *testing.T) {
+	if got := FixedMaxTokens(100); got != 100 {
+		t.Fatalf("gateway cap should be fixed: %d", got)
 	}
 }
 

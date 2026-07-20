@@ -69,7 +69,15 @@ func (r *Registry) Open(ctx context.Context, provider billing.Provider, model st
 func encode(provider billing.Provider, model string, req domchat.CompletionRequest) ([]byte, error) {
 	switch provider {
 	case billing.ProviderDeepSeek:
-		return json.Marshal(req.WithModel(model))
+		return json.Marshal(struct {
+			domchat.UpstreamRequest
+			Thinking        thinkingParam `json:"thinking"`
+			ReasoningEffort string        `json:"reasoning_effort"`
+		}{
+			UpstreamRequest: req.WithModel(model),
+			Thinking:        thinkingParam{Type: "enabled"},
+			ReasoningEffort: "high",
+		})
 	case billing.ProviderKimi:
 		// DeepSeek reasoning_content is an account-specific continuation token. If
 		// an earlier image keeps the whole history on Kimi, that extension must
@@ -78,11 +86,18 @@ func encode(provider billing.Provider, model string, req domchat.CompletionReque
 		for i := range req.Messages {
 			req.Messages[i].ReasoningContent = nil
 		}
-		// K2.6 has a different thinking control surface. Omit provider-specific
-		// parameters so its documented default remains stable and callers cannot
-		// smuggle an incompatible DeepSeek/Google extension across the boundary.
-		return json.Marshal(req.WithModel(model))
+		return json.Marshal(struct {
+			domchat.UpstreamRequest
+			Thinking thinkingParam `json:"thinking"`
+		}{
+			UpstreamRequest: req.WithModel(model),
+			Thinking:        thinkingParam{Type: "enabled"},
+		})
 	default:
 		return nil, apierr.Internal()
 	}
+}
+
+type thinkingParam struct {
+	Type string `json:"type"`
 }

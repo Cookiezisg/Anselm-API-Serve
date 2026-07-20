@@ -55,6 +55,8 @@ Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level
 
 Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4. Remote URLs, PDFs, files, audio, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and multimodal requests return `503 MULTIMODAL_UNAVAILABLE`.
 
+The gateway owns the only product tier. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking`, `reasoning_effort`, and `max_tokens` do not change this tier. Text has DeepSeek's 1M input context; media has Kimi's 262K input context, so a single product-facing context number should be the conservative 256K. Production output is capped by `MAX_TOKENS_CAP` (16K in deploy) and then by the selected model's output hard limit.
+
 ## Dashboard
 
 An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary behind session + CSRF auth on a loopback port. It starts only when `DASHBOARD_USER` and `DASHBOARD_PASSWORD` are set, and it is **not exposed to the public internet** — reach it over an SSH tunnel:

@@ -205,12 +205,12 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
-	// 6) Clamp the payload to this exact model's output limit, then freeze a
-	// provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
+	// 6) Fix the payload to the gateway product tier's output cap for this exact
+	// model, then freeze a provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
 	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
 	// input/output hard limits. DeepSeek can use the request prompt estimate and
-	// clamped output bound. Audio selects Kimi's higher input rate.
-	maxTok := domchat.ClampMaxTokens(maxTokensOf(req), min64(cfg.MaxTokensCap, modelOutputLimit))
+	// fixed output bound.
+	maxTok := domchat.FixedMaxTokens(min64(cfg.MaxTokensCap, modelOutputLimit))
 	plan, planAPIError := billingPlan(provider, model, req, promptEst, maxTok)
 	if planAPIError != nil {
 		writeErr(sink, planAPIError)
@@ -330,9 +330,6 @@ func (s *Service) acquireSlot(ctx context.Context, queueWait time.Duration) bool
 		return false
 	}
 }
-
-// maxTokensOf returns the inbound max_tokens pointer for clamping.
-func maxTokensOf(in domchat.InboundRequest) *int64 { return in.MaxTokens }
 
 // settle runs Settle on a detached context (REL-4), tracked by bgWG so shutdown
 // awaits accounting before DB close. A non-nil error is COUNTED + WARNed (B2):

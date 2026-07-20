@@ -917,8 +917,10 @@ func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
 	logger := &fakeLogger{}
+	cfg := testCfg()
+	cfg.MaxTokensCap = 1
 	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":100,"total_tokens":200}}`}
-	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx, Logger: logger})
+	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx, Logger: logger, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
 	body := `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`
 	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
@@ -941,6 +943,7 @@ func TestPayloadMaxTokensClampedBySelectedModel(t *testing.T) {
 	}{
 		{"DeepSeek", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, billing.DeepSeekOutputLimit},
 		{"Kimi", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, billing.KimiOutputLimit},
+		{"Client lower max_tokens ignored", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, billing.DeepSeekOutputLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -47,7 +47,7 @@ audience: [human, ai]
 }
 ```
 
-未声明 top-level 字段构造性丢弃；`n>1` 拒绝。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop；其中 Kimi 3 返回在 `tool_calls[].extra_content.google.thought_signature` 的签名也原样回传，保证下一步 function call 不被 provider 以 400 拒绝。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Kimi adapter 内剥离。
+未声明 top-level 字段构造性丢弃；`n>1` 拒绝。client-supplied `max_tokens` 仅为 OpenAI 兼容输入字段，网关统一产品档位不读取它；client-supplied `thinking` / `reasoning_effort` 不在白名单内，也不能改变 provider knob。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop；其中 Kimi 3 返回在 `tool_calls[].extra_content.google.thought_signature` 的签名也原样回传，保证下一步 function call 不被 provider 以 400 拒绝。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Kimi adapter 内剥离。
 
 `messages[].content` 是关闭联合类型：
 
@@ -105,13 +105,22 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 | 只有 string / text parts / 合法 tool-call 空内容 | DeepSeek | `TEXT_UPSTREAM_MODEL`=`deepseek-v4-flash` |
 | 任一 accepted image/video part | Kimi | `MULTIMODAL_UPSTREAM_MODEL`=`kimi-k2.6` |
 
-`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。Kimi adapter 剥离跨 provider 的 `reasoning_content`，并使用 K2.6 的默认 thinking 行为；成本仍按完整模型 hard limits 预留。
+`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。
+
+网关统一产品档位由服务端注入，client 不能改：
+
+| route | provider knobs | context / output hard limit | gateway output cap |
+|---|---|---:|---:|
+| text / DeepSeek V4 Flash | `thinking={"type":"enabled"}` + `reasoning_effort="high"` | 1,000,000 input / 384,000 output | `min(MAX_TOKENS_CAP,384000)` |
+| media / Kimi K2.6 | `thinking={"type":"enabled"}`；不传 `reasoning_effort` | 262,144 input / 32,768 output | `min(MAX_TOKENS_CAP,32768)` |
+
+Kimi adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool_calls`。统一对外上下文若需要单值，应按多模态保守展示 `256K`；纯文本实际走 DeepSeek 的 `1M`。成本仍按各 route 的冻结模型 hard limits / gateway output cap 预留。
 
 `KIMI_API_KEY` 未配置时不构造 Kimi backend：纯文本照常；合法多模态在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`（`multimodal input is unavailable on this deployment`），不会转 DeepSeek。Kimi 故障同样只返回自身归一错误，不跨 provider。
 
-### 2.4 clamp、stream 与账务可见行为
+### 2.4 输出档位、stream 与账务可见行为
 
-- `max_tokens` 取正 client 值与 `MAX_TOKENS_CAP`/实际模型 output limit 的较小值；否则取 cap。
+- `max_tokens` 由网关固定为 `MAX_TOKENS_CAP` 与实际模型 output limit 的较小值；client 值被忽略。
 - stream request 强加 `stream_options.include_usage=true`；stream/non-stream 都须在 2xx 后等到首个 body byte 才 handoff，`UPSTREAM_HEADER_TIMEOUT_SEC` 覆盖这段等待。response SSE 逐行校验后 relay（仅 data JSON object 可携带业务 payload，并结构化改写唯一的精确顶层 `model`）、写 deadline 每帧滚动；non-stream body 最大读取 8MiB，须为单一 JSON object 后作同一改写。畸形/超限 provider success body 不原样透传。流式 usage 只有在网关完整读到合法终止帧 `[DONE]` 后才可用于退款；此前 EOF、读错或断连即使已见 usage 也保留 full quote。若 `[DONE]` 已读到，随后 client 写失败不抹掉这份终局证据。
 - response 只写 gateway 白名单 header：Content-Type/Cache-Control 与 `X-Quota-Limit`、`X-Quota-Reset`；上游 header/auth 不透传。
 - upstream failure 同时携带 client-facing `APIError` 与独立 `ChargeExposure`；client code 不决定退款：

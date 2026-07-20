@@ -32,12 +32,15 @@ func TestDeepSeekEncodingPreservesReasoningAndForcesModel(t *testing.T) {
 	if !strings.Contains(s, `"model":"deepseek-v4-flash"`) || !strings.Contains(s, `"reasoning_content":"private-ds-trace"`) {
 		t.Fatalf("DeepSeek wire=%s", s)
 	}
+	if !strings.Contains(s, `"thinking":{"type":"enabled"}`) || !strings.Contains(s, `"reasoning_effort":"high"`) {
+		t.Fatalf("DeepSeek product knobs missing: %s", s)
+	}
 	if strings.Contains(s, "client-must-not-select-provider") {
 		t.Fatalf("client model leaked: %s", s)
 	}
 }
 
-func TestKimiEncodingDropsDeepSeekTraceAndForcesMinimalThinking(t *testing.T) {
+func TestKimiEncodingDropsDeepSeekTraceAndForcesThinking(t *testing.T) {
 	req := canonicalRequest(t)
 	raw, err := encode(billing.ProviderKimi, billing.KimiK26, req)
 	if err != nil {
@@ -49,6 +52,9 @@ func TestKimiEncodingDropsDeepSeekTraceAndForcesMinimalThinking(t *testing.T) {
 	}
 	if !strings.Contains(s, `"model":"kimi-k2.6"`) {
 		t.Fatalf("Kimi wire=%s", s)
+	}
+	if !strings.Contains(s, `"thinking":{"type":"enabled"}`) || strings.Contains(s, "reasoning_effort") {
+		t.Fatalf("Kimi product knobs wrong: %s", s)
 	}
 	// The caller-owned canonical value was cloned, not mutated.
 	original, _ := json.Marshal(req)

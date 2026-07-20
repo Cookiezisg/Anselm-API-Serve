@@ -1,6 +1,6 @@
 // Package chat is the PURE chat-completions request domain: the inbound/upstream
 // body shapes, the strict whitelist decode + n>1 reject, the SEC-1 shape gate,
-// the conservative token estimate, the max_tokens clamp, model resolution, and
+// the conservative token estimate, the fixed max_tokens cap, model resolution, and
 // the upstream-body sanitizer. It has ZERO I/O — stdlib + encoding/json only, NO
 // net/http, NO os, NO sql. The app layer (app/chat) drives the saga over these
 // pure transforms; transport renders the result. Keeping the decode/sanitize/
@@ -31,7 +31,9 @@ const BodyDecodeLimit int64 = 256 * 1024
 
 // InboundRequest mirrors ONLY the whitelisted top-level fields. Unknown fields
 // are dropped by NOT being declared (strict whitelist, §5.2). n is decoded only
-// to reject n>1. Tools/ToolChoice are kept as RawMessage and forwarded verbatim.
+// to reject n>1. MaxTokens is decoded for compatibility but ignored by the
+// product-tier policy. Tools/ToolChoice are kept as RawMessage and forwarded
+// verbatim.
 type InboundRequest struct {
 	Model       string          `json:"model"`
 	Messages    []Message       `json:"messages"`
@@ -204,18 +206,15 @@ func estimatePromptTokens(msgs []Message, includeMediaPayload bool) int64 {
 	return bytes
 }
 
-// ClampMaxTokens returns the upstream max_tokens: the gateway cap, lowered to a
-// positive client request only when that request is strictly smaller. So a
-// client can ask for fewer output tokens but never more than the cap.
-func ClampMaxTokens(client *int64, capTok int64) int64 {
-	if client != nil && *client > 0 && *client < capTok {
-		return *client
-	}
+// FixedMaxTokens returns the upstream output cap chosen by the gateway product
+// tier. Client max_tokens is intentionally ignored so all callers receive the
+// same capability and accounting envelope.
+func FixedMaxTokens(capTok int64) int64 {
 	return capTok
 }
 
 // Sanitize builds the provider-independent body from a decoded inbound request:
-// ONLY whitelisted fields survive (messages / stream / temperature / clamped
+// ONLY whitelisted fields survive (messages / stream / temperature / fixed
 // max_tokens / tools / tool_choice) plus the gateway-forced
 // stream_options.include_usage on a stream (so the upstream emits a final usage
 // frame we settle against). Everything else the client sent is dropped by

@@ -30,6 +30,15 @@ audience: [human, ai]
 
 客户端 `model` 不参与 provider、实际模型或价格选择；服务端配置的实际模型必须存在精确 rate card。路由没有“高级/普通”判断，也不按用户、文本语义、顺序或健康状态改选 provider。
 
+该逻辑模型同时固定唯一产品档位，客户端不能通过 `thinking`、`reasoning_effort` 或 `max_tokens` 改变能力/成本：
+
+| route | context / output hard limit | gateway output cap | provider knobs |
+|---|---:|---:|---|
+| DeepSeek V4 Flash text | 1,000,000 input / 384,000 output | `min(MAX_TOKENS_CAP,384000)` | `thinking={"type":"enabled"}` + `reasoning_effort="high"` |
+| Kimi K2.6 media | 262,144 input / 32,768 output | `min(MAX_TOKENS_CAP,32768)` | `thinking={"type":"enabled"}`；不传 `reasoning_effort` |
+
+产品若只展示一个上下文值，应展示保守的 `256K`；纯文本 route 实际可用 DeepSeek 的 `1M` context。`MAX_TOKENS_CAP` 是服务端统一输出档，不是 client-selectable 输出额度。
+
 ### 2. 多模态输入是关闭的联合类型
 
 只接受 OpenAI-compatible inline 形状：
@@ -42,7 +51,7 @@ audience: [human, ai]
 
 ### 3. provider 物理隔离，禁止 fallback
 
-DeepSeek 与 Kimi 各自拥有固定 endpoint、API key pool、per-key health/cooldown、process breaker 和低基数指标标签。选定 provider 后**绝不**切另一个 provider，也不跨 provider 复用 key、breaker 或请求扩展：Kimi adapter 会剥离 DeepSeek 专有 `reasoning_content`，并使用 K2.6 的默认 thinking 行为。opaque `tool_calls` JSON 原样保留。
+DeepSeek 与 Kimi 各自拥有固定 endpoint、API key pool、per-key health/cooldown、process breaker 和低基数指标标签。选定 provider 后**绝不**切另一个 provider，也不跨 provider 复用 key、breaker 或不兼容请求扩展：Kimi adapter 会剥离 DeepSeek 专有 `reasoning_content`，并固定注入 K2.6 的 `thinking.enabled`。opaque `tool_calls` JSON 原样保留。
 
 `DEEPSEEK_API_KEY` 是文本基线的必填 secret；`KIMI_API_KEY` 可选。未配置 Kimi 时文本与 readiness 正常，多模态请求在 reserve/Open 前返回 `503 MULTIMODAL_UNAVAILABLE`，不会暗降级为 DeepSeek。
 
@@ -55,7 +64,7 @@ DeepSeek 与 Kimi 各自拥有固定 endpoint、API key pool、per-key health/co
 | DeepSeek V4 Flash | 140,000 pUSD/token | 2,800 pUSD/token | 280,000 pUSD/token |
 | Kimi K2.6 | 950,000 pUSD/token | 160,000 pUSD/token | 4,000,000 pUSD/token |
 
-DeepSeek quote 使用 byte-fallback prompt 上界（所有透传 message/tool 字段逐 UTF-8 byte 计数，另加固定 request framing 与每消息 64 token framing 余量）+ 已 clamp 的输出上界，避免多字节 tokenizer 或 tool continuation 先少占后追账。Kimi compatibility 无法证明 thinking 上界，故图片/视频 quote 使用模型完整输入/输出硬上限；settle 只在 usage 结构自洽时，以 cache hit 明细按较低费率退款，其余 prompt 都按 cache miss 计价。Kimi 缺 `total_tokens`、`total<prompt+completion` 或 reasoning 明细超过 `total-prompt` 时不可计价；DeepSeek cache hit/miss 合计超过 prompt 同样不可计价，均保留 full quote。完整 Kimi quote 为 `380,108,800,000 pUSD = 380,108.8 microUSD`。未知 provider/model、越模型 limit 或无法精确计价一律 fail closed。
+DeepSeek quote 使用 byte-fallback prompt 上界（所有透传 message/tool 字段逐 UTF-8 byte 计数，另加固定 request framing 与每消息 64 token framing 余量）+ 固定输出档位，避免多字节 tokenizer 或 tool continuation 先少占后追账。Kimi compatibility 无法证明 thinking 上界，故图片/视频 quote 使用模型完整输入/输出硬上限；settle 只在 usage 结构自洽时，以 cache hit 明细按较低费率退款，其余 prompt 都按 cache miss 计价。Kimi 缺 `total_tokens`、`total<prompt+completion` 或 reasoning 明细超过 `total-prompt` 时不可计价；DeepSeek cache hit/miss 合计超过 prompt 同样不可计价，均保留 full quote。完整 Kimi quote 为 `380,108,800,000 pUSD = 380,108.8 microUSD`。未知 provider/model、越模型 limit 或无法精确计价一律 fail closed。
 
 ### 5. 单事务预留四道余额
 
