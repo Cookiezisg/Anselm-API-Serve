@@ -567,29 +567,6 @@ func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
 	}
 }
 
-func TestQuoteOverInstallDailySpendCap_400BeforeReserve(t *testing.T) {
-	// The provider-aware hard quote cannot ever fit this install wallet, so the
-	// request is a client-visible 400 before any DB reservation.
-	cfg := testCfg()
-	cfg.InstallDailySpendPUSD = 1
-	q := &fakeQuota{}
-	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
-	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
-	wg.Wait()
-
-	if sink.statusCode() != 400 {
-		t.Fatalf("est over install-day cap must 400, got %d", sink.statusCode())
-	}
-	if !strings.Contains(sink.bodyString(), "request exceeds the per-install daily spend capacity") {
-		t.Fatalf("wrong spend-cap message: %q", sink.bodyString())
-	}
-	if q.reservedPUSD != 0 || len(q.settles()) != 0 || q.rollbacks() != 0 {
-		t.Fatalf("spend gate must reject BEFORE Reserve: reserved=%d settles=%v rollbacks=%d",
-			q.reservedPUSD, q.settles(), q.rollbacks())
-	}
-}
-
 func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 	// A normalized upstream rejection (ADR-011 amendment) surfaces as 400
 	// UPSTREAM_REJECTED with the coarse details.reason, rolls the reservation
@@ -1007,26 +984,6 @@ func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
 	// whole request, including response headers.
 	if got := cfgSource.count(); got != 2 {
 		t.Fatalf("config loads=%d want 2 (startup + one request snapshot)", got)
-	}
-}
-
-func TestKimiHardQuoteOverInstallWalletIs400BeforeReserve(t *testing.T) {
-	plan, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
-		billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	cfg := testCfg()
-	cfg.InstallDailySpendPUSD = plan.ReservedPUSD - 1
-	png := base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
-	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + png + `"}}]}]}`
-	q := &fakeQuota{}
-	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
-	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
-	wg.Wait()
-	if sink.statusCode() != 400 || q.reservedPUSD != 0 {
-		t.Fatalf("status=%d reserved=%d body=%s", sink.statusCode(), q.reservedPUSD, sink.bodyString())
 	}
 }
 

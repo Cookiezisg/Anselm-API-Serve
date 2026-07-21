@@ -163,7 +163,7 @@ Kimi adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 | `GET /healthz` | 否 | dashboard liveness |
 | `POST /login` / `POST /logout` | 否 | 建立/销毁 session；login 有 per-IP backoff |
 | `GET /api/session` | session | session + CSRF token |
-| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`；固定带 `providers.deepseek` / `providers.kimi`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.deepseek` / `providers.kimi`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
 | `GET /api/config` | session | secret-free Dump |
 | `POST /api/config` | session + CSRF | runtime-hot batch，全有或全无 |
 | `GET /api/installs` | session | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |

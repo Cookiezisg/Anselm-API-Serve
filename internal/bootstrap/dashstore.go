@@ -32,28 +32,29 @@ type dashStore struct {
 	loc *time.Location
 }
 
-// GlobalBudget (BudgetSource): today's RESET_TZ window day plus global spend
-// limit and usage in integer micro-USD. The database and live config retain exact
-// pUSD; this adapter is the single conversion boundary for the dashboard wire.
-// A missing spend row reads used=0. The limit closure is wired from live config.
+// GlobalBudget (BudgetSource): the current RESET_TZ month plus the operator
+// global spend limit and usage in integer micro-USD. The database and live config
+// retain exact pUSD; this adapter is the single conversion boundary for the
+// dashboard wire. A missing spend row reads used=0. The limit closure is wired
+// from live config.
 type budgetSource struct {
 	ds       dashStore
 	getLimit func() int64
 }
 
 func (b budgetSource) GlobalBudget(ctx context.Context) (day string, limit, used int64, err error) {
-	day = time.Now().In(b.ds.loc).Format("2006-01-02")
+	day = time.Now().In(b.ds.loc).Format("2006-01")
 	limit = b.getLimit() / billing.PicoUSDPerMicroUSD
 	var usedPUSD int64
 	err = b.ds.r.QueryRow(ctx,
-		`SELECT spend_pusd FROM global_spend_daily WHERE period_day = ?`, day).Scan(&usedPUSD)
+		`SELECT spend_pusd FROM global_spend_monthly WHERE period_month = ?`, day).Scan(&usedPUSD)
 	switch {
 	case err == nil:
 		return day, limit, usedPUSD / billing.PicoUSDPerMicroUSD, nil
 	case errors.Is(err, sql.ErrNoRows):
 		return day, limit, 0, nil
 	default:
-		return day, limit, 0, fmt.Errorf("read global spend: %w", err)
+		return day, limit, 0, fmt.Errorf("read global monthly spend: %w", err)
 	}
 }
 

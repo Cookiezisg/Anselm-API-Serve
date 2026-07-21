@@ -47,6 +47,9 @@ func newTestStore(t *testing.T) *Store {
 		`CREATE TABLE global_spend_daily (
 			period_day TEXT PRIMARY KEY, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0))`,
+		`CREATE TABLE global_spend_monthly (
+			period_month TEXT PRIMARY KEY, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
+			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0))`,
 		`CREATE TABLE spend_ledger (
 			request_id TEXT PRIMARY KEY, install_id TEXT NOT NULL,
 			provider TEXT NOT NULL CHECK(provider IN ('deepseek','kimi')),
@@ -90,13 +93,8 @@ func mustPlan(t *testing.T, provider billing.Provider, prompt, output int64) bil
 
 func limits() quota.Limits {
 	return quota.Limits{
-		MonthlyQuota:          1_000_000,
-		InstallDailySpendPUSD: 1_000_000_000_000_000,
-		ProviderDailySpendPUSD: map[billing.Provider]int64{
-			billing.ProviderDeepSeek: 1_000_000_000_000_000,
-			billing.ProviderKimi:     1_000_000_000_000_000,
-		},
-		GlobalDailySpendPUSD: 1_000_000_000_000_000,
+		MonthlyQuota:           1_000_000,
+		GlobalMonthlySpendPUSD: 1_000_000_000_000_000,
 	}
 }
 
@@ -164,6 +162,19 @@ func readGlobal(t *testing.T, s *Store, day string) (spend, requests int64) {
 	return spend, requests
 }
 
+func readGlobalMonth(t *testing.T, s *Store, month string) (spend, requests int64) {
+	t.Helper()
+	err := s.reader.QueryRow(context.Background(),
+		`SELECT spend_pusd, requests FROM global_spend_monthly WHERE period_month=?`, month).Scan(&spend, &requests)
+	if err == sql.ErrNoRows {
+		return 0, 0
+	}
+	if err != nil {
+		t.Fatalf("read global month: %v", err)
+	}
+	return spend, requests
+}
+
 func readLedger(t *testing.T, s *Store, requestID string) (state string, charged sql.NullInt64) {
 	t.Helper()
 	if err := s.reader.QueryRow(context.Background(),
@@ -192,6 +203,9 @@ func TestReserveDebitsEveryPUSDWallet(t *testing.T) {
 	if got, reqs := readGlobal(t, s, testPeriod().Day); got != p.ReservedPUSD || reqs != 1 {
 		t.Fatalf("global=(%d,%d) want (%d,1)", got, reqs, p.ReservedPUSD)
 	}
+	if got, reqs := readGlobalMonth(t, s, testPeriod().Month); got != p.ReservedPUSD || reqs != 1 {
+		t.Fatalf("global month=(%d,%d) want (%d,1)", got, reqs, p.ReservedPUSD)
+	}
 }
 
 func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
@@ -202,9 +216,7 @@ func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
 		want error
 	}{
 		{"monthly", func(l *quota.Limits) { l.MonthlyQuota = 0 }, quota.ErrMonthlyExhausted},
-		{"install", func(l *quota.Limits) { l.InstallDailySpendPUSD = plan.ReservedPUSD - 1 }, quota.ErrInstallSpendExceeded},
-		{"provider", func(l *quota.Limits) { l.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = plan.ReservedPUSD - 1 }, quota.ErrProviderSpendExceeded},
-		{"global", func(l *quota.Limits) { l.GlobalDailySpendPUSD = plan.ReservedPUSD - 1 }, quota.ErrBudgetExceeded},
+		{"global-month", func(l *quota.Limits) { l.GlobalMonthlySpendPUSD = plan.ReservedPUSD - 1 }, quota.ErrBudgetExceeded},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -225,84 +237,24 @@ func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
 	}
 }
 
-func TestReserveHonorsPreexistingConservativeWalletFloor(t *testing.T) {
+func TestReserveHonorsPreexistingConservativeMonthlyWalletFloor(t *testing.T) {
 	plan := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
 	const floor int64 = 9_000_000
-	cases := []struct {
-		name     string
-		seed     func(context.Context, *Store) error
-		limits   func(quota.Limits) quota.Limits
-		wantDeny error
-	}{
-		{
-			name: "install",
-			seed: func(ctx context.Context, s *Store) error {
-				_, err := s.writer.Exec(ctx,
-					`INSERT INTO install_spend_daily(install_id,period_day,spend_pusd,requests)
-					 VALUES ('ins_1',?, ?,0)`, testPeriod().Day, floor)
-				return err
-			},
-			limits: func(l quota.Limits) quota.Limits {
-				l.InstallDailySpendPUSD = floor
-				return l
-			},
-			wantDeny: quota.ErrInstallSpendExceeded,
-		},
-		{
-			name: "provider",
-			seed: func(ctx context.Context, s *Store) error {
-				_, err := s.writer.Exec(ctx,
-					`INSERT INTO provider_spend_daily(provider,period_day,spend_pusd,requests)
-					 VALUES ('deepseek',?, ?,1)`, testPeriod().Day, floor)
-				return err
-			},
-			limits: func(l quota.Limits) quota.Limits {
-				l.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = floor
-				return l
-			},
-			wantDeny: quota.ErrProviderSpendExceeded,
-		},
-		{
-			name: "global",
-			seed: func(ctx context.Context, s *Store) error {
-				_, err := s.writer.Exec(ctx,
-					`INSERT INTO global_spend_daily(period_day,spend_pusd,requests) VALUES (?, ?,1)`,
-					testPeriod().Day, floor)
-				return err
-			},
-			limits: func(l quota.Limits) quota.Limits {
-				l.GlobalDailySpendPUSD = floor
-				return l
-			},
-			wantDeny: quota.ErrBudgetExceeded,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newTestStore(t)
-			ctx := context.Background()
-			if err := tc.seed(ctx, s); err != nil {
-				t.Fatalf("seed floor: %v", err)
-			}
-			_, err := s.Reserve(ctx, "ins_1", plan, testPeriod(), tc.limits(limits()))
-			if !errors.Is(err, tc.wantDeny) {
-				t.Fatalf("reserve err=%v want %v", err, tc.wantDeny)
-			}
-			if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 0 {
-				t.Fatalf("denied reserve leaked month count=%d", got)
-			}
-		})
-	}
-}
-
-func TestReserveMissingProviderCapFailsClosed(t *testing.T) {
 	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.writer.Exec(ctx,
+		`INSERT INTO global_spend_monthly(period_month,spend_pusd,requests) VALUES (?, ?,1)`,
+		testPeriod().Month, floor); err != nil {
+		t.Fatalf("seed floor: %v", err)
+	}
 	lim := limits()
-	delete(lim.ProviderDailySpendPUSD, billing.ProviderKimi)
-	_, err := s.Reserve(context.Background(), "ins_1", mustPlan(t, billing.ProviderKimi, 1, 1), testPeriod(), lim)
-	if !errors.Is(err, quota.ErrProviderLimitMissing) {
-		t.Fatalf("err=%v want ErrProviderLimitMissing", err)
+	lim.GlobalMonthlySpendPUSD = floor
+	_, err := s.Reserve(ctx, "ins_1", plan, testPeriod(), lim)
+	if !errors.Is(err, quota.ErrBudgetExceeded) {
+		t.Fatalf("reserve err=%v want %v", err, quota.ErrBudgetExceeded)
+	}
+	if got := readMonth(t, s, "ins_1", testPeriod().Month); got != 0 {
+		t.Fatalf("denied reserve leaked month count=%d", got)
 	}
 }
 
@@ -322,21 +274,22 @@ func TestReserveRejectsForgedPlanWithoutFrozenRateCard(t *testing.T) {
 	}
 }
 
-func TestProviderWalletsAreIsolatedButGlobalIsShared(t *testing.T) {
+func TestProviderStatsAreRecordedButOnlyGlobalMonthDenies(t *testing.T) {
 	s := newTestStore(t)
 	ds := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
 	gm := mustPlan(t, billing.ProviderKimi, 1, 1)
 	lim := limits()
-	lim.ProviderDailySpendPUSD[billing.ProviderDeepSeek] = ds.ReservedPUSD
-	lim.ProviderDailySpendPUSD[billing.ProviderKimi] = gm.ReservedPUSD
-	lim.GlobalDailySpendPUSD = ds.ReservedPUSD + gm.ReservedPUSD
+	lim.GlobalMonthlySpendPUSD = ds.ReservedPUSD + gm.ReservedPUSD
 	reserve(t, s, "ins_ds", ds, lim)
-	if _, err := s.Reserve(context.Background(), "ins_ds2", ds, testPeriod(), lim); !errors.Is(err, quota.ErrProviderSpendExceeded) {
-		t.Fatalf("second DeepSeek err=%v want provider denial", err)
-	}
 	reserve(t, s, "ins_gm", gm, lim)
+	if _, err := s.Reserve(context.Background(), "ins_ds2", ds, testPeriod(), lim); !errors.Is(err, quota.ErrBudgetExceeded) {
+		t.Fatalf("over global month err=%v want budget denial", err)
+	}
 	if got, _ := readGlobal(t, s, testPeriod().Day); got != ds.ReservedPUSD+gm.ReservedPUSD {
 		t.Fatalf("shared global=%d", got)
+	}
+	if got, _ := readGlobalMonth(t, s, testPeriod().Month); got != ds.ReservedPUSD+gm.ReservedPUSD {
+		t.Fatalf("shared global month=%d", got)
 	}
 }
 
@@ -346,7 +299,7 @@ func TestConcurrentGlobalReserveNoOversell(t *testing.T) {
 	const capN = 30
 	const attempts = 50
 	lim := limits()
-	lim.GlobalDailySpendPUSD = capN * p.ReservedPUSD
+	lim.GlobalMonthlySpendPUSD = capN * p.ReservedPUSD
 
 	var ok, denied int64
 	start := make(chan struct{})
@@ -372,8 +325,8 @@ func TestConcurrentGlobalReserveNoOversell(t *testing.T) {
 	if ok != capN || denied != attempts-capN {
 		t.Fatalf("ok=%d denied=%d", ok, denied)
 	}
-	if got, _ := readGlobal(t, s, testPeriod().Day); got != capN*p.ReservedPUSD {
-		t.Fatalf("global=%d want %d", got, capN*p.ReservedPUSD)
+	if got, _ := readGlobalMonth(t, s, testPeriod().Month); got != capN*p.ReservedPUSD {
+		t.Fatalf("global month=%d want %d", got, capN*p.ReservedPUSD)
 	}
 }
 
@@ -401,6 +354,9 @@ func TestRollbackExactConservation(t *testing.T) {
 	if spend, reqs := readGlobal(t, s, r.Period.Day); spend != 0 || reqs != 0 {
 		t.Fatalf("global=(%d,%d)", spend, reqs)
 	}
+	if spend, reqs := readGlobalMonth(t, s, r.Period.Month); spend != 0 || reqs != 0 {
+		t.Fatalf("global month=(%d,%d)", spend, reqs)
+	}
 	state, charged := readLedger(t, s, r.RequestID)
 	if state != stateRolledBack || !charged.Valid || charged.Int64 != 0 {
 		t.Fatalf("ledger=(%s,%v)", state, charged)
@@ -423,6 +379,9 @@ func TestRollbackUnderflowRollsBackCASAndAllAdjustments(t *testing.T) {
 	}
 	if spend, reqs := readGlobal(t, s, r.Period.Day); spend != r.ReservedPUSD || reqs != 1 {
 		t.Fatalf("global partially adjusted=(%d,%d)", spend, reqs)
+	}
+	if spend, reqs := readGlobalMonth(t, s, r.Period.Month); spend != r.ReservedPUSD || reqs != 1 {
+		t.Fatalf("global month partially adjusted=(%d,%d)", spend, reqs)
 	}
 }
 
@@ -449,6 +408,9 @@ func TestSettleRefundAndTopUp(t *testing.T) {
 			}
 			if got, _ := readGlobal(t, s, r.Period.Day); got != actual {
 				t.Fatalf("global=%d want %d", got, actual)
+			}
+			if got, _ := readGlobalMonth(t, s, r.Period.Month); got != actual {
+				t.Fatalf("global month=%d want %d", got, actual)
 			}
 			state, charged := readLedger(t, s, r.RequestID)
 			if state != stateSettled || !charged.Valid || charged.Int64 != actual {

@@ -83,12 +83,8 @@ func mapReserveErr(err error) error {
 	switch {
 	case errors.Is(err, quota.ErrMonthlyExhausted):
 		return apierr.ErrQuotaExhausted
-	case errors.Is(err, quota.ErrInstallSpendExceeded):
-		return apierr.ErrRateLimited
 	case errors.Is(err, quota.ErrSublimitExceeded):
 		return apierr.ErrRateLimited
-	case errors.Is(err, quota.ErrProviderSpendExceeded):
-		return apierr.ErrBudgetExhausted
 	case errors.Is(err, quota.ErrBudgetExceeded):
 		return apierr.ErrBudgetExhausted
 	default:
@@ -110,8 +106,8 @@ func (s *Service) Rollback(ctx context.Context, r *quota.Reservation) error {
 	return s.repo.Rollback(ctx, r)
 }
 
-// View is the read model for GET /v1/quota. The wire remains monthly-count based;
-// Available additionally folds the provider-neutral install/global spend gates.
+// View is the read model for GET /v1/quota. The wire remains monthly-count
+// based; Available additionally folds the operator global monthly spend gate.
 type View struct {
 	Limit     int64
 	Used      int64 // authoritative monthly count.
@@ -120,9 +116,10 @@ type View struct {
 	Available bool
 }
 
-// View builds the read model from the authoritative monthly count + day budget.
+// View builds the read model from the authoritative monthly count + global month
+// budget.
 func (s *Service) View(ctx context.Context, installID string, p quota.Period) (*View, error) {
-	used, installSpend, globalSpend, err := s.repo.View(ctx, installID, p)
+	used, _, globalSpend, err := s.repo.View(ctx, installID, p)
 	if err != nil {
 		return nil, err
 	}
@@ -136,9 +133,7 @@ func (s *Service) View(ctx context.Context, installID string, p quota.Period) (*
 		Used:      used,
 		Remaining: remaining,
 		ResetAt:   quota.MonthResetAt(p, s.cfg.Location()),
-		Available: remaining > 0 &&
-			installSpend < lim.InstallDailySpendPUSD &&
-			globalSpend < lim.GlobalDailySpendPUSD,
+		Available: remaining > 0 && globalSpend < lim.GlobalMonthlySpendPUSD,
 	}, nil
 }
 

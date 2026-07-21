@@ -40,7 +40,7 @@ audience: [human, ai]
 1. **文档-代码物理同步（doc-code parity）**：`reference` 类文档必须与代码**逐字**对得上——端点 / 配置键 / 表列 / wire code / GW-INV 编号一一吻合。代码是事实，文档是其精确投影。
 2. **单一事实源**：每个事实只在**一处**权威记录（见 §10 权威层级）；他处引用、不复制。本网关的硬契约（API / config / DB / error-code / 不变量 / 行为）各有唯一权威文档，互不重叠。
 3. **零历史包袱**：这是 from-scratch 重写。文档**只描述当前物理事实**，禁止「旧 `internal/` 树曾如何、后来拆成」的演化叙述（历史在 git 与 `archive/`；新旧映射只活在 ADR 的「取舍」节）。
-4. **写 Why 不写 What**：What 看代码 / 结构即知；文档的价值在解释**为什么这样设计**、有哪些取舍与边界（如 provider rate card 先换算 pUSD 再四闸预留、崩溃永远多计、admin 免鉴权靠物理回环）。
+4. **写 Why 不写 What**：What 看代码 / 结构即知；文档的价值在解释**为什么这样设计**、有哪些取舍与边界（如 provider rate card 先换算 pUSD 再原子预留、崩溃永远多计、admin 免鉴权靠物理回环）。
 5. **高密度**：表格优先、要点优先、删一切 fluff（「本节将介绍…」之类）。本规范自身即范例。
 6. **中文**：所有文档正文用**中文**；代码标识符、路径、wire code、frontmatter 字段名、GW-INV / ADR 编号保持原文。
 7. **状态即重述（state 文档整体重述、非追加）**：描述「当前状态」的 `concept` 文档（`concepts/architecture.md` / `CLAUDE.md` / 本规范）每次变更**必须整体重述到当前事实**——改一个状态 = 重写相关部分，使全文读起来像「一直如此」，旧状态**不留痕迹**（历史在 git）。**绝不在旧内容旁追加**；只增不删 = 文档腐烂之源。两种更新 mode 不混：`reference` 文档按 **§1.1 精确同步**（投影代码），`concept` / state 文档按**本条整体重述**。
@@ -158,7 +158,7 @@ draft → active → superseded → archived
 | 新增 / 改 error wire code（UPPER_SNAKE）或其 status/message | `references/backend/error-codes.md` |
 | 新增 / 改一条不变量（记账原子性 / 鉴权 / provider 隔离 / 物理回环…） | `references/backend/invariants.md`（GW-INV-NN） |
 | 改 capability 路由、provider/model/rate card、fallback 规则或 pUSD 账务边界 | 按投影面同步 `api.md` / `config.md` / `database.md` / `invariants.md`；新决策另建 ADR |
-| 改动态行为 / 状态机（四闸 reserve→settle/rollback、provider breaker、PoW、节流、磁盘退化） | 同步承载该行为的 `references/backend/{overview,api,config,database,invariants}.md` 子集 |
+| 改动态行为 / 状态机（reserve→settle/rollback、provider breaker、PoW、节流、磁盘退化） | 同步承载该行为的 `references/backend/{overview,api,config,database,invariants}.md` 子集 |
 | 改前端 wire（DTO / envelope / `error.code` 分支 / 金额字段 / CSRF·session） | `references/backend/api.md` + 被影响的 `config.md` / `database.md` / `error-codes.md` |
 | 架构决策（选型 / 取舍 / 新增一条契约规则） | `decisions/` 新建一篇 ADR（NNNN 续号，对齐 SPEC 的 ADR-NNN） |
 | 架构 / 分层 / 域 / 监听器 / 路线状态变更 | **整体重述** `concepts/architecture.md` 相关节（§1.7，非追加） |

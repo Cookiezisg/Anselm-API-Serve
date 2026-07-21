@@ -39,7 +39,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"installs", "usage", "budget", "ledger",
 		"install_ip_rate", "install_global_rate", "install_fp_rate", "settings",
 		"quota_monthly", "install_spend_daily", "provider_spend_daily",
-		"global_spend_daily", "spend_ledger",
+		"global_spend_daily", "global_spend_monthly", "spend_ledger",
 	}
 	for _, table := range tables {
 		var name string
@@ -332,6 +332,10 @@ func TestProviderSpendMigrationBackfillsV1AndSettings(t *testing.T) {
 		t.Fatalf("global=(%d,%d) err=%v", spend, requests, err)
 	}
 	if err := db.Reader.QueryRow(ctx,
+		`SELECT spend_pusd, requests FROM global_spend_monthly WHERE period_month='2026-06'`).Scan(&spend, &requests); err != nil || spend != 5_600_000 || requests != 4 {
+		t.Fatalf("global month=(%d,%d) err=%v", spend, requests, err)
+	}
+	if err := db.Reader.QueryRow(ctx,
 		`SELECT spend_pusd FROM provider_spend_daily WHERE provider='deepseek' AND period_day='2026-06-20'`).Scan(&spend); err != nil || spend != 5_600_000 {
 		t.Fatalf("provider=%d err=%v", spend, err)
 	}
@@ -361,13 +365,15 @@ func TestProviderSpendMigrationBackfillsV1AndSettings(t *testing.T) {
 		settings[key] = value
 	}
 	_ = rows.Close()
-	if settings["GLOBAL_DAILY_SPEND_MICRO_USD"] != "29" {
-		t.Fatalf("global converted setting=%q want 29", settings["GLOBAL_DAILY_SPEND_MICRO_USD"])
-	}
-	if settings["INSTALL_DAILY_SPEND_MICRO_USD"] != "1" {
-		t.Fatalf("install converted setting=%q want 1", settings["INSTALL_DAILY_SPEND_MICRO_USD"])
-	}
-	for _, removed := range []string{"MODEL_ALLOWLIST", "GLOBAL_DAILY_BUDGET_TOKENS", "INSTALL_DAILY_TOKEN_CAP"} {
+	for _, removed := range []string{
+		"MODEL_ALLOWLIST",
+		"GLOBAL_DAILY_BUDGET_TOKENS",
+		"INSTALL_DAILY_TOKEN_CAP",
+		"GLOBAL_DAILY_SPEND_MICRO_USD",
+		"INSTALL_DAILY_SPEND_MICRO_USD",
+		"DEEPSEEK_DAILY_SPEND_MICRO_USD",
+		"KIMI_DAILY_SPEND_MICRO_USD",
+	} {
 		if _, ok := settings[removed]; ok {
 			t.Fatalf("legacy setting %s was not removed", removed)
 		}
@@ -593,7 +599,7 @@ func TestProviderSpendMigrationRejectsUnsafeLegacyLedger(t *testing.T) {
 	}
 }
 
-func TestProviderSpendMigrationKeepsExistingV2Setting(t *testing.T) {
+func TestGlobalMonthlyMigrationDropsRetiredDailySettings(t *testing.T) {
 	cfg := testConfig(t)
 	ctx := context.Background()
 	raw, err := sql.Open("sqlite", dsn(cfg, true))
@@ -623,10 +629,10 @@ func TestProviderSpendMigrationKeepsExistingV2Setting(t *testing.T) {
 		t.Fatalf("open migrated: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	var value string
+	var n int64
 	if err := db.Reader.QueryRow(ctx,
-		`SELECT value FROM settings WHERE key='GLOBAL_DAILY_SPEND_MICRO_USD'`).Scan(&value); err != nil || value != "777" {
-		t.Fatalf("existing v2 value=%q err=%v", value, err)
+		`SELECT COUNT(*) FROM settings WHERE key IN ('GLOBAL_DAILY_BUDGET_TOKENS','GLOBAL_DAILY_SPEND_MICRO_USD')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("retired settings rows=%d err=%v", n, err)
 	}
 }
 

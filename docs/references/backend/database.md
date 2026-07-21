@@ -58,7 +58,7 @@ audience: [human, ai]
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | | | PRIMARY KEY `(install_id,period_month)` |
 
-### `install_spend_daily` — per-install 日钱包 + 可选日次数
+### `install_spend_daily` — per-install 日花费统计 + 可选日次数
 
 | 列 | 类型 | 约束 |
 |---|---|---|
@@ -68,7 +68,7 @@ audience: [human, ai]
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0；只在 `DAILY_SUBLIMIT>0` 的 reserve 上 +1 |
 | | | PRIMARY KEY `(install_id,period_day)` |
 
-### `provider_spend_daily` — provider 日钱包
+### `provider_spend_daily` — provider 日花费统计
 
 | 列 | 类型 | 约束 |
 |---|---|---|
@@ -78,11 +78,19 @@ audience: [human, ai]
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | | | PRIMARY KEY `(provider,period_day)` |
 
-### `global_spend_daily` — shared 日钱包
+### `global_spend_daily` — shared 日花费统计
 
 | 列 | 类型 | 约束 |
 |---|---|---|
 | `period_day` | TEXT | PRIMARY KEY |
+| `spend_pusd` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
+| `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
+
+### `global_spend_monthly` — operator 全局月钱包
+
+| 列 | 类型 | 约束 |
+|---|---|---|
+| `period_month` | TEXT | PRIMARY KEY，`YYYY-MM` |
 | `spend_pusd` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 
@@ -108,9 +116,9 @@ audience: [human, ai]
 
 | state | `charged_pusd` | `terminal_at` | 余额动作 |
 |---|---:|---|---|
-| `open` | NULL | NULL | reservation 已在三 pUSD 钱包 + 月额度中 |
-| `settled` | 非 NULL | 非 NULL | 三钱包按 `reserved−charged` refund 或 top-up；月/request count 保留 |
-| `rolled_back` | 0 | 非 NULL | 仅 `ChargeExposure=DefinitelyUnbilled`；精确反转月额度、三钱包、provider/global requests 及实际应用的 sublimit count |
+| `open` | NULL | NULL | reservation 已在 install 月额度 + global 月钱包 + 日统计中 |
+| `settled` | 非 NULL | 非 NULL | global 月钱包与日统计按 `reserved−charged` refund 或 top-up；月/request count 保留 |
+| `rolled_back` | 0 | 非 NULL | 仅 `ChargeExposure=DefinitelyUnbilled`；精确反转 install 月额度、global 月钱包、日统计 requests 及实际应用的 sublimit count |
 | `orphaned` | `reserved_pusd` | 非 NULL | 不动余额/requests；未知 provider 结果按 full quote 收口 |
 
 索引：
@@ -123,10 +131,11 @@ audience: [human, ai]
 `quotastore` 在单写池的一个 `BEGIN IMMEDIATE` 内按顺序：
 
 1. lazy upsert + conditional increment `quota_monthly`；
-2. lazy upsert + conditional add `install_spend_daily.spend_pusd`，需要时 conditional `requests+1`；
-3. lazy upsert + conditional add provider spend、`requests+1`；
-4. lazy upsert + conditional add global spend、`requests+1`；
-5. insert 与冻结 `billing.Plan` 一致的 `spend_ledger(open)`。
+2. lazy upsert + guarded add `install_spend_daily.spend_pusd`，需要时 conditional `requests+1`（`DAILY_SUBLIMIT=0` 时不拦）；
+3. lazy upsert + guarded add provider daily spend、`requests+1`（统计，不按 provider cap 拦）；
+4. lazy upsert + guarded add global daily spend、`requests+1`（统计，不按 day cap 拦）；
+5. lazy upsert + conditional add `global_spend_monthly`、`requests+1`，要求 `spend_pusd+reserved≤GLOBAL_MONTHLY_SPEND_MICRO_USD`；
+6. insert 与冻结 `billing.Plan` 一致的 `spend_ledger(open)`。
 
 任一条件未命中或 insert 失败，整个事务回滚。Settle/Rollback 先 CAS `state='open'`，CAS 胜者才调整余额；调整用 exact-one row + underflow/overflow guard，禁止 `MAX(0,…)` 隐藏守恒错误。Settle top-up 不受现有 cap 限制，因为费用已经发生；超 cap 余额会阻止后续 reserve。
 
@@ -153,14 +162,14 @@ audience: [human, ai]
 - `budget` → `provider_spend_daily(provider='deepseek')` + `global_spend_daily`；
 - `ledger` → `spend_ledger`，model/rate card 标成 `legacy-deepseek` / `legacy-v1-max-280000-pusd`；旧 NULL 仍迁为 open，其余迁为 settled/rolled_back。
 
-v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同时从 `usage`/`budget` 退掉预留；该编码与真实 full-cost settlement 无法区分。为避免迁移后低估 provider 可能已经收取的费用，0002 还会从 legacy `ledger` 构造 chargeable token：`settled IS NULL` 取 `reserved`、`settled>0` 取 `settled`、`settled=0` 排除。然后按 install/day 与 day 聚合，并把 install、DeepSeek provider、global 三钱包分别设为 `max(v1 copied balance, ledger aggregate×280000)`；缺失的钱包行会补建。这里用 `max` 而不是相加，因此正常情况下已包含在 v1 余额里的请求不会双计。provider/global `requests` 同样取 copied count 与 chargeable ledger count 的较大值；install `requests` 仍只保留 v1 日子限次数，无法从 legacy ledger 臆造。
+v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同时从 `usage`/`budget` 退掉预留；该编码与真实 full-cost settlement 无法区分。为避免迁移后低估 provider 可能已经收取的费用，0002 还会从 legacy `ledger` 构造 chargeable token：`settled IS NULL` 取 `reserved`、`settled>0` 取 `settled`、`settled=0` 排除。然后按 install/day 与 day 聚合，并把 install、DeepSeek provider、global 三张日统计表分别设为 `max(v1 copied balance, ledger aggregate×280000)`；缺失行会补建。这里用 `max` 而不是相加，因此正常情况下已包含在 v1 余额里的请求不会双计。provider/global `requests` 同样取 copied count 与 chargeable ledger count 的较大值；install `requests` 仍只保留 v1 日子限次数，无法从 legacy ledger 臆造。
 
-旧 runtime settings 以 `ceil(tokens×280000/10^6)=ceil(tokens×28/100)` 转成整数 microUSD：
+0002 中旧 runtime settings 曾以 `ceil(tokens×280000/10^6)=ceil(tokens×28/100)` 转成整数 microUSD：
 
 - `GLOBAL_DAILY_BUDGET_TOKENS` → `GLOBAL_DAILY_SPEND_MICRO_USD`；
 - `INSTALL_DAILY_TOKEN_CAP` → `INSTALL_DAILY_SPEND_MICRO_USD`。
 
-随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。
+随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。0004 再把 `global_spend_daily` 按 `period_month` 聚合进 `global_spend_monthly`，并删除 retired `GLOBAL_DAILY_SPEND_MICRO_USD` / `INSTALL_DAILY_SPEND_MICRO_USD` / `DEEPSEEK_DAILY_SPEND_MICRO_USD` / `KIMI_DAILY_SPEND_MICRO_USD` settings。
 
 ## 5. 迁移框架与连接纪律
 

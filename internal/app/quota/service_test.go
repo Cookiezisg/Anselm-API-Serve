@@ -79,9 +79,7 @@ func TestReserveMapsTypedDenialsToSentinels(t *testing.T) {
 		want *apierr.APIError
 	}{
 		{"monthly", dquota.ErrMonthlyExhausted, apierr.ErrQuotaExhausted},
-		{"install-spend", dquota.ErrInstallSpendExceeded, apierr.ErrRateLimited},
 		{"sublimit", dquota.ErrSublimitExceeded, apierr.ErrRateLimited},
-		{"provider-spend", dquota.ErrProviderSpendExceeded, apierr.ErrBudgetExhausted},
 		{"budget", dquota.ErrBudgetExceeded, apierr.ErrBudgetExhausted},
 	}
 	for _, c := range cases {
@@ -116,8 +114,7 @@ func TestReserveInternalErrorPassesThrough(t *testing.T) {
 func TestReservePassesLiveLimitsSnapshot(t *testing.T) {
 	repo := &fakeRepo{reserveOut: &dquota.Reservation{RequestID: "req_x"}}
 	want := Limits{
-		MonthlyQuota: 100, InstallDailySpendPUSD: 50, GlobalDailySpendPUSD: 1000, DailySublimit: 7,
-		ProviderDailySpendPUSD: map[billing.Provider]int64{billing.ProviderDeepSeek: 500},
+		MonthlyQuota: 100, GlobalMonthlySpendPUSD: 1000, DailySublimit: 7,
 	}
 	s := newService(repo, want)
 	if _, err := s.Reserve(context.Background(), "ins_1", testPlan(t), dquota.Period{}); err != nil {
@@ -143,7 +140,7 @@ func TestSettleRollbackErrorsAreReturned(t *testing.T) {
 }
 
 func TestViewAvailabilityRule(t *testing.T) {
-	lim := Limits{MonthlyQuota: 100, InstallDailySpendPUSD: 500, GlobalDailySpendPUSD: 1000}
+	lim := Limits{MonthlyQuota: 100, GlobalMonthlySpendPUSD: 1000}
 	cases := []struct {
 		name                            string
 		used, installSpend, globalSpend int64
@@ -153,8 +150,6 @@ func TestViewAvailabilityRule(t *testing.T) {
 		{"plenty", 10, 100, 100, 90, true},
 		{"month-exhausted", 100, 0, 0, 0, false},
 		{"over-month-clamps", 150, 0, 0, 0, false},
-		{"install-exhausted", 10, 500, 0, 90, false},
-		{"install-over", 10, 600, 0, 90, false},
 		{"global-exhausted", 10, 0, 1000, 90, false},
 		{"global-over", 10, 0, 2000, 90, false},
 	}

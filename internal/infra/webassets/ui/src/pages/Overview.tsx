@@ -154,7 +154,7 @@ export default function Overview() {
 
       {data && (
         <>
-          <Card title="今日全局支出预算" style={{ marginBottom: 16 }} extra={<Text type="secondary">{data.budget.day}</Text>}>
+          <Card title="本月全局支出预算" style={{ marginBottom: 16 }} extra={<Text type="secondary">{data.budget.day}</Text>}>
             <Row gutter={[24, 16]}>
               <Col xs={24} sm={8}>
                 <Statistic title="已用 (USD)" value={formatMicroUsd(data.budget.usedMicroUsd)} />

@@ -1,7 +1,8 @@
 // Package quotastore persists the provider-aware fixed-point spend ledger.
 // Every aggregate mutation is one BEGIN IMMEDIATE transaction on the serialized
-// writer, so monthly entitlement, install/provider/global wallets, and the
-// reservation state can never be observed partially applied.
+// writer, so monthly entitlement, the operator monthly spend wallet, daily
+// accounting statistics, and the reservation state can never be observed
+// partially applied.
 package quotastore
 
 import (
@@ -40,16 +41,14 @@ func newRequestID() string {
 	return "req_" + hex.EncodeToString(b[:])
 }
 
-// Reserve atomically takes the monthly request entitlement and the three pUSD
-// wallets: install-day, provider-day, and shared global-day. Raw token counts
-// never enter these tables; the frozen billing Plan is the conversion boundary.
+// Reserve atomically takes the per-install monthly request entitlement and the
+// shared operator monthly pUSD wallet. The daily install/provider/global rows are
+// still updated for audit/dashboard statistics, but they no longer deny traffic.
+// Raw token counts never enter these tables; the frozen billing Plan is the
+// conversion boundary.
 func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan, p quota.Period, lim quota.Limits) (*quota.Reservation, error) {
 	if err := validatePlan(plan); err != nil {
 		return nil, err
-	}
-	providerCap, ok := lim.ProviderDailyLimit(plan.Provider)
-	if !ok {
-		return nil, quota.ErrProviderLimitMissing
 	}
 
 	r := &quota.Reservation{
@@ -82,11 +81,9 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 		}
 		if err := execOne(ctx, tx, "install spend reserve",
 			`UPDATE install_spend_daily SET spend_pusd = spend_pusd + ?
-			   WHERE install_id = ? AND period_day = ? AND spend_pusd + ? <= ?`,
-			plan.ReservedPUSD, installID, p.Day, plan.ReservedPUSD, lim.InstallDailySpendPUSD); err != nil {
-			if isConditionalMiss(err) {
-				return quota.ErrInstallSpendExceeded
-			}
+			   WHERE install_id = ? AND period_day = ?
+			     AND spend_pusd <= ?`,
+			plan.ReservedPUSD, installID, p.Day, int64(math.MaxInt64)-plan.ReservedPUSD); err != nil {
 			return err
 		}
 
@@ -111,11 +108,10 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 		if err := execOne(ctx, tx, "provider spend reserve",
 			`UPDATE provider_spend_daily
 			    SET spend_pusd = spend_pusd + ?, requests = requests + 1
-			  WHERE provider = ? AND period_day = ? AND spend_pusd + ? <= ?`,
-			plan.ReservedPUSD, string(plan.Provider), p.Day, plan.ReservedPUSD, providerCap); err != nil {
-			if isConditionalMiss(err) {
-				return quota.ErrProviderSpendExceeded
-			}
+			  WHERE provider = ? AND period_day = ?
+			    AND spend_pusd <= ? AND requests < ?`,
+			plan.ReservedPUSD, string(plan.Provider), p.Day,
+			int64(math.MaxInt64)-plan.ReservedPUSD, int64(math.MaxInt64)); err != nil {
 			return err
 		}
 
@@ -127,8 +123,22 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 		if err := execOne(ctx, tx, "global spend reserve",
 			`UPDATE global_spend_daily
 			    SET spend_pusd = spend_pusd + ?, requests = requests + 1
-			  WHERE period_day = ? AND spend_pusd + ? <= ?`,
-			plan.ReservedPUSD, p.Day, plan.ReservedPUSD, lim.GlobalDailySpendPUSD); err != nil {
+			  WHERE period_day = ?
+			    AND spend_pusd <= ? AND requests < ?`,
+			plan.ReservedPUSD, p.Day, int64(math.MaxInt64)-plan.ReservedPUSD, int64(math.MaxInt64)); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx,
+			`INSERT OR IGNORE INTO global_spend_monthly(period_month, spend_pusd, requests) VALUES (?, 0, 0)`,
+			p.Month); err != nil {
+			return fmt.Errorf("quotastore: global-month upsert: %w", err)
+		}
+		if err := execOne(ctx, tx, "global month reserve",
+			`UPDATE global_spend_monthly
+			    SET spend_pusd = spend_pusd + ?, requests = requests + 1
+			  WHERE period_month = ? AND spend_pusd <= ?`,
+			plan.ReservedPUSD, p.Month, lim.GlobalMonthlySpendPUSD-plan.ReservedPUSD); err != nil {
 			if isConditionalMiss(err) {
 				return quota.ErrBudgetExceeded
 			}
@@ -258,6 +268,13 @@ func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
 			r.ReservedPUSD, r.Period.Day, r.ReservedPUSD); err != nil {
 			return err
 		}
+		if err := execOne(ctx, tx, "global month rollback",
+			`UPDATE global_spend_monthly
+			    SET spend_pusd = spend_pusd - ?, requests = requests - 1
+			  WHERE period_month = ? AND spend_pusd >= ? AND requests >= 1`,
+			r.ReservedPUSD, r.Period.Month, r.ReservedPUSD); err != nil {
+			return err
+		}
 		return execOne(ctx, tx, "month rollback",
 			`UPDATE quota_monthly SET requests = requests - 1
 			  WHERE install_id = ? AND period_month = ? AND requests >= 1`,
@@ -275,8 +292,9 @@ func validateReservation(r *quota.Reservation) error {
 	return validatePlan(r.Plan)
 }
 
-// adjustSpend applies the settle delta to all three balances. Exact-one row
-// checks and arithmetic guards prevent silent conservation loss.
+// adjustSpend applies the settle delta to the daily accounting statistics and
+// the operator monthly budget wallet. Exact-one row checks and arithmetic guards
+// prevent silent conservation loss.
 func adjustSpend(ctx context.Context, tx *orm.DB, r *quota.Reservation, delta int64) error {
 	if delta == 0 {
 		return nil
@@ -294,10 +312,16 @@ func adjustSpend(ctx context.Context, tx *orm.DB, r *quota.Reservation, delta in
 			delta, string(r.Plan.Provider), r.Period.Day, delta); err != nil {
 			return err
 		}
-		return execOne(ctx, tx, "global settle refund",
+		if err := execOne(ctx, tx, "global settle refund",
 			`UPDATE global_spend_daily SET spend_pusd = spend_pusd - ?
 			  WHERE period_day = ? AND spend_pusd >= ?`,
-			delta, r.Period.Day, delta)
+			delta, r.Period.Day, delta); err != nil {
+			return err
+		}
+		return execOne(ctx, tx, "global month settle refund",
+			`UPDATE global_spend_monthly SET spend_pusd = spend_pusd - ?
+			  WHERE period_month = ? AND spend_pusd >= ?`,
+			delta, r.Period.Month, delta)
 	}
 
 	topUp := -delta
@@ -314,14 +338,21 @@ func adjustSpend(ctx context.Context, tx *orm.DB, r *quota.Reservation, delta in
 		topUp, string(r.Plan.Provider), r.Period.Day, ceiling); err != nil {
 		return err
 	}
-	return execOne(ctx, tx, "global settle top-up",
+	if err := execOne(ctx, tx, "global settle top-up",
 		`UPDATE global_spend_daily SET spend_pusd = spend_pusd + ?
 		  WHERE period_day = ? AND spend_pusd <= ?`,
-		topUp, r.Period.Day, ceiling)
+		topUp, r.Period.Day, ceiling); err != nil {
+		return err
+	}
+	return execOne(ctx, tx, "global month settle top-up",
+		`UPDATE global_spend_monthly SET spend_pusd = spend_pusd + ?
+		  WHERE period_month = ? AND spend_pusd <= ?`,
+		topUp, r.Period.Month, ceiling)
 }
 
-// View returns the monthly request count and the provider-neutral install/global
-// daily balances. Missing lazy rows read as zero.
+// View returns the monthly request count, install daily spend (dashboard/client
+// information), and the operator global monthly balance. Missing lazy rows read
+// as zero.
 func (s *Store) View(ctx context.Context, installID string, p quota.Period) (used, installSpendPUSD, globalSpendPUSD int64, err error) {
 	err = s.reader.QueryRow(ctx,
 		`SELECT requests FROM quota_monthly WHERE install_id = ? AND period_month = ?`,
@@ -336,9 +367,9 @@ func (s *Store) View(ctx context.Context, installID string, p quota.Period) (use
 		return 0, 0, 0, fmt.Errorf("quotastore: view install spend: %w", err)
 	}
 	err = s.reader.QueryRow(ctx,
-		`SELECT spend_pusd FROM global_spend_daily WHERE period_day = ?`, p.Day).Scan(&globalSpendPUSD)
+		`SELECT spend_pusd FROM global_spend_monthly WHERE period_month = ?`, p.Month).Scan(&globalSpendPUSD)
 	if err != nil && err != sql.ErrNoRows {
-		return 0, 0, 0, fmt.Errorf("quotastore: view global spend: %w", err)
+		return 0, 0, 0, fmt.Errorf("quotastore: view global monthly spend: %w", err)
 	}
 	return used, installSpendPUSD, globalSpendPUSD, nil
 }

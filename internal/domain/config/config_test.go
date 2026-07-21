@@ -22,10 +22,7 @@ func validBase() Config {
 		MultimodalUpstreamModel: billing.KimiK26,
 
 		MonthlyQuota:           5000,
-		GlobalDailySpendPUSD:   14 * billing.PicoUSDPerUSD,
-		InstallDailySpendPUSD:  5_600_000 * billing.PicoUSDPerMicroUSD,
-		DeepSeekDailySpendPUSD: 14 * billing.PicoUSDPerUSD,
-		KimiDailySpendPUSD:     14 * billing.PicoUSDPerUSD,
+		GlobalMonthlySpendPUSD: 420 * billing.PicoUSDPerUSD,
 		MaxTokensCap:           4096,
 		InputTokenCap:          16384,
 		MaxMessages:            256,
@@ -81,34 +78,34 @@ func TestValidBaseIsValid(t *testing.T) {
 
 // --- ValidateSemantics rules ---
 
-func TestSemanticsInstallCapVsGlobalBudget(t *testing.T) {
+func TestSemanticsMonthlySpendMustBePositive(t *testing.T) {
 	c := validBase()
-	c.InstallDailySpendPUSD = c.GlobalDailySpendPUSD + 1
+	c.GlobalMonthlySpendPUSD = 0
 	err := c.ValidateSemantics()
-	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_SPEND_MICRO_USD") {
-		t.Fatalf("want install-cap>budget error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "GLOBAL_MONTHLY_SPEND_MICRO_USD") {
+		t.Fatalf("want monthly budget error, got %v", err)
 	}
 }
 
-func TestSemanticsMultimodalQuoteVsInstallCap(t *testing.T) {
+func TestSemanticsMultimodalQuoteVsMonthlyBudget(t *testing.T) {
 	c := validBase()
-	c.InstallDailySpendPUSD = 100_000_000_000 // $0.10: above text, below Kimi hard quote.
+	c.GlobalMonthlySpendPUSD = 100_000_000_000 // $0.10: above text, below Kimi hard quote.
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
-		t.Fatalf("want quote>install-cap error, got %v", err)
+		t.Fatalf("want quote>monthly-budget error, got %v", err)
 	}
 }
 
-func TestSemanticsMultimodalQuoteAtBoundPasses(t *testing.T) {
+func TestSemanticsMultimodalQuoteAtMonthlyBudgetBoundPasses(t *testing.T) {
 	c := validBase()
 	p, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
 		billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.InstallDailySpendPUSD = p.ReservedPUSD
+	c.GlobalMonthlySpendPUSD = p.ReservedPUSD
 	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("quote == install cap should pass, got %v", err)
+		t.Fatalf("quote == monthly budget should pass, got %v", err)
 	}
 }
 
@@ -116,11 +113,10 @@ func TestSemanticsKimiDisabledDoesNotConstrainTextStartup(t *testing.T) {
 	c := validBase()
 	c.KimiAPIKeys = nil
 	c.MultimodalUpstreamModel = "inactive-unknown-model"
-	c.KimiDailySpendPUSD = c.GlobalDailySpendPUSD + 1
 	// $0.10 is safely above this text fixture's worst quote, but below the
 	// conservative Kimi full-model quote. With no Kimi credential, only the
 	// text route is active and startup must remain healthy.
-	c.InstallDailySpendPUSD = 100_000 * billing.PicoUSDPerMicroUSD
+	c.GlobalMonthlySpendPUSD = 100_000 * billing.PicoUSDPerMicroUSD
 	if err := c.ValidateSemantics(); err != nil {
 		t.Fatalf("inactive Kimi constrained text-only startup: %v", err)
 	}
@@ -221,7 +217,7 @@ func TestApplyOverrideBoundsRejectedPerKey(t *testing.T) {
 	}{
 		{"MONTHLY_QUOTA", "0", "MONTHLY_QUOTA must be >= 1"},
 		{"MONTHLY_QUOTA", "1000000001", "MONTHLY_QUOTA must be <= 1000000000"},
-		{"GLOBAL_DAILY_SPEND_MICRO_USD", "0", "GLOBAL_DAILY_SPEND_MICRO_USD must be >= 1"},
+		{"GLOBAL_MONTHLY_SPEND_MICRO_USD", "0", "GLOBAL_MONTHLY_SPEND_MICRO_USD must be >= 1"},
 		{"MAX_TOKENS_CAP", "0", "MAX_TOKENS_CAP must be >= 1"},
 		{"MAX_TOKENS_CAP", "1000001", "MAX_TOKENS_CAP must be <= 1000000"},
 		{"MAX_MESSAGES", "0", "MAX_MESSAGES must be >= 1"},
@@ -396,12 +392,13 @@ func TestApplyOverridePowModeInvalidValue(t *testing.T) {
 // --- ApplyOverrides: cross-field semantics re-run on the batch ---
 
 func TestApplyOverrideReRunsSemantics(t *testing.T) {
-	// Individually valid, but together they break install-cap <= global-budget.
+	// Individually valid, but together they make the fixed model quote larger
+	// than the operator monthly budget.
 	_, err := ApplyOverrides(validBase(), map[string]string{
-		"GLOBAL_DAILY_SPEND_MICRO_USD":  "700000",
-		"INSTALL_DAILY_SPEND_MICRO_USD": "800000",
+		"GLOBAL_MONTHLY_SPEND_MICRO_USD": "100000",
+		"MAX_TOKENS_CAP":                 "1000000",
 	})
-	if err == nil || !strings.Contains(err.Error(), "INSTALL_DAILY_SPEND_MICRO_USD") {
+	if err == nil || !strings.Contains(err.Error(), "GLOBAL_MONTHLY_SPEND_MICRO_USD") {
 		t.Fatalf("batch must re-run semantics, got %v", err)
 	}
 }

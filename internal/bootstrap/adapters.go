@@ -57,14 +57,9 @@ type quotaCfgSource struct{ p *configprovider.Provider }
 func (q quotaCfgSource) Limits() appquota.Limits {
 	c := q.p.Load()
 	return appquota.Limits{
-		MonthlyQuota:          c.MonthlyQuota,
-		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
-		ProviderDailySpendPUSD: map[billing.Provider]int64{
-			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
-			billing.ProviderKimi:     c.KimiDailySpendPUSD,
-		},
-		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
-		DailySublimit:        c.DailySublimit,
+		MonthlyQuota:           c.MonthlyQuota,
+		GlobalMonthlySpendPUSD: c.GlobalMonthlySpendPUSD,
+		DailySublimit:          c.DailySublimit,
 	}
 }
 

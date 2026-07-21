@@ -46,7 +46,7 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 
 | 域 | app 包 | 入口端点 | 权威契约 |
 |---|---|---|---|
-| quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 四闸预留与显式 ledger 状态（A 组） |
+| quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 双闸预留（install 月次数 + operator 月预算）与显式 ledger 状态（A 组） |
 | install | `app/install` | `POST /v1/install` · `GET /v1/install/challenge` | GW-INV-12/16/20、防 Sybil + PoW 三态 |
 | chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
 | model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |

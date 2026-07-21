@@ -17,12 +17,12 @@ import (
 // (configprovider, quotastore, installstore, metrics, alerter, ratesample) that
 // satisfy these structurally, so app/dashboard stays unit-testable with fakes.
 
-// BudgetSource reads the GLOBAL daily spend budget for the overview. The quota
+// BudgetSource reads the GLOBAL monthly spend budget for the overview. The quota
 // layer's per-install View is not the global figure, so the dashboard declares
-// its own narrow port: today's window day, limit and used spend, all expressed
+// its own narrow port: current period, limit and used spend, all expressed
 // as integer micro-USD at this display boundary. Reserves/bills nothing.
 type BudgetSource interface {
-	// GlobalBudget returns today's RESET_TZ window day and the global limit/used
+	// GlobalBudget returns the current RESET_TZ month and the global limit/used
 	// amounts in micro-USD. A missing spend row reads usedMicroUSD=0.
 	GlobalBudget(ctx context.Context) (day string, limitMicroUSD, usedMicroUSD int64, err error)
 }

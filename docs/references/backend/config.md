@@ -30,10 +30,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | key | 默认 | Min | Max | Restart | 语义 |
 |---|---:|---:|---:|---|---|
 | `PUBLIC_MODEL_ID` | `anselm-auto` | — | — | 否 | 唯一 client-facing 逻辑模型 id；非空；不选择 provider |
-| `GLOBAL_DAILY_SPEND_MICRO_USD` | 14,000,000 | 1 | 9,000,000,000,000 | 否 | shared global 日钱包（默认 $14） |
-| `INSTALL_DAILY_SPEND_MICRO_USD` | 5,600,000 | 1 | 9,000,000,000,000 | 否 | per-install 日钱包（默认 $5.60） |
-| `DEEPSEEK_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | DeepSeek provider 日钱包 |
-| `KIMI_DAILY_SPEND_MICRO_USD` | 当前 global 值 | 1 | 9,000,000,000,000 | 否 | Kimi provider 日钱包 |
+| `GLOBAL_MONTHLY_SPEND_MICRO_USD` | 420,000,000 | 1 | 9,000,000,000,000 | 否 | operator 全局月花费钱包（默认 $420/月） |
 | `MONTHLY_QUOTA` | 5000 | 1 | 1,000,000,000 | 否 | per-install 月请求次数 |
 | `MAX_TOKENS_CAP` | 4096 | 1 | 1,000,000 | 否 | caller `max_tokens` 的 operator 保险丝；缺省请求不主动写 wire `max_tokens`，账务仍按此上限保守预留 |
 | `INPUT_TOKEN_CAP` | 16384 | 0 | 10,000,000 | 否 | 文本/tools 保守 estimate 上限；0=禁用；**不是媒体 token 上限** |
@@ -70,7 +67,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
 | `MULTIMODAL_UPSTREAM_MODEL` | `kimi-k2.6` | Kimi 启用时必须是精确已编译 rate card；媒体路由 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
-| `KIMI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
+| `KIMI_BASE_URL` | `https://api.moonshot.ai/v1` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
 | `READ_POOL_MAX_CONNS` | 4 | >0 |
@@ -104,11 +101,11 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 
 ## 5. 跨字段语义（每次 env-load / overlay / hot batch 都跑）
 
-1. 四个 spend cap 都 >0；`INSTALL_DAILY_SPEND_MICRO_USD` 与 DeepSeek provider cap 始终 ≤ `GLOBAL_DAILY_SPEND_MICRO_USD`；Kimi provider cap 仅在 `KIMI_API_KEY` 已配置、该 provider 启用时要求 ≤ global（inactive 值不阻断纯文本启动）。
+1. `GLOBAL_MONTHLY_SPEND_MICRO_USD>0`，并且任一已启用 route 的单请求最坏 quote 必须能装入该月预算；否则配置 fail-fast/热改拒绝。
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
 3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Kimi route 注入 `thinking.enabled` 且不传 `reasoning_effort`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
-4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入 install 日 cap。
-5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，Kimi provider wallet 必须装入 global wallet，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入 install 日 cap。未配 key 时这些 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
+4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；`INPUT_TOKEN_CAP≤1,000,000`；`min(MAX_TOKENS_CAP,384,000)` 与文本输入 quote 的最坏成本必须装入全局月预算。
+5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入全局月预算。未配 key 时 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 
@@ -122,4 +119,4 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 
 ## 7. v1 overlay 迁移
 
-迁移 `0002_provider_spend_ledger.sql` 将旧 `GLOBAL_DAILY_BUDGET_TOKENS` / `INSTALL_DAILY_TOKEN_CAP` 以 `ceil(tokens×280000 pUSD / 10^6)` 换为新 microUSD settings，并删除旧键与 `MODEL_ALLOWLIST`。新版本不读取这些旧 env/settings 名称；`PUBLIC_MODEL_ID` 是唯一公开模型配置。
+迁移 `0002_provider_spend_ledger.sql` 曾将旧 `GLOBAL_DAILY_BUDGET_TOKENS` / `INSTALL_DAILY_TOKEN_CAP` 换为 retired daily spend settings；`0004_global_monthly_budget.sql` 将历史 `global_spend_daily` 聚合到 `global_spend_monthly`，并删除旧 daily/provider/install spend settings。新版本不读取这些旧 env/settings 名称；`PUBLIC_MODEL_ID` 是唯一公开模型配置。

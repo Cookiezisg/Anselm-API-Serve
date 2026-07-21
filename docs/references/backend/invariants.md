@@ -17,16 +17,16 @@ audience: [human, ai]
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-01 | 四道闸门（月请求 `quota_monthly.requests<MonthlyQuota`、install 日 pUSD、所选 provider 日 pUSD、global 日 pUSD）与 `spend_ledger(state='open')` 在写池单个 `BEGIN IMMEDIATE` 内原子悲观预留；任一条件 `UPDATE` 未命中则整 tx 回滚 | 并发尖峰超卖额度或运营者钱包 |
-| GW-INV-02 | 只有 `CallFailure.Exposure==DefinitelyUnbilled` 可 rollback：Open 前本地拒绝或 provider 明确 pre-generation 3xx/4xx（400/401/402/403/429 等）；rollback 原子反转月额度、install/provider/global 三钱包及实际启用的日子限次数 | 从 wire code 猜退款形成可刷欠扣通道；部分退款破坏守恒 |
+| GW-INV-01 | 两道请求拒绝闸门（per-install 月请求 `quota_monthly.requests<MonthlyQuota`、operator 月 pUSD `global_spend_monthly.spend_pusd+reserved≤GlobalMonthlySpendPUSD`）与 `spend_ledger(state='open')` 在写池单个 `BEGIN IMMEDIATE` 内原子悲观预留；install/provider/global 日表只做统计与审计，不因日花费拒绝请求 | 并发尖峰超卖用户月额度或运营者月钱包；把统计表误当闸门导致误杀 |
+| GW-INV-02 | 只有 `CallFailure.Exposure==DefinitelyUnbilled` 可 rollback：Open 前本地拒绝或 provider 明确 pre-generation 3xx/4xx（400/401/402/403/429 等）；rollback 原子反转 per-install 月额度、operator 月钱包、日统计余额/requests 及实际启用的日子限次数 | 从 wire code 猜退款形成可刷欠扣通道；部分退款破坏守恒 |
 | GW-INV-03 | `ChargeExposure` 与 `APIError`/breaker/retry 正交：零值及未知值均 `ChargePossible`，connect/TLS/read/timeout/5xx/call 中 cancel/nil stream 立即 full settle；同一 `UPSTREAM_ERROR` 可对应 rollback 或 full settle，app 只能调用 `MayHaveCharged()` | provider 已收费却因错误码退款，或 adapter 漏字段静默欠扣 |
 | GW-INV-04 | `spend_ledger` 终态转换都以 `WHERE state='open'` 做单赢家 CAS：`open→settled|rolled_back|orphaned`；`RowsAffected()==0` 为幂等 no-op | 双退款、双补记或状态/余额分裂 |
 | GW-INV-05 | `Period{Month,Day}` 在请求入口按 `RESET_TZ` 快照一次并贯穿 Reserve/Settle/Rollback；任何终态操作都绝不重算日期 | 跨午夜结算落错月/日行 |
-| GW-INV-06 | aged `open` 孤儿原子转为 `orphaned(charged_pusd=reserved_pusd)`，余额和请求计数均不退款；崩溃与未知外部结果只能多扣、不能少扣。0002 对 legacy ledger 同样保守：open 取 reserved、positive settled 取 settled、zero rollback 排除，三钱包 floor=`max(v1 balance, chargeable ledger aggregate×rate)`，聚合溢出则整迁移失败 | 自动退款或迁移漏掉一个 provider 可能已收费的请求，形成永久欠账 |
-| GW-INV-07 | 三个金额钱包都按 `period_day='YYYY-MM-DD'`：install/provider/global cap 均须为正，install/provider cap 均不得超过 global cap；global 是共享最终护栏 | 单 install/provider 抽干共享钱包，或日边界漂移 |
+| GW-INV-06 | aged `open` 孤儿原子转为 `orphaned(charged_pusd=reserved_pusd)`，余额和请求计数均不退款；崩溃与未知外部结果只能多扣、不能少扣。0002 对 legacy ledger 同样保守：open 取 reserved、positive settled 取 settled、zero rollback 排除，日统计 floor=`max(v1 balance, chargeable ledger aggregate×rate)`；0004 从 global 日统计聚合出 operator 月钱包，聚合溢出则整迁移失败 | 自动退款或迁移漏掉一个 provider 可能已收费的请求，形成永久欠账 |
+| GW-INV-07 | 唯一 spend 拒绝钱包是 `global_spend_monthly(period_month='YYYY-MM')`，cap 必须为正；`install_spend_daily`、`provider_spend_daily`、`global_spend_daily` 只记录花费与请求数统计 | 日花费误杀请求、provider/installation 分钱包与 operator 月预算语义分裂 |
 | GW-INV-08 | Reserve 只接受由精确 provider/model rate card 构造且可自校验的冻结 `billing.Plan`；跨 provider raw token 绝不相加，只有 pUSD 可进入余额 | 伪造零价 plan 或把不同价格 token 当同一金额导致超卖 |
-| GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up 三个 pUSD 钱包；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Kimi 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
-| GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Kimi K2.6 compatibility 因不能证明 thinking 上界而 reserve 完整 `262,144` input + `32,768` output hard limits；任一请求 quote 必须能装入 install 日 cap，否则配置 fail-fast/请求 pre-reserve 400 | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Kimi hidden thinking 造成欠预留 |
+| GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up operator 月钱包与日统计表；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Kimi 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
+| GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Kimi K2.6 compatibility 因不能证明 thinking 上界而 reserve 完整 `262,144` input + `32,768` output hard limits；任一已启用 route 的单请求 quote 必须能装入 operator 月预算，否则配置 fail-fast | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Kimi hidden thinking 造成欠预留 |
 
 ## B. 安全
 

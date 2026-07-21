@@ -223,14 +223,10 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		writeErr(sink, planAPIError)
 		return
 	}
-	if cfg.InstallDailySpendPUSD > 0 && plan.ReservedPUSD > cfg.InstallDailySpendPUSD {
-		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST",
-			"request exceeds the per-install daily spend capacity"))
-		return
-	}
 	out := domchat.Sanitize(req, wireMaxTok)
 
-	// 7) Reserve atomically (count / install/provider/global pUSD wallets). The
+	// 7) Reserve atomically (per-install monthly count + operator monthly pUSD
+	// wallet, while daily/provider tables remain accounting statistics). The
 	// period is snapshotted ONCE and threaded unchanged through settle/rollback.
 	period := s.quota.SnapshotPeriod(s.clock.Now())
 	resv, rerr := s.quota.Reserve(ctx, installID, plan, period)

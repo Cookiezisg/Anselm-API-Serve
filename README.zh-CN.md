@@ -7,14 +7,14 @@
 它做三件事:
 
 1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用)。整段 messages 历史决定 provider;客户不能选 provider,两路之间也不 fallback。
-2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占月请求数、install 日花费、provider 日花费和全局日花费。成功依上游 usage 结算;无法判定的失败保留保守扣费。
+2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占每 install 月请求数和 operator 全局月花费预算。成功依上游 usage 结算;无法判定的失败保留保守扣费。
 3. **限流** —— 匿名 install token(只存 SHA-256),外加默认关闭的 Proof-of-Work 与限流闸。
 
 代码采用 Clean Architecture(domain / app / infra / transport,加一个 bootstrap 组合根),依赖方向由 golangci-lint(depguard)强制。四层都有测试,另有一个 loopback 全栈端到端套件;CI 跑 race 测试、lint、govulncheck、gofmt,以及一项"内嵌后台的构建是否与源一致"的检查。
 
 ## 成本记账
 
-四道护栏 —— 月请求数、单 install 日花费、单 provider 日花费、全局日花费 —— 在单写连接池的一个 `BEGIN IMMEDIATE` 事务里预占。不同 provider 的 token 向量绝不直接相加:每个请求先按冻结的精确模型费率卡换算,只有整数 picoUSD 成本进入共享钱包。
+两道会拒绝请求的护栏 —— 每 install 月请求数、operator 全局月花费 —— 在单写连接池的一个 `BEGIN IMMEDIATE` 事务里预占。不同 provider 的 token 向量绝不直接相加:每个请求先按冻结的精确模型费率卡换算,只有整数 picoUSD 成本进入共享钱包。install/provider/global 日表继续记录统计,不再作为流量闸门。
 
 确定没有达到 provider 前的拒绝会回滚预占。一旦请求已交给 provider,缺 usage、超时、断连或崩溃都保留保守预占;完整 usage 则结算到计算成本。账本转移是 compare-and-swap 且幂等,因此失败模式是多扣,不是花了 operator 的钱却没记账。
 
@@ -93,7 +93,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,逗号分隔;不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
 
-公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`KIMI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。默认对用户可见的使用护栏是每 install `MONTHLY_QUOTA=5000`;花费上限、有界输入/输出与 `N_GLOBAL_CONCURRENCY` 继续作为 operator 安全护栏。每分钟聊天频控、日请求子限、自动降速与领号频控默认都禁用(`0`/`off`)。
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；有界输入/输出与 `N_GLOBAL_CONCURRENCY` 继续作为服务安全护栏。每分钟聊天频控、日请求子限、自动降速与领号频控默认都禁用(`0`/`off`)。
 
 ## 部署
 

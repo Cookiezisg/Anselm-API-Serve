@@ -15,15 +15,14 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// minimalEnv supplies the sole required secret plus explicit spend-wallet values
+// minimalEnv supplies the sole required secret plus an explicit spend-wallet value
 // that satisfy the compiled model quotes. PUBLIC_MODEL_ID is included so its
 // default/override behavior remains visible in fixtures even though it is optional.
 func minimalEnv() map[string]string {
 	return map[string]string{
-		"DEEPSEEK_API_KEY":              "sk-a,sk-b",
-		"PUBLIC_MODEL_ID":               "anselm-auto",
-		"GLOBAL_DAILY_SPEND_MICRO_USD":  "14000000",
-		"INSTALL_DAILY_SPEND_MICRO_USD": "5600000",
+		"DEEPSEEK_API_KEY":               "sk-a,sk-b",
+		"PUBLIC_MODEL_ID":                "anselm-auto",
+		"GLOBAL_MONTHLY_SPEND_MICRO_USD": "420000000",
 	}
 }
 
@@ -175,21 +174,16 @@ func TestLoadBaseFailFast(t *testing.T) {
 		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
 		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
 		{"unknown priced model", func(m map[string]string) { m["TEXT_UPSTREAM_MODEL"] = "deepseek-latest" }, nil, "no exact rate card"},
-		{"budget zero", func(m map[string]string) { m["GLOBAL_DAILY_SPEND_MICRO_USD"] = "0" }, nil, "GLOBAL_DAILY_SPEND_MICRO_USD must be >= 1"},
-		{"cap zero", func(m map[string]string) { m["INSTALL_DAILY_SPEND_MICRO_USD"] = "0" }, nil, "INSTALL_DAILY_SPEND_MICRO_USD must be >= 1"},
+		{"budget zero", func(m map[string]string) { m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "0" }, nil, "GLOBAL_MONTHLY_SPEND_MICRO_USD must be >= 1"},
 		{"bad int", func(m map[string]string) { m["MONTHLY_QUOTA"] = "abc" }, nil, "invalid int"},
 		{"over ceiling", func(m map[string]string) { m["MAX_TOKENS_CAP"] = "9999999" }, nil, "MAX_TOKENS_CAP must be <="},
 		{"body cap under floor", func(m map[string]string) { m["MAX_BODY_BYTES"] = "4095" }, nil, "MAX_BODY_BYTES must be >= 4096"},
 		{"body cap over ceiling", func(m map[string]string) { m["MAX_BODY_BYTES"] = "8388609" }, nil, "MAX_BODY_BYTES must be <= 8388608"},
 		{"pow mode typo", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enabled" }, nil, "INSTALL_POW_MODE"},
 		{"pow secret required", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enforce" }, nil, "CONFIG_POW_SECRET_REQUIRED"},
-		{"cap exceeds budget", func(m map[string]string) {
-			m["GLOBAL_DAILY_SPEND_MICRO_USD"] = "700000"
-			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "800000"
-		}, nil, "must be <= GLOBAL_DAILY_SPEND_MICRO_USD"},
-		{"per-req exceeds cap", func(m map[string]string) {
+		{"per-req exceeds monthly budget", func(m map[string]string) {
 			m["KIMI_API_KEY"] = "gem-key"
-			m["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
+			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "100000"
 		}, nil, "multimodal hard-limit quote"},
 		{"dashboard half auth", func(m map[string]string) { m["DASHBOARD_USER"] = "admin" }, nil, "must be set together"},
 		{"listeners collide", func(m map[string]string) { m["DASHBOARD_ADDR"] = "127.0.0.1:8080" }, nil, "must not equal LISTEN_ADDR"},
@@ -218,16 +212,15 @@ func TestLoadBaseFailFast(t *testing.T) {
 
 func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveKimi(t *testing.T) {
 	env := minimalEnv()
-	env["INSTALL_DAILY_SPEND_MICRO_USD"] = "100000"
+	env["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "100000"
 	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
-	env["KIMI_DAILY_SPEND_MICRO_USD"] = "15000000"
 	if _, err := LoadBase(envMap(env)); err != nil {
 		t.Fatalf("Kimi-disabled deployment should validate only active text cost: %v", err)
 	}
 
 	env["KIMI_API_KEY"] = "gem-key"
-	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "KIMI_DAILY_SPEND_MICRO_USD") {
-		t.Fatalf("enabling Kimi must activate its wallet/model checks, got %v", err)
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MULTIMODAL_UPSTREAM_MODEL") {
+		t.Fatalf("enabling Kimi must activate its model checks, got %v", err)
 	}
 }
 

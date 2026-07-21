@@ -87,10 +87,7 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
 		MultimodalUpstreamModel: billing.KimiK26,
 		MonthlyQuota:            100,
-		GlobalDailySpendPUSD:    10 * billing.PicoUSDPerUSD,
-		InstallDailySpendPUSD:   2 * billing.PicoUSDPerUSD,
-		DeepSeekDailySpendPUSD:  10 * billing.PicoUSDPerUSD,
-		KimiDailySpendPUSD:      10 * billing.PicoUSDPerUSD,
+		GlobalMonthlySpendPUSD:  10 * billing.PicoUSDPerUSD,
 		MaxTokensCap:            4096,
 		InputTokenCap:           16384,
 		MaxMessages:             256,
@@ -267,14 +264,9 @@ type quotaCfg struct{ p *configprovider.Provider }
 func (q quotaCfg) Limits() appquota.Limits {
 	c := q.p.Load()
 	return appquota.Limits{
-		MonthlyQuota:          c.MonthlyQuota,
-		InstallDailySpendPUSD: c.InstallDailySpendPUSD,
-		ProviderDailySpendPUSD: map[billing.Provider]int64{
-			billing.ProviderDeepSeek: c.DeepSeekDailySpendPUSD,
-			billing.ProviderKimi:     c.KimiDailySpendPUSD,
-		},
-		GlobalDailySpendPUSD: c.GlobalDailySpendPUSD,
-		DailySublimit:        c.DailySublimit,
+		MonthlyQuota:           c.MonthlyQuota,
+		GlobalMonthlySpendPUSD: c.GlobalMonthlySpendPUSD,
+		DailySublimit:          c.DailySublimit,
 	}
 }
 func (q quotaCfg) Location() *time.Location { return q.p.Load().Location }
@@ -1079,14 +1071,14 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 	}
 }
 
-// TestE2EBudgetExhaustion: with a global daily pUSD wallet smaller than a single
+// TestE2EBudgetExhaustion: with a global monthly pUSD wallet smaller than a single
 // request's frozen rate-card quote, Reserve denies before any upstream call and
 // returns 402 BUDGET_EXHAUSTED over the real stack.
 func TestE2EBudgetExhaustion(t *testing.T) {
 	up, _ := fakeDeepSeek(t)
-	// One pUSD is below every non-empty DeepSeek quote. The install/provider wallets
-	// remain ample, so this isolates the shared-wallet gate.
-	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalDailySpendPUSD = 1 })
+	// One pUSD is below every non-empty DeepSeek quote, isolating the shared
+	// operator monthly budget gate.
+	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalMonthlySpendPUSD = 1 })
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := srv.Client()

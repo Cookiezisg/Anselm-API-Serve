@@ -42,15 +42,15 @@ const (
 	MaxMonthlyQuota       int64 = 1_000_000_000
 	MaxPublicModelIDBytes int   = 128
 	// Spend knobs are entered as integer micro-USD and converted exactly to the
-	// pico-USD accounting unit. $9M/day is already far beyond this gateway's
+	// pico-USD accounting unit. $9M/month is already far beyond this gateway's
 	// intended envelope while leaving multiplication headroom in int64.
-	MaxDailySpendMicroUSD int64 = 9_000_000_000_000
-	MaxTokensCap          int64 = 1_000_000
-	MaxInputTokenCap      int64 = 10_000_000
-	MaxMessages           int   = 100_000
-	MaxMessageChars       int   = 16 * 1024 * 1024
-	MaxMediaParts         int   = 64
-	MaxMediaDecodedBytes  int64 = 8 * 1024 * 1024
+	MaxMonthlySpendMicroUSD int64 = 9_000_000_000_000
+	MaxTokensCap            int64 = 1_000_000
+	MaxInputTokenCap        int64 = 10_000_000
+	MaxMessages             int   = 100_000
+	MaxMessageChars         int   = 16 * 1024 * 1024
+	MaxMediaParts           int   = 64
+	MaxMediaDecodedBytes    int64 = 8 * 1024 * 1024
 	// MaxBodyBytesCeiling bounds MAX_BODY_BYTES: bodies are fully buffered (~3.5×
 	// peak per in-flight request incl. decode + upstream re-marshal), so the
 	// ceiling is what the reference 2G box tolerates at N_GLOBAL — never higher.
@@ -102,10 +102,7 @@ type Config struct {
 	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Kimi id)
 
 	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
-	GlobalDailySpendPUSD   int64 // GLOBAL_DAILY_SPEND_MICRO_USD converted to pUSD
-	InstallDailySpendPUSD  int64 // INSTALL_DAILY_SPEND_MICRO_USD converted to pUSD
-	DeepSeekDailySpendPUSD int64 // DEEPSEEK_DAILY_SPEND_MICRO_USD provider wallet
-	KimiDailySpendPUSD     int64 // KIMI_DAILY_SPEND_MICRO_USD provider wallet
+	GlobalMonthlySpendPUSD int64 // GLOBAL_MONTHLY_SPEND_MICRO_USD converted to pUSD
 	MaxTokensCap           int64 // MAX_TOKENS_CAP(caller max_tokens 保险丝;兼缺省请求预留额输出分量)
 	InputTokenCap          int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
 	MaxMessages            int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
@@ -241,36 +238,15 @@ func validatePowSecretPresent(mode string, secret []byte) error {
 // named explicitly on failure. Run on the env-load path, the startup overlay
 // assembly, AND every hot override batch — the single source of cross-field truth.
 //
-// Cross-field rules: install/active-provider cost caps fit under the shared
-// wallet; every active upstream model has a compiled immutable rate card; one
-// request's provable worst-case quote fits the install cap; media cannot exceed
-// the body memory envelope; effective PoW modes have a secret. Kimi-dependent
-// checks are conditional on its optional credential: an intentionally text-only
-// deployment must not fail startup because of an inactive media wallet/model.
+// Cross-field rules: the operator monthly budget is positive; every active
+// upstream model has a compiled immutable rate card; one request's provable
+// worst-case quote fits the monthly operator budget; media cannot exceed the
+// body memory envelope; effective PoW modes have a secret. Kimi-dependent checks
+// are conditional on its optional credential: an intentionally text-only
+// deployment must not fail startup because of an inactive media model.
 func (c *Config) ValidateSemantics() error {
-	if c.GlobalDailySpendPUSD <= 0 || c.InstallDailySpendPUSD <= 0 {
-		return fmt.Errorf("SEC-2 config: daily spend limits must be > 0")
-	}
-	if c.InstallDailySpendPUSD > c.GlobalDailySpendPUSD {
-		return fmt.Errorf(
-			"SEC-2 config: INSTALL_DAILY_SPEND_MICRO_USD must be <= GLOBAL_DAILY_SPEND_MICRO_USD")
-	}
-	providerCaps := []struct {
-		name string
-		cap  int64
-	}{
-		{"DEEPSEEK_DAILY_SPEND_MICRO_USD", c.DeepSeekDailySpendPUSD},
-	}
-	if len(c.KimiAPIKeys) > 0 {
-		providerCaps = append(providerCaps, struct {
-			name string
-			cap  int64
-		}{"KIMI_DAILY_SPEND_MICRO_USD", c.KimiDailySpendPUSD})
-	}
-	for _, item := range providerCaps {
-		if item.cap <= 0 || item.cap > c.GlobalDailySpendPUSD {
-			return fmt.Errorf("SEC-2 config: %s must be > 0 and <= GLOBAL_DAILY_SPEND_MICRO_USD", item.name)
-		}
+	if c.GlobalMonthlySpendPUSD <= 0 {
+		return fmt.Errorf("SEC-2 config: GLOBAL_MONTHLY_SPEND_MICRO_USD must be > 0")
 	}
 	if !validPublicModelID(c.PublicModelID) {
 		return fmt.Errorf("SEC-2 config: PUBLIC_MODEL_ID must be 1..%d ASCII bytes using letters, digits, '.', '_', '-', ':', or '/'", MaxPublicModelIDBytes)
@@ -285,8 +261,8 @@ func (c *Config) ValidateSemantics() error {
 	if err != nil {
 		return fmt.Errorf("SEC-2 config: TEXT_UPSTREAM_MODEL has no exact rate card: %w", err)
 	}
-	if textPlan.ReservedPUSD > c.InstallDailySpendPUSD {
-		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds INSTALL_DAILY_SPEND_MICRO_USD")
+	if textPlan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
+		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
 	}
 	if len(c.KimiAPIKeys) > 0 {
 		// Kimi compatibility does not promise a smaller thinking-token sub-cap.
@@ -297,8 +273,8 @@ func (c *Config) ValidateSemantics() error {
 		if err != nil {
 			return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}
-		if mediaPlan.ReservedPUSD > c.InstallDailySpendPUSD {
-			return fmt.Errorf("SEC-2 config: multimodal hard-limit quote exceeds INSTALL_DAILY_SPEND_MICRO_USD")
+		if mediaPlan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
+			return fmt.Errorf("SEC-2 config: multimodal hard-limit quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
 		}
 	}
 	if c.MaxMediaParts < 1 || c.MaxMediaParts > MaxMediaParts {

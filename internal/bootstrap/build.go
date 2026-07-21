@@ -63,7 +63,7 @@ type App struct {
 	providers        *chatprovider.Registry
 	disk             *diskguard.Guard
 	prober           *upstreamProber
-	dailyBudget      budgetSource
+	monthlyBudget    budgetSource
 	mx               *metrics.Metrics
 	alerter          *alert.Alerter
 	rate             *ratesample.Sampler
@@ -153,7 +153,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 
 	// 6) Metrics bundle (RED + golden signals). Mounted loopback-only on admin.
 	mx := metrics.New()
-	mx.BudgetLimit.Set(float64(effective.GlobalDailySpendPUSD) / float64(billing.PicoUSDPerUSD))
+	mx.BudgetLimit.Set(float64(effective.GlobalMonthlySpendPUSD) / float64(billing.PicoUSDPerUSD))
 	mx.BreakerState.WithLabelValues(string(billing.ProviderDeepSeek)).Set(0)
 	mx.BreakerState.WithLabelValues(string(billing.ProviderKimi)).Set(0)
 	inflight := &atomic.Int64{} // shared mirror: chat writes, dashboard reads.
@@ -267,14 +267,14 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 15) Dashboard — only when BOTH auth secrets are set (a half-config already
 	// fails fast in LoadBase). The Static SPA handler is the embedded React build
 	// (infra/webassets), serving /static/ assets + the SPA shell for non-API GETs.
-	dailyBudget := budgetSource{
+	monthlyBudget := budgetSource{
 		ds:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
-		getLimit: func() int64 { return cfgP.Load().GlobalDailySpendPUSD },
+		getLimit: func() int64 { return cfgP.Load().GlobalMonthlySpendPUSD },
 	}
 	var dashSrv *http.Server
 	if effective.DashboardUser != "" && effective.DashboardPassword != "" {
 		dashSvc := appdash.New(appdash.Deps{
-			Budget:       dailyBudget,
+			Budget:       monthlyBudget,
 			Reservations: quotaStore,
 			Inflight:     inflightSource{v: inflight},
 			Providers:    providers,
@@ -337,7 +337,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		providers:        providers,
 		disk:             dg,
 		prober:           prober,
-		dailyBudget:      dailyBudget,
+		monthlyBudget:    monthlyBudget,
 		mx:               mx,
 		alerter:          alerter,
 		rate:             sampler,

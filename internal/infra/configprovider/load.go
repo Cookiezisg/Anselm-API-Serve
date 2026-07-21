@@ -77,14 +77,8 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
 
-	globalSpendMicro := g.boundedInt64("GLOBAL_DAILY_SPEND_MICRO_USD", 14_000_000, 1, config.MaxDailySpendMicroUSD)
-	installSpendMicro := g.boundedInt64("INSTALL_DAILY_SPEND_MICRO_USD", 5_600_000, 1, config.MaxDailySpendMicroUSD)
-	deepSeekSpendMicro := g.boundedInt64("DEEPSEEK_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
-	kimiSpendMicro := g.boundedInt64("KIMI_DAILY_SPEND_MICRO_USD", globalSpendMicro, 1, config.MaxDailySpendMicroUSD)
-	c.GlobalDailySpendPUSD = globalSpendMicro * billing.PicoUSDPerMicroUSD
-	c.InstallDailySpendPUSD = installSpendMicro * billing.PicoUSDPerMicroUSD
-	c.DeepSeekDailySpendPUSD = deepSeekSpendMicro * billing.PicoUSDPerMicroUSD
-	c.KimiDailySpendPUSD = kimiSpendMicro * billing.PicoUSDPerMicroUSD
+	monthlySpendMicro := g.boundedInt64("GLOBAL_MONTHLY_SPEND_MICRO_USD", 420_000_000, 1, config.MaxMonthlySpendMicroUSD)
+	c.GlobalMonthlySpendPUSD = monthlySpendMicro * billing.PicoUSDPerMicroUSD
 
 	c.MaxTokensCap = g.boundedInt64("MAX_TOKENS_CAP", 4096, 1, config.MaxTokensCap)
 	// INPUT_TOKEN_CAP=0 disables the input estimate gate (upstream model judges).

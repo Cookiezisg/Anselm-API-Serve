@@ -135,13 +135,12 @@ Plan = provider + actual model + rate-card version
 
 ```text
 monthly entitlement
-  + install-day pUSD
-  + selected-provider-day pUSD
-  + global-day pUSD
+  + daily pUSD statistics
+  + operator global-month pUSD
   + spend_ledger(open)
 ```
 
-任何 gate 未命中，整 tx 回滚。Reservation 携带入口 `Period`、冻结 Plan 与 `SublimitApplied`，后续不重读 hot config 来猜“当时扣了什么”。
+任何请求闸门未命中，整 tx 回滚。Reservation 携带入口 `Period`、冻结 Plan 与 `SublimitApplied`，后续不重读 hot config 来猜“当时扣了什么”。日表记录统计；真正按金额拒绝请求的是 operator 全局月钱包。
 
 ```text
 open ── usage / conservative full quote ──▶ settled

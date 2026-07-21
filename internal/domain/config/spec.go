@@ -60,42 +60,15 @@ func Specs() []Spec {
 				return nil
 			},
 			get: func(c *Config) string { return c.PublicModelID }},
-		{Key: "GLOBAL_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
+		{Key: "GLOBAL_MONTHLY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxMonthlySpendMicroUSD,
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("GLOBAL_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
+				n, err := reqInt64("GLOBAL_MONTHLY_SPEND_MICRO_USD", raw, 1, MaxMonthlySpendMicroUSD)
 				if err == nil {
-					c.GlobalDailySpendPUSD = n * 1_000_000
+					c.GlobalMonthlySpendPUSD = n * 1_000_000
 				}
 				return err
 			},
-			get: func(c *Config) string { return strconv.FormatInt(c.GlobalDailySpendPUSD/1_000_000, 10) }},
-		{Key: "INSTALL_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
-			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("INSTALL_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
-				if err == nil {
-					c.InstallDailySpendPUSD = n * 1_000_000
-				}
-				return err
-			},
-			get: func(c *Config) string { return strconv.FormatInt(c.InstallDailySpendPUSD/1_000_000, 10) }},
-		{Key: "DEEPSEEK_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
-			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("DEEPSEEK_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
-				if err == nil {
-					c.DeepSeekDailySpendPUSD = n * 1_000_000
-				}
-				return err
-			},
-			get: func(c *Config) string { return strconv.FormatInt(c.DeepSeekDailySpendPUSD/1_000_000, 10) }},
-		{Key: "KIMI_DAILY_SPEND_MICRO_USD", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxDailySpendMicroUSD,
-			apply: func(c *Config, raw string) error {
-				n, err := reqInt64("KIMI_DAILY_SPEND_MICRO_USD", raw, 1, MaxDailySpendMicroUSD)
-				if err == nil {
-					c.KimiDailySpendPUSD = n * 1_000_000
-				}
-				return err
-			},
-			get: func(c *Config) string { return strconv.FormatInt(c.KimiDailySpendPUSD/1_000_000, 10) }},
+			get: func(c *Config) string { return strconv.FormatInt(c.GlobalMonthlySpendPUSD/1_000_000, 10) }},
 		{Key: "MONTHLY_QUOTA", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: MaxMonthlyQuota,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("MONTHLY_QUOTA", raw, 1, MaxMonthlyQuota)

@@ -3,8 +3,6 @@ package quota
 import (
 	"testing"
 	"time"
-
-	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 )
 
 func TestSnapshotPeriodFormatsInLocation(t *testing.T) {
@@ -57,21 +55,5 @@ func TestPeriodIsAPlainValueReusable(t *testing.T) {
 	_ = SnapshotPeriod(time.Date(2026, 6, 21, 0, 0, 1, 0, time.UTC), time.UTC)
 	if entry.Day != "2026-06-20" {
 		t.Errorf("entry period mutated to %q", entry.Day)
-	}
-}
-
-func TestProviderDailyLimitFailsClosed(t *testing.T) {
-	lim := Limits{ProviderDailySpendPUSD: map[billing.Provider]int64{
-		billing.ProviderDeepSeek: 123,
-		billing.ProviderKimi:     0,
-	}}
-	if got, ok := lim.ProviderDailyLimit(billing.ProviderDeepSeek); !ok || got != 123 {
-		t.Fatalf("DeepSeek limit=(%d,%v), want (123,true)", got, ok)
-	}
-	if _, ok := lim.ProviderDailyLimit(billing.ProviderKimi); ok {
-		t.Fatal("zero provider cap must fail closed")
-	}
-	if _, ok := lim.ProviderDailyLimit(billing.Provider("unknown")); ok {
-		t.Fatal("missing provider cap must fail closed")
 	}
 }

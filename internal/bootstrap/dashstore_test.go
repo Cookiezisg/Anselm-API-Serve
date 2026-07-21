@@ -25,19 +25,19 @@ func newDashStoreTestDB(t *testing.T) *sqlite.DB {
 func TestBudgetSourceReadsNewSpendTableAndConvertsPUSD(t *testing.T) {
 	db := newDashStoreTestDB(t)
 	ctx := context.Background()
-	day := time.Now().UTC().Format("2006-01-02")
+	month := time.Now().UTC().Format("2006-01")
 	const (
 		usedPUSD  = 12*billing.PicoUSDPerMicroUSD + 999_999
 		limitPUSD = 42*billing.PicoUSDPerMicroUSD + 999_999
 	)
 	if _, err := db.Writer.Exec(ctx,
-		`INSERT INTO global_spend_daily(period_day, spend_pusd, requests) VALUES (?, ?, 3)`,
-		day, usedPUSD); err != nil {
+		`INSERT INTO global_spend_monthly(period_month, spend_pusd, requests) VALUES (?, ?, 3)`,
+		month, usedPUSD); err != nil {
 		t.Fatalf("insert global spend: %v", err)
 	}
 	// A stale v1 value must not influence the dashboard after accounting v2.
 	if _, err := db.Writer.Exec(ctx,
-		`INSERT INTO budget(period, tokens_used, requests) VALUES (?, 999999999, 99)`, day); err != nil {
+		`INSERT INTO budget(period, tokens_used, requests) VALUES (?, 999999999, 99)`, month+"-01"); err != nil {
 		t.Fatalf("insert legacy budget: %v", err)
 	}
 
@@ -49,9 +49,9 @@ func TestBudgetSourceReadsNewSpendTableAndConvertsPUSD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GlobalBudget: %v", err)
 	}
-	if gotDay != day || limitMicroUSD != 42 || usedMicroUSD != 12 {
+	if gotDay != month || limitMicroUSD != 42 || usedMicroUSD != 12 {
 		t.Fatalf("GlobalBudget = (%q, %d, %d), want (%q, 42, 12)",
-			gotDay, limitMicroUSD, usedMicroUSD, day)
+			gotDay, limitMicroUSD, usedMicroUSD, month)
 	}
 }
 

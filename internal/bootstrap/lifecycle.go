@@ -156,7 +156,7 @@ func (app *App) metricsRefresh(ctx context.Context) {
 		c := app.cfg.Load()
 		app.rl.SetRate(c.RatePerMin) // follow the RATE_PER_MIN hot-reload.
 
-		_, budgetLimit, budgetUsed, budgetErr := app.dailyBudget.GlobalBudget(ctx)
+		_, budgetLimit, budgetUsed, budgetErr := app.monthlyBudget.GlobalBudget(ctx)
 		if budgetErr == nil {
 			const microUSDPerUSD = 1_000_000
 			app.mx.BudgetLimit.Set(float64(budgetLimit) / microUSDPerUSD)

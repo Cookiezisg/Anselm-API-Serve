@@ -23,17 +23,10 @@ import (
 var (
 	// ErrMonthlyExhausted — usage.count would reach MonthlyQuota (gate 1).
 	ErrMonthlyExhausted = errors.New("quota: monthly count exhausted")
-	// ErrInstallSpendExceeded — the install's daily pUSD sub-wallet would be exceeded.
-	ErrInstallSpendExceeded = errors.New("quota: install daily spend cap exceeded")
-	// ErrProviderSpendExceeded — the selected provider's daily pUSD wallet would be exceeded.
-	ErrProviderSpendExceeded = errors.New("quota: provider daily spend cap exceeded")
 	// ErrSublimitExceeded — day-row count would reach DailySublimit (gate 2b).
 	ErrSublimitExceeded = errors.New("quota: daily request sublimit exceeded")
-	// ErrBudgetExceeded — the shared daily pUSD wallet would be exceeded.
-	ErrBudgetExceeded = errors.New("quota: global daily spend budget exceeded")
-	// ErrProviderLimitMissing is a fail-closed configuration error, not a denial:
-	// every routable provider must have an explicit positive daily cap.
-	ErrProviderLimitMissing = errors.New("quota: provider daily spend cap missing")
+	// ErrBudgetExceeded — the shared monthly pUSD wallet would be exceeded.
+	ErrBudgetExceeded = errors.New("quota: global monthly spend budget exceeded")
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -72,18 +65,8 @@ type Reservation struct {
 // app.
 type Limits struct {
 	MonthlyQuota           int64
-	InstallDailySpendPUSD  int64
-	ProviderDailySpendPUSD map[billing.Provider]int64
-	GlobalDailySpendPUSD   int64
+	GlobalMonthlySpendPUSD int64
 	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
-}
-
-// ProviderDailyLimit returns the explicit cap for provider. Missing and
-// non-positive values fail closed in Reserve; zero never means "unlimited" for
-// a wallet that spends operator money.
-func (l Limits) ProviderDailyLimit(provider billing.Provider) (int64, bool) {
-	cap, ok := l.ProviderDailySpendPUSD[provider]
-	return cap, ok && cap > 0
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller

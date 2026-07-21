@@ -7,14 +7,14 @@ A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model whi
 It does three things:
 
 1. **Route** — OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming, with `tools`/`tool_choice` for multi-turn tool calls). The complete message history determines the provider; the client cannot choose one, and there is no cross-provider fallback.
-2. **Meter** — before each upstream call it converts the exact provider/model rate card into cost, then atomically reserves monthly count plus install, provider, and global daily spend. Successful calls settle against reported usage; ambiguous failures retain a conservative charge.
+2. **Meter** — before each upstream call it converts the exact provider/model rate card into cost, then atomically reserves the per-install monthly request count plus the operator global monthly spend budget. Successful calls settle against reported usage; ambiguous failures retain a conservative charge.
 3. **Rate-limit** — anonymous install tokens (stored only as SHA-256), plus optional Proof-of-Work and rate-limit gates that are off by default.
 
 The code uses clean architecture (domain / app / infra / transport, plus a bootstrap composition root), with the dependency direction enforced by golangci-lint (depguard). There are tests across all four layers plus a loopback end-to-end suite; CI runs race tests, lint, govulncheck, gofmt, and a check that the embedded dashboard build matches its source.
 
 ## Cost accounting
 
-The four guardrails — monthly request count, per-install daily spend, per-provider daily spend, and global daily spend — are reserved in one `BEGIN IMMEDIATE` transaction on a single-writer pool. Token vectors from different providers are never added together: each request is priced with its frozen exact-model rate card, then only integer pico-US-dollar cost enters the shared wallets.
+The two request-denying guardrails — per-install monthly request count and operator global monthly spend — are reserved in one `BEGIN IMMEDIATE` transaction on a single-writer pool. Token vectors from different providers are never added together: each request is priced with its frozen exact-model rate card, then only integer pico-US-dollar cost enters the shared wallet. Daily install/provider/global tables remain as accounting statistics, not traffic gates.
 
 A rejection before the request can reach a provider rolls the reservation back. Once the request has been handed to a provider, missing usage, a timeout, a disconnect, or a crash keeps the conservative reservation; complete usage settles to the calculated cost. Ledger transitions are compare-and-swap and idempotent, so the failure mode is over-charging rather than silently spending operator money without accounting for it.
 
@@ -93,7 +93,7 @@ Loading order is env defaults, then a `settings`-table DB overlay (runtime-edita
 
 Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only image/video requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
 
-The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`, `INSTALL_DAILY_SPEND_MICRO_USD=5600000`, `DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`, and `KIMI_DAILY_SPEND_MICRO_USD=14000000` in the production example. It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The default product-facing usage guardrail is the per-install `MONTHLY_QUOTA=5000`; spend caps, bounded input/output, and `N_GLOBAL_CONCURRENCY` remain operator safety guardrails. Per-minute chat throttling, daily request sublimits, automatic token throttling, and install issuance throttles default to disabled (`0`/`off`).
+The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; bounded input/output and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. Per-minute chat throttling, daily request sublimits, automatic token throttling, and install issuance throttles default to disabled (`0`/`off`).
 
 ## Deployment
 
