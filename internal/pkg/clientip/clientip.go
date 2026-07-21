@@ -21,8 +21,11 @@ import (
 // is ignored entirely and remoteAddr is returned verbatim. Never panics on any input.
 func ClientIP(remoteAddr, xff string) string {
 	if isLoopback(remoteAddr) && xff != "" {
-		parts := strings.Split(xff, ",")
-		right := strings.TrimSpace(parts[len(parts)-1])
+		right := xff
+		if idx := strings.LastIndexByte(xff, ','); idx >= 0 {
+			right = xff[idx+1:]
+		}
+		right = strings.TrimSpace(right)
 		if right != "" {
 			return right
 		}
