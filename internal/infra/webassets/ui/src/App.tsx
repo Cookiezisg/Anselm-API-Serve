@@ -1,9 +1,5 @@
-// App shell — the authenticated chrome (sider nav + header + content) wrapping the
-// six pages, plus the route guard. The guard waits for AuthProvider's initial
-// session probe (auth.ready) before deciding, so an F5 with a live cookie does
-// NOT flash the login screen.
-//
-// 应用外壳 + 路由守卫:等会话探针 ready 再判定,F5 不闪登录页。
+// App shell — the dashboard chrome plus the authentication-mode aware route
+// guard. builtin uses the Go login page; external relies on its preceding IAP.
 
 import { Layout, Menu, Typography, theme, Button, Spin, Space } from 'antd'
 import {
@@ -38,7 +34,7 @@ const NAV = [
 // settle (ready), then either renders children or redirects to /login (carrying
 // the attempted path so login can bounce back).
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, ready } = useAuth()
+  const { user, ready, authMode } = useAuth()
   const loc = useLocation()
   if (!ready) {
     return (
@@ -46,6 +42,9 @@ function RequireAuth({ children }: { children: ReactNode }) {
         <Spin size="large" />
       </div>
     )
+  }
+  if (authMode === 'external') {
+    return <>{children}</>
   }
   if (!user) {
     return <Navigate to="/login" replace state={{ from: loc.pathname }} />
@@ -57,7 +56,7 @@ function Shell() {
   const loc = useLocation()
   const nav = useNavigate()
   const { token } = theme.useToken()
-  const { user, logout } = useAuth()
+  const { authMode, user, logout } = useAuth()
 
   const onLogout = async () => {
     await logout()
@@ -105,12 +104,14 @@ function Shell() {
           }}
         >
           <Typography.Text strong>管理后台</Typography.Text>
-          <Space>
-            <Typography.Text type="secondary">{user}</Typography.Text>
-            <Button icon={<LogoutOutlined />} onClick={onLogout} size="small">
-              登出
-            </Button>
-          </Space>
+          {authMode === 'builtin' && (
+            <Space>
+              <Typography.Text type="secondary">{user}</Typography.Text>
+              <Button icon={<LogoutOutlined />} onClick={onLogout} size="small">
+                登出
+              </Button>
+            </Space>
+          )}
         </Header>
         <Content
           style={{
@@ -136,9 +137,13 @@ function Shell() {
 }
 
 export default function App() {
+  const { authMode, ready } = useAuth()
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route
+        path="/login"
+        element={ready && authMode === 'external' ? <Navigate to="/overview" replace /> : <Login />}
+      />
       <Route
         path="/*"
         element={

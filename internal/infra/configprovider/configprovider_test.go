@@ -185,7 +185,11 @@ func TestLoadBaseFailFast(t *testing.T) {
 			m["KIMI_API_KEY"] = "gem-key"
 			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "100000"
 		}, nil, "multimodal hard-limit quote"},
-		{"dashboard half auth", func(m map[string]string) { m["DASHBOARD_USER"] = "admin" }, nil, "must be set together"},
+		{"dashboard builtin missing password", func(m map[string]string) {
+			m["DASHBOARD_AUTH_MODE"] = "builtin"
+			m["DASHBOARD_USER"] = "admin"
+		}, nil, "DASHBOARD_AUTH_MODE=builtin requires"},
+		{"dashboard auth mode typo", func(m map[string]string) { m["DASHBOARD_AUTH_MODE"] = "cloudflare" }, nil, "DASHBOARD_AUTH_MODE"},
 		{"listeners collide", func(m map[string]string) { m["DASHBOARD_ADDR"] = "127.0.0.1:8080" }, nil, "must not equal LISTEN_ADDR"},
 		{"mem budget exceeded", func(m map[string]string) {
 			m["GOMEMLIMIT_MIB"] = "4096"
@@ -221,6 +225,40 @@ func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveKimi(t *testing.T) {
 	env["KIMI_API_KEY"] = "gem-key"
 	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MULTIMODAL_UPSTREAM_MODEL") {
 		t.Fatalf("enabling Kimi must activate its model checks, got %v", err)
+	}
+}
+
+func TestLoadBaseDashboardAuthModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(map[string]string)
+		want string
+	}{
+		{name: "default disabled", want: "disabled"},
+		{name: "builtin", mut: func(m map[string]string) {
+			m["DASHBOARD_AUTH_MODE"] = "builtin"
+			m["DASHBOARD_USER"] = "admin"
+			m["DASHBOARD_PASSWORD"] = "s3cret"
+		}, want: "builtin"},
+		{name: "external ignores migration credentials", mut: func(m map[string]string) {
+			m["DASHBOARD_AUTH_MODE"] = "external"
+			m["DASHBOARD_USER"] = "admin"
+			m["DASHBOARD_PASSWORD"] = "s3cret"
+		}, want: "external"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalEnv()
+			if tc.mut != nil {
+				tc.mut(env)
+			}
+			got, err := LoadBase(envMap(env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.DashboardAuthMode != tc.want {
+				t.Fatalf("DashboardAuthMode=%q, want %q", got.DashboardAuthMode, tc.want)
+			}
+		})
 	}
 }
 
@@ -331,7 +369,7 @@ func TestApplyOverridesNoSwapOnValidateFailure(t *testing.T) {
 func TestApplyOverridesRejectsSecretAndRestartKeys(t *testing.T) {
 	p := New(mustLoad(t, minimalEnv()))
 	ss := newFakeStore()
-	for _, k := range []string{"DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_PASSWORD", "GOMEMLIMIT_MIB", "LISTEN_ADDR"} {
+	for _, k := range []string{"DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_PASSWORD", "DASHBOARD_AUTH_MODE", "GOMEMLIMIT_MIB", "LISTEN_ADDR"} {
 		if _, err := p.ApplyOverrides(context.Background(), map[string]string{k: "x"}, ss); err == nil {
 			t.Fatalf("override of %q: want rejection, got nil", k)
 		}
@@ -490,8 +528,8 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	if kv["install_pow_secret"] != "configured" {
 		t.Fatalf("pow secret mask = %v", kv["install_pow_secret"])
 	}
-	if kv["dashboard_auth"] != "configured (user+password set)" {
-		t.Fatalf("dashboard auth mask = %v", kv["dashboard_auth"])
+	if kv["dashboard_auth_mode"] != "disabled" {
+		t.Fatalf("dashboard auth mode = %v", kv["dashboard_auth_mode"])
 	}
 }
 

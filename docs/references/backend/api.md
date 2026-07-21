@@ -156,19 +156,20 @@ Kimi adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 
 ## 4. dashboard mux（`DASHBOARD_ADDR`，默认 `127.0.0.1:8081`）
 
-`SecurityHeaders` 覆盖全部路由；`/api/*` 要 session，状态变更 POST 还要 `X-CSRF-Token`。`/healthz`、login/logout 公开但监听仍 loopback-only。
+`SecurityHeaders` 覆盖全部路由，dashboard 永远只监听 loopback。`GET /api/bootstrap` 公开但只返回 `{authMode}`：SPA 据此选择 UI。`builtin` 模式下其余 `/api/*` 要 session，状态变更 POST 还要 `X-CSRF-Token`；`external` 模式下前置 IAP 是唯一鉴权，Go 不创建 session/cookie/CSRF，API 直接提供能力。
 
 | 方法 + 路径 | session / CSRF | 说明 |
 |---|---|---|
 | `GET /healthz` | 否 | dashboard liveness |
-| `POST /login` / `POST /logout` | 否 | 建立/销毁 session；login 有 per-IP backoff |
-| `GET /api/session` | session | session + CSRF token |
-| `GET /api/overview` | session | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.deepseek` / `providers.kimi`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
-| `GET /api/config` | session | secret-free Dump |
-| `POST /api/config` | session + CSRF | runtime-hot batch，全有或全无 |
-| `GET /api/installs` | session | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
-| `POST /api/installs/ban` / `unban` | session + CSRF | install 状态变更 |
-| `GET /api/audit` / `GET /api/export` | session | 审计 / 一致 DB snapshot |
+| `GET /api/bootstrap` | 否 | `{authMode:"builtin"|"external"}`，无 identity/secret |
+| `POST /login` / `POST /logout` | `builtin` only / 否 | 建立/销毁 session；login 有 per-IP backoff |
+| `GET /api/session` | `builtin` session | session + CSRF token；external mode 不注册（404） |
+| `GET /api/overview` | builtin: session；external: IAP | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.deepseek` / `providers.kimi`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路已配置 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/config` | builtin: session；external: IAP | secret-free Dump |
+| `POST /api/config` | builtin: session + CSRF；external: IAP | runtime-hot batch，全有或全无 |
+| `GET /api/installs` | builtin: session；external: IAP | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
+| `POST /api/installs/ban` / `unban` | builtin: session + CSRF；external: IAP | install 状态变更 |
+| `GET /api/audit` / `GET /api/export` | builtin: session；external: IAP | 审计 / 一致 DB snapshot |
 | `GET /` | 否 | embedded SPA/static fallback |
 
 ## 5. 错误头

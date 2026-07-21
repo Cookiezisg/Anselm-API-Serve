@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。
+Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 信任边界，不可从 dashboard 修改。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -86,7 +86,8 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | `MEM_BUDGET_MIB` | 2048 | >0 |
 | `MEM_SAFETY_MARGIN_MIB` | 400 | ≥0 |
 | `LOG_LEVEL` | `info` | process log level |
-| `DASHBOARD_DEV_INSECURE_COOKIE` | `false` | 仅 dev；生产 cookie 恒 Secure |
+| `DASHBOARD_AUTH_MODE` | `disabled` | closed enum `disabled|builtin|external`；`external` 仅用于已在所有路径前部署 IAP 的 loopback dashboard |
+| `DASHBOARD_DEV_INSECURE_COOKIE` | `false` | 仅 `builtin` dev；生产 cookie 恒 Secure，`external` 不创建 Go cookie |
 
 ## 4. secret-env-only
 
@@ -94,7 +95,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 |---|---|
 | `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
 | `KIMI_API_KEY` | 可选；同样支持逗号分隔多 key；为空则不构造 Kimi backend，文本/readiness 正常，合法多模态返回 `503 MULTIMODAL_UNAVAILABLE` |
-| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 同设或同空；半配 fail-fast；同设才启 dashboard auth |
+| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 
 每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Kimi 缺 key 不是“坏 key”或 readiness fault，而是该 deployment 没有多模态 capability。
@@ -108,6 +109,7 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入全局月预算。未配 key 时 inactive-Kimi 关系不阻断纯文本启动；以后加 key 重启时会一次性 fail-fast 校验。此预留不意味着 `INPUT_TOKEN_CAP` 能估算图片/视频 token；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
+8. `DASHBOARD_AUTH_MODE` 必须为 `disabled|builtin|external`；`builtin` 必须同设非空 `DASHBOARD_USER`/`DASHBOARD_PASSWORD`。`external` 的实际安全前提由 bootstrap 强制 loopback bind，加上部署者的前置 IAP 全路径 policy 共同满足。
 
 违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
 

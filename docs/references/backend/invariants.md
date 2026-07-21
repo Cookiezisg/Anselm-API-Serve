@@ -40,7 +40,7 @@ audience: [human, ai]
 | GW-INV-16 | business XFF 仅当直连对端为 loopback Caddy 时可信并取最右段，否则回退 `RemoteAddr`；dashboard 直连/SSH tunnel 的 login bucket **永远忽略 XFF**，只取 direct peer | 攻击者伪造 XFF 绕过 install 或 dashboard per-IP 限速 |
 | GW-INV-17 | redaction 对 auth/cookie/provider-key/password/secret 精确名及 `*_api_key|*_password|*_secret` 后缀（大小写不敏感）直接 `[REDACTED]`，非 allowlist key 下 struct/map/slice 整体抹除；`image_url`、`input_audio`、inline/file data 在红线内 | 新 provider key、`slog.Any` 或 base64 media 被静默序列化 |
 | GW-INV-18 | TLS 仅由 Caddy 终结；Go 三监听默认 loopback、地址必须两两不同，否则 `LoadBase` fail-fast | 误绑公网或运行时端口冲突 |
-| GW-INV-19 | dashboard 仅在 user+password 同设时启；bcrypt、常时用户名比较、CSPRNG session、Secure/HttpOnly/SameSite=Strict cookie、CSRF、per-IP 登录退避全启用 | session 劫持、CSRF、暴破或管理操作滥用 |
+| GW-INV-19 | `DASHBOARD_AUTH_MODE` 是 closed enum：`disabled` 不起 dashboard；`builtin` 必须同设 user/password，并启用 bcrypt、常时用户名比较、CSPRNG session、Secure/HttpOnly/SameSite=Strict cookie、CSRF、per-IP 登录退避；`external` 不构造 Go credential/session/CSRF，且 dashboard 仍只能 loopback 绑定，前置 IAP 必须覆盖所有路径 | 登录墙被配置遗漏、session 劫持、CSRF、暴破，或把无 Go 鉴权的 dashboard 直接暴露公网 |
 | GW-INV-20 | `/install` 各拒绝路径用 DISTINCT wire code + 不采样 `install_audit`；只记 `/64 ip_key`/gate/error_code，fp 仅以 SHA-256 进入 `install_fp_rate` | Sybil 洪流不可区分，raw fp/ip/secret 入日志或 DB |
 
 ## C. 可靠性

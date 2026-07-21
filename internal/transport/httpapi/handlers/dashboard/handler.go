@@ -1,9 +1,9 @@
 // Package dashboard is the thin HTTP handler layer for the loopback admin
-// backend. It owns only net/http concerns (method/body/cookie/CSRF wiring) and
-// renders every outcome through transport/httpapi/response (the apierr envelope).
-// All policy lives in app/dashboard; the auth/session mechanics live in
-// transport/httpapi/middleware/dashboard. It imports app + pkg + those transport
-// peers + net/http ONLY — never infra (depguard §2).
+// backend. It owns only net/http concerns (method/body and optional builtin
+// session/CSRF wiring) and renders every outcome through
+// transport/httpapi/response (the apierr envelope). All policy lives in
+// app/dashboard; builtin auth mechanics live in the dashboard middleware. It
+// imports app + pkg + those transport peers + net/http ONLY — never infra.
 package dashboard
 
 import (
@@ -16,6 +16,7 @@ import (
 
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/clientip"
 	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
@@ -23,9 +24,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Handler serves the dashboard's auth + API surface over an app/dashboard.Service
-// and the shared session/login middleware state. The bcrypt password hash is
-// computed ONCE at New and the plaintext discarded, so it never lives past startup.
+// Handler serves the dashboard API over an app/dashboard.Service. In builtin
+// mode it also owns the login endpoints; in external mode it has no credential or
+// session state and records a fixed actor because identity belongs to the IAP.
 type Handler struct {
 	svc      *appdash.Service
 	gate     *mwdash.Gate
@@ -36,47 +37,63 @@ type Handler struct {
 	// diskDegraded is a cheap in-process diskguard accessor transport already
 	// holds. Provider state is supplied to the use case through its narrow port.
 	diskDegraded func() bool
+	authMode     string
 }
 
-// Config wires a Handler. User/Password are the env-only auth secret; New
-// bcrypt-hashes Password once and discards it. Returns an error if auth is not
-// configured (caller skips mounting the dashboard) or bcrypt fails.
+// BuiltinAuth is the complete credential/session capability used only when
+// DASHBOARD_AUTH_MODE=builtin. Password is bcrypt-hashed by New and discarded.
+type BuiltinAuth struct {
+	Gate     *mwdash.Gate
+	Logins   *mwdash.LoginLimiter
+	User     string
+	Password string
+}
+
+// Config wires a Handler. AuthMode is part of the public dashboard bootstrap
+// response; BuiltinAuth must be non-nil exactly for builtin mode.
 type Config struct {
 	Service      *appdash.Service
-	Gate         *mwdash.Gate
-	Logins       *mwdash.LoginLimiter
-	User         string
-	Password     string
 	DiskDegraded func() bool
+	AuthMode     string
+	BuiltinAuth  *BuiltinAuth
 }
 
-// New builds the handler. It hashes the password once (DefaultCost — login is rare
-// so per-request hashing is not a concern) and never retains the plaintext.
+// New builds the handler. It hashes a builtin password once (DefaultCost — login
+// is rare) and never retains plaintext. External mode intentionally constructs no
+// credential/session state at all.
 func New(c Config) (*Handler, error) {
-	if c.User == "" || c.Password == "" {
-		return nil, errAuthNotConfigured
+	if c.AuthMode != config.DashboardAuthModeBuiltin && c.AuthMode != config.DashboardAuthModeExternal {
+		return nil, errString("dashboard handler requires builtin or external auth mode")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(c.Password), bcrypt.DefaultCost)
+	h := &Handler{
+		diskDegraded: c.DiskDegraded,
+		svc:          c.Service,
+		authMode:     c.AuthMode,
+	}
+	if c.AuthMode == config.DashboardAuthModeExternal {
+		if c.BuiltinAuth != nil {
+			return nil, errString("external dashboard auth must not construct builtin credentials")
+		}
+		return h, nil
+	}
+	if c.BuiltinAuth == nil {
+		return nil, errBuiltinAuthNotConfigured
+	}
+	if c.BuiltinAuth.Gate == nil || c.BuiltinAuth.Logins == nil || c.BuiltinAuth.User == "" || c.BuiltinAuth.Password == "" {
+		return nil, errBuiltinAuthNotConfigured
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(c.BuiltinAuth.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{
-		svc:          c.Service,
-		gate:         c.Gate,
-		logins:       c.Logins,
-		user:         c.User,
-		passHash:     hash,
-		diskDegraded: c.DiskDegraded,
-	}
+	h.gate = c.BuiltinAuth.Gate
+	h.logins = c.BuiltinAuth.Logins
+	h.user = c.BuiltinAuth.User
+	h.passHash = hash
 	return h, nil
 }
 
-// errAuthNotConfigured signals the dashboard should not be mounted.
-var errAuthNotConfigured = newConfigError()
-
-func newConfigError() error {
-	return errString("dashboard auth not configured (DASHBOARD_USER/PASSWORD)")
-}
+var errBuiltinAuthNotConfigured = errString("builtin dashboard auth not configured")
 
 type errString string
 
@@ -95,10 +112,19 @@ type loginResponse struct {
 	User      string `json:"user"`
 }
 
-// Healthz is the ONLY unauthenticated route (liveness for Caddy's upstream check).
+// Healthz is always reachable on the loopback dashboard listener for liveness.
 func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// Bootstrap describes the active dashboard authentication contract to the SPA.
+// It intentionally carries no identity or secret; the SPA uses it only to select
+// its builtin login flow or its IAP-trusted direct API flow.
+func (h *Handler) Bootstrap(w http.ResponseWriter, _ *http.Request) {
+	response.WriteJSON(w, http.StatusOK, struct {
+		AuthMode string `json:"authMode"`
+	}{AuthMode: h.authMode})
 }
 
 // Login authenticates {user,password}. B15: it DECODES + validates the body BEFORE
@@ -182,7 +208,7 @@ type configResponse struct {
 // body ⇒ 400 BAD_REQUEST; a rejected override ⇒ 400 CONFIG_REJECTED with the
 // precise reason; success ⇒ the fresh dump.
 func (h *Handler) PostConfig(w http.ResponseWriter, r *http.Request) {
-	if !mwdash.RequireCSRF(w, r) {
+	if !h.requireCSRF(w, r) {
 		return
 	}
 	var overrides map[string]string
@@ -194,7 +220,7 @@ func (h *Handler) PostConfig(w http.ResponseWriter, r *http.Request) {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "no overrides provided")
 		return
 	}
-	items, err := h.svc.ConfigApply(r.Context(), actor(r), overrides)
+	items, err := h.svc.ConfigApply(r.Context(), h.actor(r), overrides)
 	if err != nil {
 		var rej *appdash.ErrConfigRejected
 		if errors.As(err, &rej) {
@@ -237,7 +263,7 @@ type unbanRequest struct {
 
 // Ban flips an install to banned. Requires CSRF + a non-empty reason (audited).
 func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
-	if !mwdash.RequireCSRF(w, r) {
+	if !h.requireCSRF(w, r) {
 		return
 	}
 	var req banRequest
@@ -255,7 +281,7 @@ func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "reason is required (audited)")
 		return
 	}
-	if err := h.svc.Ban(r.Context(), actor(r), id, reason); err != nil {
+	if err := h.svc.Ban(r.Context(), h.actor(r), id, reason); err != nil {
 		h.writeMutateErr(w, err)
 		return
 	}
@@ -264,7 +290,7 @@ func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
 
 // Unban flips an install back to active. Requires CSRF; reason optional.
 func (h *Handler) Unban(w http.ResponseWriter, r *http.Request) {
-	if !mwdash.RequireCSRF(w, r) {
+	if !h.requireCSRF(w, r) {
 		return
 	}
 	var req unbanRequest
@@ -277,7 +303,7 @@ func (h *Handler) Unban(w http.ResponseWriter, r *http.Request) {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "install_id is required")
 		return
 	}
-	if err := h.svc.Unban(r.Context(), actor(r), id); err != nil {
+	if err := h.svc.Unban(r.Context(), h.actor(r), id); err != nil {
 		h.writeMutateErr(w, err)
 		return
 	}
@@ -325,7 +351,7 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a := actor(r)
+	a := h.actor(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
@@ -350,12 +376,26 @@ func loginIP(r *http.Request) string {
 	return clientip.Key(r.RemoteAddr)
 }
 
-// actor returns the audited operator handle from the session (empty if absent).
-func actor(r *http.Request) string {
-	if sess := mwdash.SessionFrom(r.Context()); sess != nil {
-		return sess.User
+// actor returns the builtin session user, or a fixed trust-boundary marker for an
+// external IAP. The IAP's own audit log remains the identity source; copying
+// forwarding headers into this audit ring would create a new PII store.
+func (h *Handler) actor(r *http.Request) string {
+	if h.gate != nil {
+		if sess := mwdash.SessionFrom(r.Context()); sess != nil {
+			return sess.User
+		}
 	}
-	return ""
+	return "external-iap"
+}
+
+// requireCSRF only applies to the cookie-authenticated builtin capability.
+// external mode does not use browser credentials at this hop: the Dashboard is
+// loopback-only and its upstream IAP is the authentication boundary.
+func (h *Handler) requireCSRF(w http.ResponseWriter, r *http.Request) bool {
+	if h.gate == nil {
+		return true
+	}
+	return mwdash.RequireCSRF(w, r)
 }
 
 // call invokes an optional bool accessor, treating nil as false.
@@ -396,7 +436,3 @@ func atoiDefault(s string, def int) int {
 	}
 	return n
 }
-
-// ErrAuthNotConfigured reports the dashboard auth secret is absent (the caller
-// should skip mounting the dashboard). Exported so bootstrap can branch on it.
-func ErrAuthNotConfigured() error { return errAuthNotConfigured }

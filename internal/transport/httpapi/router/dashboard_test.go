@@ -59,15 +59,33 @@ func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *m
 	gate := &mwdash.Gate{Sessions: mwdash.NewSessionStore(0, nil), SecureCookie: false}
 	h, err := dashhandler.New(dashhandler.Config{
 		Service:  svc,
-		Gate:     gate,
-		Logins:   mwdash.NewLoginLimiter(nil),
-		User:     "admin",
-		Password: "s3cret",
+		AuthMode: "builtin",
+		BuiltinAuth: &dashhandler.BuiltinAuth{
+			Gate:     gate,
+			Logins:   mwdash.NewLoginLimiter(nil),
+			User:     "admin",
+			Password: "s3cret",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return BuildDashboardHandler(DashboardDeps{Handler: h, Gate: gate}), gate
+}
+
+func newExternalDashHandler(t *testing.T, sampler *ratesample.Sampler) http.Handler {
+	t.Helper()
+	svc := appdash.New(appdash.Deps{
+		Budget:    fakeBudget{},
+		Providers: fakeProviders{},
+		Rate:      sampler,
+		Config:    fakeConfig{},
+	})
+	h, err := dashhandler.New(dashhandler.Config{Service: svc, AuthMode: "external"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return BuildDashboardHandler(DashboardDeps{Handler: h})
 }
 
 func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
@@ -103,6 +121,59 @@ func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
 	}
 	if !wire.Aggregate {
 		t.Fatal("compatibility aggregate must remain true when one provider breaker is open")
+	}
+}
+
+func TestDashboardBootstrapReportsActiveMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		srv  http.Handler
+		want string
+	}{
+		{name: "builtin", srv: func() http.Handler { s, _ := newDashHandler(t, ratesample.New(60)); return s }(), want: "builtin"},
+		{name: "external", srv: newExternalDashHandler(t, ratesample.New(60)), want: "external"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tc.srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("bootstrap: want 200, got %d", rec.Code)
+			}
+			var got struct {
+				AuthMode string `json:"authMode"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.AuthMode != tc.want {
+				t.Fatalf("authMode=%q, want %q", got.AuthMode, tc.want)
+			}
+		})
+	}
+}
+
+func TestExternalDashboardBypassesGoSessionAndCSRF(t *testing.T) {
+	srv := newExternalDashHandler(t, ratesample.New(60))
+
+	for _, path := range []string{"/api/overview", "/api/config"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("external GET %s: want 200, got %d (%s)", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"RATE_PER_MIN":"60"}`))
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("external POST must not require Go CSRF: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/session", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("external session endpoint: want 404, got %d", rec.Code)
 	}
 }
 

@@ -1,12 +1,13 @@
 ---
 id: DOC-018
 type: decision
-status: active
+status: superseded
 owner: @weilin
 created: 2026-06-20
 reviewed: 2026-06-20
 review-due: 2099-12-31
 audience: [human, ai]
+superseded-by: DOC-030
 ---
 
 # 0009 — React 管理面板 Clean Architecture + go:embed

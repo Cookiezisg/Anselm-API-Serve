@@ -1,20 +1,16 @@
-// AuthContext — the SPA's single source of truth for "am I logged in".
-//
-// On mount it probes GET /api/session (F5 recovery: a live HttpOnly cookie
-// rehydrates the in-memory CSRF token without a re-login). A 401 there simply
-// means "not logged in" → the guard routes to the login page. It also registers
-// the api layer's onUnauthorized hook so ANY later 401 (session expiry mid-use)
-// drops auth state and bounces to login.
-//
-// 启动探 /api/session 做 F5 恢复;注册 401 钩子,任何会话失效都清态跳登录。
+// AuthContext is the SPA's authentication-mode switch. Bootstrap decides whether
+// this deployment uses Go's builtin session/CSRF login or a preceding external
+// IAP. Only builtin mode probes /api/session and exposes login/logout controls.
 
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import * as api from '../lib/api'
+import type { DashboardAuthMode } from '../lib/types'
 
 interface AuthState {
+  authMode: DashboardAuthMode | null
   user: string | null
-  ready: boolean // true once the initial session probe has resolved
+  ready: boolean // true once bootstrap (and builtin session recovery) resolves
 }
 
 interface AuthContextValue extends AuthState {
@@ -25,23 +21,34 @@ interface AuthContextValue extends AuthState {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>({ user: null, ready: false })
+  const [state, setState] = useState<AuthState>({ authMode: null, user: null, ready: false })
 
   const handleUnauthorized = useCallback(() => {
-    setState((s) => (s.user === null ? s : { ...s, user: null }))
+    setState((s) => (s.authMode !== 'builtin' || s.user === null ? s : { ...s, user: null }))
   }, [])
 
   useEffect(() => {
     api.setUnauthorizedHandler(handleUnauthorized)
     let cancelled = false
     api
-      .recoverSession()
-      .then((res) => {
-        if (!cancelled) setState({ user: res.user, ready: true })
+      .getBootstrap()
+      .then(async (bootstrap) => {
+        api.setDashboardAuthMode(bootstrap.authMode)
+        if (bootstrap.authMode === 'external') {
+          if (!cancelled) setState({ authMode: 'external', user: null, ready: true })
+          return
+        }
+        try {
+          const session = await api.recoverSession()
+          if (!cancelled) setState({ authMode: 'builtin', user: session.user, ready: true })
+        } catch {
+          if (!cancelled) setState({ authMode: 'builtin', user: null, ready: true })
+        }
       })
       .catch(() => {
-        // 401 (no/expired session) or any error → unauthenticated, but ready.
-        if (!cancelled) setState({ user: null, ready: true })
+        // A bootstrap failure is not an authentication decision: leave the app
+        // unavailable rather than accidentally treating it as external access.
+        if (!cancelled) setState({ authMode: null, user: null, ready: true })
       })
     return () => {
       cancelled = true
@@ -50,14 +57,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (user: string, password: string) => {
     const res = await api.login(user, password)
-    setState({ user: res.user, ready: true })
+    setState({ authMode: 'builtin', user: res.user, ready: true })
   }, [])
 
   const logout = useCallback(async () => {
     try {
       await api.logout()
     } finally {
-      setState({ user: null, ready: true })
+      setState({ authMode: 'builtin', user: null, ready: true })
     }
   }, [])
 

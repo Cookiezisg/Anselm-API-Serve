@@ -155,8 +155,13 @@ type Config struct {
 	ListenAddr    string // LISTEN_ADDR
 	AdminAddr     string // ADMIN_ADDR(/metrics 独立 admin 端口;必须 loopback)
 	DashboardAddr string // DASHBOARD_ADDR(管理后台独立 loopback 监听)
-	LogLevel      string // LOG_LEVEL(debug|info|warn|error)
-	DBPath        string // GATEWAY_DB_PATH(SQLite 落盘位置)
+	// DashboardAuthMode is an env-only, restart-required trust-boundary choice:
+	// disabled starts no dashboard listener; builtin keeps the Go session/CSRF
+	// login; external delegates authentication to a loopback-adjacent IAP such as
+	// Cloudflare Access or Tailscale. It is intentionally not dashboard-editable.
+	DashboardAuthMode string // DASHBOARD_AUTH_MODE(disabled|builtin|external)
+	LogLevel          string // LOG_LEVEL(debug|info|warn|error)
+	DBPath            string // GATEWAY_DB_PATH(SQLite 落盘位置)
 
 	// 管理后台鉴权(机密类:env only,绝不入 settings 表,dump 只掩码)。
 	DashboardUser     string // DASHBOARD_USER
@@ -165,6 +170,23 @@ type Config struct {
 	// DEV-ONLY:无 Caddy/TLS 的本机 plain-HTTP 登录时关 cookie Secure 标志。
 	// 生产恒 false(关了 cookie 在明文 HTTP 上可被嗅探/注入)。
 	DashboardDevInsecureCookie bool // DASHBOARD_DEV_INSECURE_COOKIE
+}
+
+const (
+	DashboardAuthModeDisabled = "disabled"
+	DashboardAuthModeBuiltin  = "builtin"
+	DashboardAuthModeExternal = "external"
+)
+
+// ValidateDashboardAuthMode closes the dashboard trust-boundary enum. A typo
+// must never silently turn off a login wall or assume a nonexistent upstream IAP.
+func ValidateDashboardAuthMode(mode string) error {
+	switch mode {
+	case DashboardAuthModeDisabled, DashboardAuthModeBuiltin, DashboardAuthModeExternal:
+		return nil
+	default:
+		return fmt.Errorf("DASHBOARD_AUTH_MODE %q invalid: must be one of disabled|builtin|external", mode)
+	}
 }
 
 // BoundInt64 / BoundInt enforce an inclusive [min,max] range on a parsed value,

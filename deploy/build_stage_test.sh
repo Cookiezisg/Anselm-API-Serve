@@ -34,6 +34,7 @@ first_line="$(head -n 1 "${STAGE}/gateway.env")"
 	fail "systemd quoting did not preserve/escape secret bytes"
 
 for pair in \
+	'DASHBOARD_AUTH_MODE="disabled"' \
 	'GLOBAL_MONTHLY_SPEND_MICRO_USD="420000000"' \
 	'INPUT_TOKEN_CAP="131072"' \
 	'MAX_TOKENS_CAP="16384"' \
@@ -48,6 +49,9 @@ for pair in \
 	'TOKEN_ANOMALY_RPM="0"'; do
 	grep -Fqx "${pair}" "${STAGE}/gateway.env" || fail "missing production config: ${pair}"
 done
+if grep -q '^DASHBOARD_USER=' "${STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${STAGE}/gateway.env"; then
+	fail "disabled dashboard mode must not materialise builtin credentials"
+fi
 (cd "${STAGE}" && sha256sum --strict -c manifest.sha256 >/dev/null) || fail "payload manifest failed"
 cmp -s "${STAGE}/rollback.sh" "${SCRIPT_DIR}/rollback.sh" ||
 	fail "bundle recovery program differs from reviewed rollback implementation"
@@ -68,6 +72,39 @@ switch_line="$(grep -nF 'sudo mv -Tf "${ROLLBACK_TOOL_TMP}" "${ROLLBACK_TOOL}"' 
 	fail "rollback entry is not snapshotted/marked/switched in crash-safe order"
 grep -Fq 'sudo "${BUNDLE}/recovery/rollback.sh" --automatic --bundle "${BUNDLE}"' "${INSTALL_SCRIPT}" ||
 	fail "automatic restore does not use the bundle-local recovery program"
+
+BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
+mkdir -m 0700 "${BUILTIN_STAGE}"
+DEEPSEEK_API_KEY='key' \
+	KIMI_API_KEY='' \
+	DASHBOARD_AUTH_MODE='builtin' \
+	DASHBOARD_USER='admin' \
+	DASHBOARD_PASSWORD='builtin-secret' \
+	GATEWAY_DOMAIN='api.example.com' \
+	SITE_DOMAIN='example.com' \
+	ACME_EMAIL='ops@example.com' \
+	SHA='0123456789ab' \
+	bash "${SCRIPT_DIR}/build-stage.sh" "${BUILTIN_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
+grep -Fqx 'DASHBOARD_AUTH_MODE="builtin"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin mode missing"
+grep -Fqx 'DASHBOARD_USER="admin"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin user missing"
+grep -Fqx 'DASHBOARD_PASSWORD="builtin-secret"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin password missing"
+
+EXTERNAL_STAGE="${TEST_ROOT}/external-stage"
+mkdir -m 0700 "${EXTERNAL_STAGE}"
+DEEPSEEK_API_KEY='key' \
+	KIMI_API_KEY='' \
+	DASHBOARD_AUTH_MODE='external' \
+	DASHBOARD_USER='stale-user' \
+	DASHBOARD_PASSWORD='stale-password' \
+	GATEWAY_DOMAIN='api.example.com' \
+	SITE_DOMAIN='example.com' \
+	ACME_EMAIL='ops@example.com' \
+	SHA='0123456789ab' \
+	bash "${SCRIPT_DIR}/build-stage.sh" "${EXTERNAL_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
+grep -Fqx 'DASHBOARD_AUTH_MODE="external"' "${EXTERNAL_STAGE}/gateway.env" || fail "external mode missing"
+if grep -q '^DASHBOARD_USER=' "${EXTERNAL_STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${EXTERNAL_STAGE}/gateway.env"; then
+	fail "external dashboard mode must not materialise stale builtin credentials"
+fi
 
 RENDERED_CADDY="${TEST_ROOT}/rendered.Caddyfile"
 bash "${STAGE}/render-caddy.sh" \

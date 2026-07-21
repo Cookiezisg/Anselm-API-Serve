@@ -76,16 +76,34 @@ REPO_ROOT="$3"
 : "${ACME_EMAIL:?ACME_EMAIL is required}"
 : "${SHA:?SHA is required}"
 KIMI_API_KEY="${KIMI_API_KEY:-}"
+DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-disabled}"
 DASHBOARD_USER="${DASHBOARD_USER:-}"
 DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
 
-for secret_name in DEEPSEEK_API_KEY KIMI_API_KEY DASHBOARD_USER DASHBOARD_PASSWORD; do
+for secret_name in DEEPSEEK_API_KEY KIMI_API_KEY; do
 	require_single_line "${secret_name}" "${!secret_name}"
 done
-[[ -z "${DASHBOARD_USER}" && -z "${DASHBOARD_PASSWORD}" ||
-	-n "${DASHBOARD_USER}" && -n "${DASHBOARD_PASSWORD}" ]] ||
-	die "DASHBOARD_USER and DASHBOARD_PASSWORD must be set together"
+require_single_line DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
+case "${DASHBOARD_AUTH_MODE}" in
+	disabled|external)
+		# No Go credential reaches the server in these modes. This also lets a
+		# repository retain old secrets during an external-IAP migration without
+		# unnecessarily materialising them in the deployed EnvironmentFile.
+		DASHBOARD_USER=""
+		DASHBOARD_PASSWORD=""
+		;;
+	builtin)
+		for secret_name in DASHBOARD_USER DASHBOARD_PASSWORD; do
+			require_single_line "${secret_name}" "${!secret_name}"
+		done
+		[[ -n "${DASHBOARD_USER}" && -n "${DASHBOARD_PASSWORD}" ]] ||
+			die "DASHBOARD_AUTH_MODE=builtin requires DASHBOARD_USER and DASHBOARD_PASSWORD"
+		;;
+	*)
+		die "DASHBOARD_AUTH_MODE must be disabled, builtin, or external"
+		;;
+esac
 
 require_single_line GATEWAY_DOMAIN "${GATEWAY_DOMAIN}"
 valid_hostname "${GATEWAY_DOMAIN}" || die "GATEWAY_DOMAIN is not a valid hostname"
@@ -118,8 +136,11 @@ ENV_FILE="${STAGE}/gateway.env"
 chmod 0600 "${ENV_FILE}"
 write_env DEEPSEEK_API_KEY "${DEEPSEEK_API_KEY}"
 write_env KIMI_API_KEY "${KIMI_API_KEY}"
-write_env DASHBOARD_USER "${DASHBOARD_USER}"
-write_env DASHBOARD_PASSWORD "${DASHBOARD_PASSWORD}"
+write_env DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
+if [[ "${DASHBOARD_AUTH_MODE}" == "builtin" ]]; then
+	write_env DASHBOARD_USER "${DASHBOARD_USER}"
+	write_env DASHBOARD_PASSWORD "${DASHBOARD_PASSWORD}"
+fi
 
 # Production-operable defaults. Runtime-editable values can still be overlaid
 # from SQLite, but a fresh install is safe to expose without a later hardening

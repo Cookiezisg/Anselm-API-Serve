@@ -61,7 +61,7 @@ Inline media 故意采用严格合同,且只允许在 `user` message 中出现�
 
 ## 管理后台
 
-内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出),由二进制提供,在一个 loopback 端口上经会话 + CSRF 鉴权。仅当 `DASHBOARD_USER` 和 `DASHBOARD_PASSWORD` 都配置时才启动,且**不对公网暴露** —— 运维经 SSH 隧道访问:
+内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出)由二进制提供，始终只监听 loopback。`DASHBOARD_AUTH_MODE=builtin` 使用 Go 自己的 session + CSRF 登录，可经 SSH 隧道访问；`external` 把完整登录门禁交给前置 IAP（如 Cloudflare Access），但 Go 仍只绑定 `127.0.0.1:8081`。
 
 ```sh
 ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localhost:8081
@@ -83,7 +83,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
 运维面(`127.0.0.1:9090`,loopback-only,不反代):`/metrics`、`/readyz`(`{db, upstream, disk}`)、`/debug/pprof/*`、`/debug/vars`。
-管理后台(`127.0.0.1:8081`,loopback):`/login`、`/logout`,以及会话保护的 `/api/*`。
+管理后台(`127.0.0.1:8081`,loopback):`GET /api/bootstrap` 指示 `builtin` 或 `external`；builtin 另提供 `/login`、`/logout` 和 session 保护的 `/api/*`，external 则由前置 IAP 认证后直接访问 `/api/*`。
 
 成功返回裸实体,失败返回 `{"error":{"code","message"}}`;成功 completion body 只会在严格校验并改写公开模型 alias 后转发，原始上游错误 body/header 与 provider key 绝不透传。完整契约见 [`docs/references/backend/api.md`](docs/references/backend/api.md)。
 
@@ -91,7 +91,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,逗号分隔;不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
+机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
 
 公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；有界输入/输出与 `N_GLOBAL_CONCURRENCY` 继续作为服务安全护栏。每分钟聊天频控、日请求子限、自动降速与领号频控默认都禁用(`0`/`off`)。
 

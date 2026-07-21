@@ -61,7 +61,7 @@ The gateway owns the simple product tier for model choice and reasoning behavior
 
 ## Dashboard
 
-An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary behind session + CSRF auth on a loopback port. It starts only when `DASHBOARD_USER` and `DASHBOARD_PASSWORD` are set, and it is **not exposed to the public internet** — reach it over an SSH tunnel:
+An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary on a loopback-only port. `DASHBOARD_AUTH_MODE=builtin` keeps the built-in session + CSRF login and is reachable over SSH; `external` delegates the entire login wall to a preceding IAP such as Cloudflare Access, while Go still listens only on `127.0.0.1:8081`.
 
 ```sh
 ssh -L 8081:127.0.0.1:8081 <user>@<server>   # then open http://localhost:8081
@@ -83,7 +83,7 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
 
 Admin (`127.0.0.1:9090`, loopback-only, not proxied): `/metrics`, `/readyz` (`{db, upstream, disk}`), `/debug/pprof/*`, `/debug/vars`.
-Dashboard (`127.0.0.1:8081`, loopback): `/login`, `/logout`, and session-protected `/api/*`.
+Dashboard (`127.0.0.1:8081`, loopback): `GET /api/bootstrap` selects `builtin` or `external`; builtin additionally exposes `/login`, `/logout`, and session-protected `/api/*`, while external trusts the preceding IAP for direct `/api/*` access.
 
 Responses are bare entities on success and `{"error":{"code","message"}}` on failure. Successful completion bodies are relayed only after strict validation and public-model alias rewriting; raw upstream error bodies/headers and provider keys are never passed through. Full contract: [`docs/references/backend/api.md`](docs/references/backend/api.md).
 
@@ -91,7 +91,7 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only image/video requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (paired, optional), and `INSTALL_POW_SECRET` (required only if PoW is enabled).
+Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only image/video requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
 
 The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; bounded input/output and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. Per-minute chat throttling, daily request sublimits, automatic token throttling, and install issuance throttles default to disabled (`0`/`off`).
 

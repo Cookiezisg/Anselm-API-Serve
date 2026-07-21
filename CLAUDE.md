@@ -22,7 +22,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ```
 - `domain` 只依赖 stdlib + pkg;`app` 在本包声明 infra 端口(interface)，**禁** import infra/`database/sql`/HTTP server;`infra` 结构化满足端口、唯一碰 OS/DB/网络;`bootstrap` 唯一可跨全层、**无人 import 它**;`pkg` 叶内核谁都不依赖。
 - **事务聚合**(quota/install):事务边界 owned 在 `infra/store/*`(`orm.DB.Transaction`/`BEGIN IMMEDIATE`)，app 端口只暴露**一个原子聚合操作**，`*sql.Tx` 永不漏出 infra。
-- **密钥边界**:secret(`DEEPSEEK_API_KEY`/`KIMI_API_KEY`/`DASHBOARD_USER`/`DASHBOARD_PASSWORD`/`INSTALL_POW_SECRET`)env-only，不入 `config.Specs()`、绝不入 settings 表/Dump/Snapshot/日志；Snapshot 只能暴露安全状态/数量。
+- **密钥边界**:secret(`DEEPSEEK_API_KEY`/`KIMI_API_KEY`/`DASHBOARD_USER`/`DASHBOARD_PASSWORD`/`INSTALL_POW_SECRET`)env-only，不入 `config.Specs()`、绝不入 settings 表/Dump/Snapshot/日志；`DASHBOARD_AUTH_MODE` 是同样 env-only 的启动期信任边界选择（非 secret）；Snapshot 只能暴露安全状态/数量。
 
 ## 3. 不可破的红线(摘要，全集见 invariants.md)
 

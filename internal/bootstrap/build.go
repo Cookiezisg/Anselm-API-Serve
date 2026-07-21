@@ -23,6 +23,7 @@ import (
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
@@ -52,7 +53,7 @@ type App struct {
 
 	bizSrv   *http.Server // business :8080
 	adminSrv *http.Server // admin/metrics :9090 (loopback-only)
-	dashSrv  *http.Server // dashboard :8081 (nil when auth not configured)
+	dashSrv  *http.Server // dashboard :8081 (nil when DASHBOARD_AUTH_MODE=disabled)
 
 	bgWG       *sync.WaitGroup
 	loopCtx    context.Context
@@ -264,15 +265,16 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 15) Dashboard — only when BOTH auth secrets are set (a half-config already
-	// fails fast in LoadBase). The Static SPA handler is the embedded React build
-	// (infra/webassets), serving /static/ assets + the SPA shell for non-API GETs.
+	// 15) Dashboard — disabled, Go builtin authentication, or an external IAP are
+	// explicit startup modes. Every enabled mode remains hard-bound to loopback
+	// above; external mode removes Go session state only because the preceding IAP
+	// owns authentication. The Static SPA is embedded in the binary.
 	monthlyBudget := budgetSource{
 		ds:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
 		getLimit: func() int64 { return cfgP.Load().GlobalMonthlySpendPUSD },
 	}
 	var dashSrv *http.Server
-	if effective.DashboardUser != "" && effective.DashboardPassword != "" {
+	if effective.DashboardAuthMode != config.DashboardAuthModeDisabled {
 		dashSvc := appdash.New(appdash.Deps{
 			Budget:       monthlyBudget,
 			Reservations: quotaStore,
@@ -287,19 +289,25 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 			Export:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
 			Logger:       dashLogger{l: log},
 		})
-		gate := &mwdash.Gate{
-			Sessions:     mwdash.NewSessionStore(0, time.Now),
-			SecureCookie: !effective.DashboardDevInsecureCookie,
-		}
-		logins := mwdash.NewLoginLimiter(time.Now)
-		dashH, derr := dashhandler.New(dashhandler.Config{
+		dashCfg := dashhandler.Config{
 			Service:      dashSvc,
-			Gate:         gate,
-			Logins:       logins,
-			User:         effective.DashboardUser,
-			Password:     effective.DashboardPassword,
 			DiskDegraded: dg.Degraded,
-		})
+			AuthMode:     effective.DashboardAuthMode,
+		}
+		var gate *mwdash.Gate
+		if effective.DashboardAuthMode == config.DashboardAuthModeBuiltin {
+			gate = &mwdash.Gate{
+				Sessions:     mwdash.NewSessionStore(0, time.Now),
+				SecureCookie: !effective.DashboardDevInsecureCookie,
+			}
+			dashCfg.BuiltinAuth = &dashhandler.BuiltinAuth{
+				Gate:     gate,
+				Logins:   mwdash.NewLoginLimiter(time.Now),
+				User:     effective.DashboardUser,
+				Password: effective.DashboardPassword,
+			}
+		}
+		dashH, derr := dashhandler.New(dashCfg)
 		if derr != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("dashboard init: %w", derr)
@@ -315,7 +323,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 	} else {
-		log.Info("dashboard_disabled", "reason", "DASHBOARD_USER/PASSWORD not configured")
+		log.Info("dashboard_disabled", "reason", "DASHBOARD_AUTH_MODE=disabled")
 	}
 
 	// 16) REL-6 floors are runtime-tunable: hot-reload the guard + rate limiter on

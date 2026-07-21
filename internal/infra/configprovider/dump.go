@@ -50,7 +50,7 @@ func (p *Provider) Dump() []DumpItem {
 
 // Snapshot returns the effective config as SECRET-SAFE, low-cardinality log attrs
 // for the startup config_snapshot line: provider keys → counts + fixed masked
-// markers, the PoW secret + dashboard auth → provenance markers
+// markers, and the PoW secret → a provenance marker
 // (configured/disabled), everything else a plain scalar. No secret byte ever
 // reaches journald (GW-INV: secret-env-only). Lives in infra (not domain) because
 // the secret VALUES live only on the env-loaded Config the provider holds.
@@ -92,26 +92,19 @@ func (p *Provider) Snapshot() []any {
 		"listen_addr", c.ListenAddr,
 		"admin_addr", c.AdminAddr,
 		"dashboard_addr", c.DashboardAddr,
+		"dashboard_auth_mode", c.DashboardAuthMode,
 		"log_level", c.LogLevel,
 		"db_path", c.DBPath,
 		"disk_min_mb", c.DiskMinMB,
 		"disk_min_percent", c.DiskMinPercent,
-		"dashboard_auth", dashboardAuthMasked(c),
 	}
 }
 
-// powSecretMasked / dashboardAuthMasked report secret PROVENANCE only (never the
-// value) for the snapshot.
+// powSecretMasked reports secret provenance only (never the value) for the
+// snapshot.
 func powSecretMasked(c *config.Config) string {
 	if c.InstallPowSecretSource == "" {
 		return "disabled"
 	}
 	return c.InstallPowSecretSource
-}
-
-func dashboardAuthMasked(c *config.Config) string {
-	if c.DashboardUser == "" {
-		return "disabled"
-	}
-	return "configured (user+password set)"
 }

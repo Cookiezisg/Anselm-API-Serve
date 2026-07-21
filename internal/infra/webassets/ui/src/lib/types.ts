@@ -3,10 +3,18 @@
 //
 // 后端契约的逐字投影:字段名/大小写与 Go handler 的 json tag 一一对应,前端不臆造。
 
-// loginResponse (auth.go): csrfToken echoed on state-changing POSTs; user handle.
+// loginResponse (auth.go): csrfToken echoed on builtin state-changing POSTs; user handle.
 export interface LoginResponse {
   csrfToken: string
   user: string
+}
+
+// bootstrapResponse (auth.go): public, secret-free selector for the SPA's
+// authentication UX. external means a preceding IAP authenticated this request.
+export type DashboardAuthMode = 'builtin' | 'external'
+
+export interface BootstrapResponse {
+  authMode: DashboardAuthMode
 }
 
 // errBody (http.go): the {error:{code,message,details}} failure envelope.

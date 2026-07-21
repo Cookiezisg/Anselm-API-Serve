@@ -21,7 +21,7 @@ audience: [human, ai]
 |---|---|---|---|---|---|
 | business | `LISTEN_ADDR` | `127.0.0.1:8080` | `router.BuildHandler` | bearer token（install） | 公网经 Caddy；TLS 由 Caddy 终结 |
 | admin | `ADMIN_ADDR` | `127.0.0.1:9090` | `router.BuildAdminHandler` | 无（物理 loopback-only） | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars`，**绝不反代** |
-| dashboard | `DASHBOARD_ADDR` | `127.0.0.1:8081` | `router.BuildDashboardHandler` | session cookie + CSRF | 管理后台 SPA + `/api/*` |
+| dashboard | `DASHBOARD_ADDR` | `127.0.0.1:8081` | `router.BuildDashboardHandler` | `DASHBOARD_AUTH_MODE`: disabled / builtin session+CSRF / external IAP | 管理后台 SPA + `/api/*` |
 
 admin 的免鉴权靠**物理回环**而非中间件：`/debug/pprof/*` `/debug/vars` 暴露 goroutine/heap/cpu 画像与运行期 gauge，只能在隔离 admin 监听器上服务，必须 loopback-only 绑定（GW-INV-13）。
 
@@ -51,7 +51,7 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 | chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
 | model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |
 | health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB）；cached authenticated provider/model probe |
-| dashboard | `app/dashboard` | dashboard `/api/*` | GW-INV-19 session/CSRF/backoff |
+| dashboard | `app/dashboard` | dashboard `/api/*` | GW-INV-19 auth-mode trust boundary |
 
 ## 4. 错误线缆契约（ADR-002/003）
 

@@ -1,16 +1,13 @@
 // API client — the single fetch boundary to the Go dashboard backend.
 //
-// Contract anchors (internal/dashboard/*.go):
-//   * credentials:'same-origin' so the HttpOnly session cookie rides every call.
-//   * state-changing POSTs carry X-CSRF-Token == the login csrfToken (auth.go).
-//   * failures are the {error:{code,message,details}} envelope (http.go writeErr).
-//   * an absent/expired session → 401 UNAUTHENTICATED (requireSession) → caller
-//     is bounced to the login screen via the registered onUnauthorized hook.
-//
-// credentials:'same-origin' 带 cookie;改状态请求带 CSRF;401 触发跳登录回调。
+// Contract anchors (internal/dashboard/*.go): builtin mode uses an HttpOnly
+// session cookie + CSRF; external mode is authenticated by a preceding IAP and
+// carries no Go session state. Every failure uses the common API envelope.
 
 import type {
   LoginResponse,
+  BootstrapResponse,
+  DashboardAuthMode,
   OverviewResponse,
   ConfigResponse,
   InstallsResponse,
@@ -20,6 +17,7 @@ import type {
 // csrfToken lives ONLY in JS memory (never a cookie/localStorage): it is lost on
 // F5 and re-fetched from GET /api/session, exactly as the backend intends.
 let csrfToken = ''
+let dashboardAuthMode: DashboardAuthMode | null = null
 
 export function setCsrfToken(token: string): void {
   csrfToken = token
@@ -27,6 +25,10 @@ export function setCsrfToken(token: string): void {
 
 export function getCsrfToken(): string {
   return csrfToken
+}
+
+export function setDashboardAuthMode(mode: DashboardAuthMode): void {
+  dashboardAuthMode = mode
 }
 
 // onUnauthorized is invoked when any /api call returns 401 (session gone): the
@@ -65,7 +67,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
   }
-  if (csrf) {
+  if (csrf && dashboardAuthMode === 'builtin') {
     headers['X-CSRF-Token'] = csrfToken
   }
 
@@ -125,6 +127,12 @@ async function safeErr(resp: Response): Promise<{ code: string; message: string;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+// bootstrap is public on the loopback dashboard listener and contains only the
+// active authentication contract, never a credential or user identity.
+export function getBootstrap(): Promise<BootstrapResponse> {
+  return request<BootstrapResponse>('/api/bootstrap')
+}
+
 // login posts {user,password}; the session cookie is set by the server and the
 // returned csrfToken is stashed in memory for subsequent state-changing POSTs.
 export async function login(user: string, password: string): Promise<LoginResponse> {
@@ -171,7 +179,9 @@ export function getAudit(cursor: string, limit: number): Promise<AuditResponse> 
   return request<AuditResponse>(`/api/audit?${q.toString()}`)
 }
 
-// ── State-changing endpoints (CSRF) ──────────────────────────────────────────
+// ── State-changing endpoints ─────────────────────────────────────────────────
+// In builtin mode these carry the CSRF token; external mode has no Go browser
+// credential, so the loopback listener trusts the preceding IAP instead.
 
 export function postConfig(overrides: Record<string, string>): Promise<ConfigResponse> {
   return request<ConfigResponse>('/api/config', { method: 'POST', body: overrides, csrf: true })

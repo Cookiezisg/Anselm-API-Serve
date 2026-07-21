@@ -65,7 +65,6 @@
 	}
 }
 
-# 管理后台(dashboard)不经 Caddy、不上公网:进程在 127.0.0.1:8081 自绑 loopback,仅当
-# DASHBOARD_USER/PASSWORD 都配时才起。运维经 SSH 隧道访问(与 admin 9090 同款),例如:
-#   ssh -L 8081:127.0.0.1:8081 <user>@<server>   然后浏览器开 http://localhost:8081
-# 故意不暴露公网——一个裸登录页挂在新域名上易被扫描器/域名黑名单误判为钓鱼。
+# 管理后台(dashboard)不经本 Caddy、不上公网:进程在 127.0.0.1:8081 自绑 loopback。
+# DASHBOARD_AUTH_MODE=builtin 时可经 SSH 隧道访问；external 时只允许已在全路径启用 IAP
+# 的 Tunnel/代理转发到 http://127.0.0.1:8081。绝不可把 dashboard 直接公开反代。

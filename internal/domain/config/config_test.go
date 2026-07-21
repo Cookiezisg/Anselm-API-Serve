@@ -76,6 +76,17 @@ func TestValidBaseIsValid(t *testing.T) {
 	}
 }
 
+func TestValidateDashboardAuthMode(t *testing.T) {
+	for _, mode := range []string{DashboardAuthModeDisabled, DashboardAuthModeBuiltin, DashboardAuthModeExternal} {
+		if err := ValidateDashboardAuthMode(mode); err != nil {
+			t.Fatalf("mode=%q should be valid: %v", mode, err)
+		}
+	}
+	if err := ValidateDashboardAuthMode("cloudflare"); err == nil {
+		t.Fatal("unknown dashboard auth mode must fail closed")
+	}
+}
+
 // --- ValidateSemantics rules ---
 
 func TestSemanticsMonthlySpendMustBePositive(t *testing.T) {
@@ -354,9 +365,11 @@ func TestApplyOverrideRejectsSecretByName(t *testing.T) {
 }
 
 func TestApplyOverrideRejectsUnknownByName(t *testing.T) {
-	_, err := ApplyOverrides(validBase(), map[string]string{"NOPE_NOT_A_KEY": "1"})
-	if err == nil || !strings.Contains(err.Error(), "NOPE_NOT_A_KEY") || !strings.Contains(err.Error(), "unknown or secret") {
-		t.Fatalf("want named unknown rejection, got %v", err)
+	for _, key := range []string{"NOPE_NOT_A_KEY", "DASHBOARD_AUTH_MODE"} {
+		_, err := ApplyOverrides(validBase(), map[string]string{key: "1"})
+		if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "unknown or secret") {
+			t.Fatalf("%s: want named unknown rejection, got %v", key, err)
+		}
 	}
 }
 

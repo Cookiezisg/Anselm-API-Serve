@@ -6,7 +6,8 @@
 #   DEEPSEEK_API_KEY, GATEWAY_DOMAIN, ACME_EMAIL
 # Optional secrets:
 #   KIMI_API_KEY (omitting it disables only multimodal requests)
-#   DASHBOARD_USER + DASHBOARD_PASSWORD (must be set together)
+#   DASHBOARD_AUTH_MODE (disabled|builtin|external; external for a preceding IAP)
+#   DASHBOARD_USER + DASHBOARD_PASSWORD (required only for builtin)
 #   SITE_DOMAIN (otherwise derived from api.<root>)
 #
 # SERVER_KNOWN_HOSTS is mandatory. There is deliberately no ssh-keyscan/TOFU
@@ -175,6 +176,7 @@ jobs:
           SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          DASHBOARD_AUTH_MODE: ${{ secrets.DASHBOARD_AUTH_MODE }}
           DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
