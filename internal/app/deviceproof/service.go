@@ -4,6 +4,7 @@
 package deviceproof
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -65,7 +66,11 @@ type Challenge struct {
 func (s *Service) IssueChallenge() Challenge {
 	now := s.now().UTC()
 	raw := make([]byte, 8+16)
-	binary.BigEndian.PutUint64(raw[:8], uint64(now.Unix()))
+	var timestamp bytes.Buffer
+	if err := binary.Write(&timestamp, binary.BigEndian, now.Unix()); err != nil {
+		panic("deviceproof: encode timestamp failed: " + err.Error())
+	}
+	copy(raw[:8], timestamp.Bytes())
 	if _, err := rand.Read(raw[8:]); err != nil {
 		panic("deviceproof: crypto/rand failed: " + err.Error())
 	}
@@ -183,7 +188,11 @@ func (s *Service) validNonce(encoded string, now time.Time) bool {
 	if !hmac.Equal(raw[24:], mac.Sum(nil)) {
 		return false
 	}
-	issued := time.Unix(int64(binary.BigEndian.Uint64(raw[:8])), 0)
+	var unixSeconds int64
+	if err := binary.Read(bytes.NewReader(raw[:8]), binary.BigEndian, &unixSeconds); err != nil {
+		return false
+	}
+	issued := time.Unix(unixSeconds, 0)
 	return !issued.After(now.Add(proofSkew)) && now.Before(issued.Add(nonceTTL))
 }
 
