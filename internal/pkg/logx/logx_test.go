@@ -27,7 +27,7 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 		"api_key":        "sk-another-key",
 		"kimi_api_key":   "AIza-secret",
 		"x-goog-api-key": "AIza-header-secret",
-		"token":          "gwk_install_token_value",
+		"token":          "device-proof-compact-value",
 		"prompt":         "the user's private prompt text",
 		"completion":     "the model's private completion",
 		"content":        "message content that is private",
@@ -152,9 +152,9 @@ func TestRedactionDefendsAgainstStructAny(t *testing.T) {
 
 	buf.Reset()
 	From(context.Background()).Info("test", "payload", map[string]string{
-		"token": "gwk_secret_token_value",
+		"token": "device-proof-compact-value",
 	})
-	if strings.Contains(buf.String(), "gwk_secret_token_value") {
+	if strings.Contains(buf.String(), "device-proof-compact-value") {
 		t.Fatalf("nested secret leaked via slog.Any of a map: %s", buf.String())
 	}
 }

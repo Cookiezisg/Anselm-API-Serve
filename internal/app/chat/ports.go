@@ -40,11 +40,11 @@ type Sink interface {
 	SetWriteDeadline(t time.Time)
 }
 
-// Authenticator resolves a bearer token to its install. Satisfied by
+// Authenticator resolves a proof-verified public install id. Satisfied by
 // *app/install.Service.LookupInstall. Status is the typed domain enum so the use
 // case branches on StatusBanned without a stringly-typed compare.
 type Authenticator interface {
-	LookupInstall(ctx context.Context, token string) (id string, status dominstall.Status, found bool, err error)
+	LookupInstall(ctx context.Context, installID string) (id string, status dominstall.Status, found bool, err error)
 }
 
 // Quota is the accounting port. Satisfied by *app/quota.Service. The use case

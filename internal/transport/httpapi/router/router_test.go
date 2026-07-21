@@ -26,12 +26,13 @@ func (s *stubWrapper) Wrap(label string, h http.Handler) http.Handler {
 
 func testRoutes() routes {
 	return routes{
-		install:   echoHandler("install"),
-		challenge: echoHandler("challenge"),
-		chat:      echoHandler("chat"),
-		quota:     echoHandler("quota"),
-		models:    echoHandler("models"),
-		healthz:   echoHandler("healthz"),
+		install:        echoHandler("install"),
+		challenge:      echoHandler("challenge"),
+		proofChallenge: echoHandler("proof_challenge"),
+		chat:           echoHandler("chat"),
+		quota:          echoHandler("quota"),
+		models:         echoHandler("models"),
+		healthz:        echoHandler("healthz"),
 	}
 }
 
@@ -44,6 +45,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 	}{
 		{"POST", "/v1/install", "install"},
 		{"GET", "/v1/install/challenge", "challenge"},
+		{"GET", "/v1/proof/challenge", "proof_challenge"},
 		{"POST", "/v1/chat/completions", "chat"},
 		{"GET", "/v1/quota", "quota"},
 		{"GET", "/v1/models", "models"},
@@ -59,7 +61,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 	}
 
 	// Exactly the five business routes are RED-labeled; /healthz is NOT.
-	want := []string{"install", "install_challenge", "chat_completions", "quota", "models"}
+	want := []string{"install", "install_challenge", "proof_challenge", "chat_completions", "quota", "models"}
 	if strings.Join(mx.labels, ",") != strings.Join(want, ",") {
 		t.Fatalf("RED labels = %v, want %v", mx.labels, want)
 	}

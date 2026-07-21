@@ -1,5 +1,5 @@
 // Package chat is the thin HTTP handler for POST /v1/chat/completions. It owns
-// only the net/http concerns: method guard, bearer extraction, IP-key derivation,
+// only the net/http concerns: method guard, install-id extraction, IP-key derivation,
 // body read, and adapting http.ResponseWriter + http.NewResponseController into
 // the app/chat.Sink. All policy (the gate order + the reserve→forward→settle
 // saga) lives in app/chat — the handler just wires the adapter and calls Handle.
@@ -13,6 +13,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/clientip"
+	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
 
@@ -34,7 +35,7 @@ func New(svc *appchat.Service, bodyLimit int64) *Handler {
 	return &Handler{svc: svc, bodyLimit: bodyLimit}
 }
 
-// ServeHTTP guards the method, extracts the bearer + IP key, reads the (capped)
+// ServeHTTP guards the method, extracts the public install id + IP key, reads the (capped)
 // body, adapts the writer into a Sink, and delegates to the use case. The use
 // case writes every outcome through the Sink — the handler renders nothing else.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,14 +44,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cheapest-first, pre-buffer: a request with NO bearer at all is 401 before
+	// Cheapest-first, pre-buffer: a request with NO install id is 401 before
 	// we buffer a single body byte — otherwise an unauthenticated flood forces
 	// up to bodyLimit of memory per connection before the use case's auth gate
 	// runs (the buffering happens here, ahead of svc.Handle). Same wire result
-	// as the use case's own empty-token gate (401 INVALID_TOKEN), just earlier.
-	token := response.Bearer(r)
-	if token == "" {
-		response.WriteError(w, apierr.ErrInvalidToken)
+	// as the use case's own empty-install gate (401 INVALID_INSTALL), just earlier.
+	installID := r.Header.Get(proofhttp.HeaderInstallID)
+	if installID == "" {
+		response.WriteError(w, apierr.ErrInvalidInstall)
 		return
 	}
 
@@ -60,7 +61,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.bodyLimit))
 
 	in := appchat.HandleInput{
-		Token:     token,
+		InstallID: installID,
 		Body:      body,
 		BodyError: bodyErr,
 		IPKey:     clientip.Key(clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"))),

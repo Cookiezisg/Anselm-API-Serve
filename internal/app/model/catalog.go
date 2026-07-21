@@ -1,7 +1,7 @@
 // Package model is the /v1/models use-case layer: it assembles the OpenAI
 // model-list envelope from the one live provider-neutral PUBLIC_MODEL_ID. It declares its only
 // dependency as a config PORT and never imports infra/net.http/sql. Auth lives
-// in transport (bearer → install lookup); this layer is pure declaration and
+// in transport (device proof → install lookup); this layer is pure declaration and
 // bills nothing — listing models reserves no quota.
 package model
 

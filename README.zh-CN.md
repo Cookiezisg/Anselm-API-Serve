@@ -8,7 +8,7 @@
 
 1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用)。整段 messages 历史决定 provider;客户不能选 provider,两路之间也不 fallback。
 2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占每 install 月请求数和 operator 全局月花费预算。成功依上游 usage 结算;无法判定的失败保留保守扣费。
-3. **限流** —— 匿名 install token(只存 SHA-256),外加默认关闭的 Proof-of-Work 与限流闸。
+3. **设备绑定与限流** —— 每次调用都证明持有本机 Ed25519 私钥；复制 install id 或抓一条请求无法继续滥用。PoW 与领号闸继续增加批量造号成本。
 
 代码采用 Clean Architecture(domain / app / infra / transport,加一个 bootstrap 组合根),依赖方向由 golangci-lint(depguard)强制。四层都有测试,另有一个 loopback 全栈端到端套件;CI 跑 race 测试、lint、govulncheck、gofmt,以及一项"内嵌后台的构建是否与源一致"的检查。
 
@@ -33,19 +33,9 @@ make run                      # = go run ./cmd/gateway
 curl -s localhost:8080/healthz   # → {"status":"ok"}
 ```
 
-端到端(领号,然后当成任意 OpenAI 兼容端点用):
-
-```sh
-TOKEN=$(curl -s -XPOST localhost:8080/v1/install \
-  -H 'Content-Type: application/json' -d '{}' | jq -r .token)
-
-curl -s localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"model":"anselm-auto","stream":true,
-       "messages":[{"role":"user","content":"hello"}]}'
-
-curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
-```
+端到端推理刻意不提供「复制一个 token 就能 curl」的通道。Anselm sidecar 登记 Ed25519 公钥，把
+加密私钥种子留在设备上，取得短期 challenge，并对每次请求的 method、authority、target 与 exact body
+签名。完整紧凑 proof 契约见 [ADR-0015](docs/decisions/0015-device-bound-request-proof.md)。
 
 ## 确定性路由
 
@@ -76,10 +66,11 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| `POST` | `/v1/install` | 无 | 领 install token(`{token, monthlyQuota, resetAt}`),只回显一次 |
-| `POST` | `/v1/chat/completions` | Bearer token | OpenAI 兼容推理;按 `stream` 返 SSE 或 JSON |
-| `GET` | `/v1/models` | Bearer token | OpenAI `{object:"list", data:[…]}`,内含唯一公开模型 ID |
-| `GET` | `/v1/quota` | Bearer token | `{limit, used, remaining, resetAt, available}` |
+| `POST` | `/v1/install` | registration proof | 登记设备公钥；返回 `{installId, monthlyQuota, resetAt}` |
+| `GET` | `/v1/proof/challenge` | 无 | 发一个可缓存五分钟的 request nonce |
+| `POST` | `/v1/chat/completions` | device proof | OpenAI 兼容推理;按 `stream` 返 SSE 或 JSON |
+| `GET` | `/v1/models` | device proof | OpenAI `{object:"list", data:[…]}`,内含唯一公开模型 ID |
+| `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
 运维面(`127.0.0.1:9090`,loopback-only,不反代):`/metrics`、`/readyz`(`{db, upstream, disk}`)、`/debug/pprof/*`、`/debug/vars`。

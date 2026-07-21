@@ -23,18 +23,22 @@ type ConfigLoader interface {
 // later-gate reject leaves NO earlier-gate counter consumed (B11), and disabled
 // gates are skipped entirely so the dormant path writes only the installs row.
 type Store interface {
-	// Issue runs the enabled Sybil gates and, only if all admit, inserts a fresh
-	// installs row — ALL in one BEGIN IMMEDIATE transaction. On a gate reject it
+	// Issue first returns an existing row with the same key thumbprint; otherwise
+	// it runs the enabled Sybil gates and inserts a fresh installs row — ALL in one
+	// BEGIN IMMEDIATE transaction. On a gate reject it
 	// returns ok=false with the tripped Gate and writes nothing (atomic admit:
 	// committed counters mean issuances, not attempts). It regenerates the install
 	// id once on a UNIQUE collision (B13). gate counters prune stale windows
 	// opportunistically inside the same tx (B8).
 	Issue(ctx context.Context, p install.IssueParams) (install.IssueResult, error)
 
-	// Lookup resolves a token hash to its install id+status from the read pool.
+	// Lookup resolves a public install id to its status from the read pool.
 	// found=false on no row. It never refreshes last_seen (the throttled refresh
 	// is a separate, app-gated write — B9).
-	Lookup(ctx context.Context, tokenSHA256 string) (id string, status install.Status, found bool, err error)
+	Lookup(ctx context.Context, installID string) (status install.Status, found bool, err error)
+
+	// PublicKey returns the Ed25519 public key bound to an install id.
+	PublicKey(ctx context.Context, installID string) ([]byte, bool, error)
 
 	// RefreshLastSeen bumps installs.last_seen_at to now for id, DB-side throttled
 	// (WHERE last_seen_at < now-interval). Best-effort: the app calls it only after

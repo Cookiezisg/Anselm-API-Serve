@@ -2,15 +2,23 @@ package install
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/noncecache"
+	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 )
 
 // stub implements the Service port: it records inputs and returns scripted
@@ -33,7 +41,7 @@ func (s *stub) PoWGate(_ context.Context, powHeader, ipKey string) *apierr.APIEr
 	return s.powAE
 }
 
-func (s *stub) Issue(_ context.Context, req dominstall.Request, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError) {
+func (s *stub) Issue(_ context.Context, req dominstall.Request, _ []byte, _, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError) {
 	s.gotReq = req
 	s.gotIPKey = ipKey
 	if s.issueAE != nil {
@@ -44,10 +52,10 @@ func (s *stub) Issue(_ context.Context, req dominstall.Request, ipKey string) (a
 
 func TestInstall_Success(t *testing.T) {
 	reset := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	s := &stub{view: appinstall.IssueResultView{Token: "gwk_abc", MonthlyQuota: 1234, ResetAt: reset}}
-	h := New(s)
-
-	r := httptest.NewRequest("POST", "/v1/install", strings.NewReader(`{"fingerprint":"  fp  ","client":"cli"}`))
+	s := &stub{view: appinstall.IssueResultView{InstallID: "ins_abc", MonthlyQuota: 1234, ResetAt: reset}}
+	bodyRaw := `{"fingerprint":"  fp  ","client":"cli"}`
+	r, proofSvc := signedInstallRequest(t, bodyRaw)
+	h := New(s, proofSvc)
 	r.Header.Set("X-PoW", "ch.nonce")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -59,7 +67,7 @@ func TestInstall_Success(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Token != "gwk_abc" || got.MonthlyQuota != 1234 {
+	if got.InstallID != "ins_abc" || got.MonthlyQuota != 1234 {
 		t.Fatalf("body: %+v", got)
 	}
 	if got.ResetAt != reset.Format(time.RFC3339) {
@@ -77,7 +85,7 @@ func TestInstall_Success(t *testing.T) {
 
 func TestInstall_PoWReject(t *testing.T) {
 	s := &stub{powAE: apierr.ErrInstallPoWRequired}
-	h := New(s)
+	h := New(s, appdeviceproof.New(nil, noncecache.New(time.Minute)))
 	r := httptest.NewRequest("POST", "/v1/install", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -92,8 +100,8 @@ func TestInstall_PoWReject(t *testing.T) {
 
 func TestInstall_GateReject(t *testing.T) {
 	s := &stub{issueAE: apierr.ErrInstallRateLimited, gate: dominstall.GateIP}
-	h := New(s)
-	r := httptest.NewRequest("POST", "/v1/install", strings.NewReader(`{}`))
+	r, proofSvc := signedInstallRequest(t, `{}`)
+	h := New(s, proofSvc)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 
@@ -107,7 +115,7 @@ func TestInstall_GateReject(t *testing.T) {
 
 func TestInstall_BadBody(t *testing.T) {
 	s := &stub{}
-	h := New(s)
+	h := New(s, appdeviceproof.New(nil, noncecache.New(time.Minute)))
 	r := httptest.NewRequest("POST", "/v1/install", strings.NewReader(`{not json`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -117,11 +125,43 @@ func TestInstall_BadBody(t *testing.T) {
 }
 
 func TestInstall_MethodNotAllowed(t *testing.T) {
-	h := New(&stub{})
+	h := New(&stub{}, appdeviceproof.New(nil, noncecache.New(time.Minute)))
 	r := httptest.NewRequest("GET", "/v1/install", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != 405 {
 		t.Fatalf("GET must be 405, got %d", rec.Code)
 	}
+}
+
+func signedInstallRequest(t *testing.T, body string) (*http.Request, *appdeviceproof.Service) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := appdeviceproof.New(nil, noncecache.New(time.Minute))
+	challenge := svc.IssueChallenge()
+	bh := sha256.Sum256([]byte(body))
+	thumb := sha256.Sum256(public)
+	b64 := base64.RawURLEncoding
+	payload, err := json.Marshal(struct {
+		Version int    `json:"v"`
+		KeyID   string `json:"kid"`
+		Issued  int64  `json:"iat"`
+		ID      string `json:"jti"`
+		Nonce   string `json:"nonce"`
+		Method  string `json:"htm"`
+		Target  string `json:"htu"`
+		Body    string `json:"bh"`
+	}{1, b64.EncodeToString(thumb[:]), time.Now().Unix(), "test-jti", challenge.Nonce,
+		http.MethodPost, "example.com/v1/install", b64.EncodeToString(bh[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := b64.EncodeToString(payload)
+	r := httptest.NewRequest(http.MethodPost, "/v1/install", strings.NewReader(body))
+	r.Header.Set(proofhttp.HeaderPublicKey, b64.EncodeToString(public))
+	r.Header.Set(proofhttp.HeaderProof, encoded+"."+b64.EncodeToString(ed25519.Sign(private, []byte(encoded))))
+	return r, svc
 }

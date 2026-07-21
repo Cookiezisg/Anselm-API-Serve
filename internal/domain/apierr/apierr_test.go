@@ -13,7 +13,7 @@ func TestSentinelsMatchSpecVerbatim(t *testing.T) {
 		code    string
 		message string
 	}{
-		{"INVALID_TOKEN", ErrInvalidToken, 401, "INVALID_TOKEN", "missing or invalid install token"},
+		{"INVALID_INSTALL", ErrInvalidInstall, 401, "INVALID_INSTALL", "missing or invalid install id"},
 		{"ACCOUNT_BANNED", ErrAccountBanned, 403, "ACCOUNT_BANNED", "this install has been disabled"},
 		{"RATE_LIMITED", ErrRateLimited, 429, "RATE_LIMITED", "rate or daily sub-limit exceeded"},
 		{"QUOTA_EXHAUSTED", ErrQuotaExhausted, 429, "QUOTA_EXHAUSTED", "monthly free-tier quota exhausted"},

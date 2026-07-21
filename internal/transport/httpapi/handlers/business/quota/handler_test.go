@@ -46,7 +46,7 @@ func TestQuota_Success(t *testing.T) {
 	h := New(authOK(), stubViewer{view: v})
 
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 
@@ -68,12 +68,12 @@ func TestQuota_Success(t *testing.T) {
 	}
 }
 
-func TestQuota_NoBearer401(t *testing.T) {
+func TestQuota_NoInstallID401(t *testing.T) {
 	h := New(authOK(), stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
-	if rec.Code != apierr.ErrInvalidToken.Status {
+	if rec.Code != apierr.ErrInvalidInstall.Status {
 		t.Fatalf("status %d", rec.Code)
 	}
 }
@@ -81,7 +81,7 @@ func TestQuota_NoBearer401(t *testing.T) {
 func TestQuota_Banned403(t *testing.T) {
 	h := New(stubAuth{id: "x", status: dominstall.StatusBanned, found: true}, stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != apierr.ErrAccountBanned.Status {
@@ -95,10 +95,10 @@ func TestQuota_Banned403(t *testing.T) {
 func TestQuota_NotFound401(t *testing.T) {
 	h := New(stubAuth{found: false}, stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
-	if rec.Code != apierr.ErrInvalidToken.Status {
+	if rec.Code != apierr.ErrInvalidInstall.Status {
 		t.Fatalf("status %d", rec.Code)
 	}
 }
@@ -106,7 +106,7 @@ func TestQuota_NotFound401(t *testing.T) {
 func TestQuota_AuthError500(t *testing.T) {
 	h := New(stubAuth{err: errors.New("db")}, stubViewer{})
 	r := httptest.NewRequest("GET", "/v1/quota", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != 500 {

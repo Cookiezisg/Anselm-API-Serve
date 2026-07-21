@@ -67,6 +67,58 @@ func TestLRUEviction_UnderCap(t *testing.T) {
 	}
 }
 
+func TestFailClosedNeverReadmitsLiveEntryAtCapacity(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	c := NewFailClosed(time.Minute, 2)
+	c.SetNow(clockAt(&now))
+
+	if !c.UseOnce("a") || !c.UseOnce("b") {
+		t.Fatal("initial values should be admitted")
+	}
+	if c.UseOnce("c") {
+		t.Fatal("a full fail-closed cache must deny a new value")
+	}
+	if c.UseOnce("a") {
+		t.Fatal("capacity pressure must never make a live replay admissible")
+	}
+
+	now = now.Add(time.Minute)
+	if !c.UseOnce("c") {
+		t.Fatal("expired entries should free capacity")
+	}
+}
+
+func TestFailClosedReclaimsExpiredEntryMovedAheadOfLiveTail(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	c := NewFailClosed(time.Minute, 2)
+	c.SetNow(clockAt(&now))
+
+	if !c.UseOnce("expires-first") {
+		t.Fatal("first value should be admitted")
+	}
+	now = now.Add(30 * time.Second)
+	if !c.UseOnce("still-live") {
+		t.Fatal("second value should be admitted")
+	}
+	now = now.Add(20 * time.Second)
+	if c.UseOnce("expires-first") {
+		t.Fatal("replay before expiry must be denied")
+	}
+
+	// The replay moved expires-first to the LRU front. At this instant it is
+	// expired while the tail entry remains live; a tail-only sweep cannot see it.
+	now = now.Add(11 * time.Second)
+	if !c.UseOnce("replacement") {
+		t.Fatal("full fail-closed cache should reclaim expired non-tail entries")
+	}
+	if got := c.Len(); got != 2 {
+		t.Fatalf("Len = %d, want 2", got)
+	}
+	if c.UseOnce("still-live") {
+		t.Fatal("reclaiming an expired entry must not forget a live replay")
+	}
+}
+
 func TestNonPositiveMax_FallsBackToDefault(t *testing.T) {
 	if c := NewWithMax(time.Minute, 0); c.max != DefaultMax {
 		t.Fatalf("max = %d, want DefaultMax %d", c.max, DefaultMax)

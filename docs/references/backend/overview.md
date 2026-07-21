@@ -19,7 +19,7 @@ audience: [human, ai]
 
 | 监听器 | env 键 | 默认 | 装配函数 | 鉴权 | 暴露面 |
 |---|---|---|---|---|---|
-| business | `LISTEN_ADDR` | `127.0.0.1:8080` | `router.BuildHandler` | bearer token（install） | 公网经 Caddy；TLS 由 Caddy 终结 |
+| business | `LISTEN_ADDR` | `127.0.0.1:8080` | `router.BuildHandler` | Ed25519 device proof | 公网经 Caddy；TLS 由 Caddy 终结 |
 | admin | `ADMIN_ADDR` | `127.0.0.1:9090` | `router.BuildAdminHandler` | 无（物理 loopback-only） | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars`，**绝不反代** |
 | dashboard | `DASHBOARD_ADDR` | `127.0.0.1:8081` | `router.BuildDashboardHandler` | `DASHBOARD_AUTH_MODE`: disabled / builtin session+CSRF / external IAP | 管理后台 SPA + `/api/*` |
 
@@ -47,7 +47,7 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 | 域 | app 包 | 入口端点 | 权威契约 |
 |---|---|---|---|
 | quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 双闸预留（install 月次数 + operator 月预算）与显式 ledger 状态（A 组） |
-| install | `app/install` | `POST /v1/install` · `GET /v1/install/challenge` | GW-INV-12/16/20、防 Sybil + PoW 三态 |
+| install | `app/install` + `app/deviceproof` | `POST /v1/install` · `GET /v1/install/challenge` · `GET /v1/proof/challenge` | GW-INV-12/16/20、逐请求 proof、防 Sybil + PoW 三态 |
 | chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
 | model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |
 | health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB）；cached authenticated provider/model probe |

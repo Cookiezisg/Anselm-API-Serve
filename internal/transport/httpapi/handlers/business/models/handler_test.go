@@ -35,7 +35,7 @@ func TestModels_Success(t *testing.T) {
 	}
 	h := New(authOK(), stubCatalog{env: env})
 	r := httptest.NewRequest("GET", "/v1/models", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 
@@ -51,12 +51,12 @@ func TestModels_Success(t *testing.T) {
 	}
 }
 
-func TestModels_NoBearer401(t *testing.T) {
+func TestModels_NoInstallID401(t *testing.T) {
 	h := New(authOK(), stubCatalog{})
 	r := httptest.NewRequest("GET", "/v1/models", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
-	if rec.Code != apierr.ErrInvalidToken.Status {
+	if rec.Code != apierr.ErrInvalidInstall.Status {
 		t.Fatalf("status %d", rec.Code)
 	}
 }
@@ -64,7 +64,7 @@ func TestModels_NoBearer401(t *testing.T) {
 func TestModels_Banned403(t *testing.T) {
 	h := New(stubAuth{status: dominstall.StatusBanned, found: true}, stubCatalog{})
 	r := httptest.NewRequest("GET", "/v1/models", nil)
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != apierr.ErrAccountBanned.Status {

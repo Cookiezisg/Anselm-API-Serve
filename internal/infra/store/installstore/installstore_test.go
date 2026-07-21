@@ -2,6 +2,7 @@ package installstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -25,11 +26,13 @@ func newStore(t *testing.T) (*Store, *sqlite.DB) {
 }
 
 // baseParams builds an admit-everything IssueParams (optional M2 gates disabled,
-// IP gate enabled with a high cap) for the given fp + token + day/hour window.
-func baseParams(id, tokenHash, fp string, now time.Time) dinstall.IssueParams {
+// IP gate enabled with a high cap) for the given fp + key identity + day/hour window.
+func baseParams(id, keyID, fp string, now time.Time) dinstall.IssueParams {
+	publicKey := sha256.Sum256([]byte(keyID))
 	return dinstall.IssueParams{
 		InstallID:   id,
-		TokenSHA256: tokenHash,
+		PublicKey:   publicKey[:],
+		Thumbprint:  keyID,
 		Fingerprint: fp,
 		Now:         now,
 		IPGate: dinstall.IPGate{
@@ -41,17 +44,19 @@ func baseParams(id, tokenHash, fp string, now time.Time) dinstall.IssueParams {
 	}
 }
 
-func TestIssueFreshTokenAndRow(t *testing.T) {
+func identity(s string) string { return s }
+
+func TestIssueDistinctKeysCreateDistinctRows(t *testing.T) {
 	st, db := newStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 
-	p := baseParams("ins_a", dinstall.HashToken("gwk_one"), "fp-aaa", now)
+	p := baseParams("ins_a", identity("key_one"), "fp-aaa", now)
 	res, err := st.Issue(ctx, p)
 	if err != nil || !res.Admitted {
 		t.Fatalf("issue 1: admitted=%v err=%v", res.Admitted, err)
 	}
-	p2 := baseParams("ins_b", dinstall.HashToken("gwk_two"), "fp-aaa", now)
+	p2 := baseParams("ins_b", identity("key_two"), "fp-aaa", now)
 	p2.IPGate.Key = "ipk-other"
 	res2, err := st.Issue(ctx, p2)
 	if err != nil || !res2.Admitted {
@@ -67,14 +72,49 @@ func TestIssueFreshTokenAndRow(t *testing.T) {
 	}
 }
 
-func TestIssueStoresTokenAndFPAsHash(t *testing.T) {
+func TestIssueSameKeyIsIdempotentWithoutConsumingGates(t *testing.T) {
+	st, db := newStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	p := baseParams("ins_original", "same-key", "same-fingerprint", now)
+	p.IPGate.Max = 1
+	p.GlobalGate = dinstall.GlobalGate{Enabled: true, WindowDay: "2026-07-21", Cap: 1}
+	p.FPGate = dinstall.FPGate{
+		Enabled: true, FPSHA256: dinstall.HashFingerprint(p.Fingerprint),
+		WindowDay: "2026-07-21", Cap: 1, Cutoff: now.Add(time.Hour),
+	}
+	first, err := st.Issue(ctx, p)
+	if err != nil || !first.Admitted || first.Existing {
+		t.Fatalf("first issue = %+v, err=%v", first, err)
+	}
+
+	p.InstallID = "ins_should_not_be_created"
+	second, err := st.Issue(ctx, p)
+	if err != nil || !second.Admitted || !second.Existing || second.InstallID != first.InstallID {
+		t.Fatalf("idempotent issue = %+v, err=%v; first=%+v", second, err, first)
+	}
+	if n := readCount(t, ctx, db, `SELECT COUNT(*) FROM installs`); n != 1 {
+		t.Fatalf("install rows = %d, want 1", n)
+	}
+	if n := readCount(t, ctx, db, `SELECT count FROM install_ip_rate WHERE ip_key = ? AND window_hour = ?`, p.IPGate.Key, p.IPGate.WindowHour); n != 1 {
+		t.Fatalf("IP gate count = %d, want 1", n)
+	}
+	if n := readCount(t, ctx, db, `SELECT count FROM install_global_rate WHERE window_day = ?`, p.GlobalGate.WindowDay); n != 1 {
+		t.Fatalf("global gate count = %d, want 1", n)
+	}
+	if n := readCount(t, ctx, db, `SELECT count FROM install_fp_rate WHERE fp_sha256 = ? AND window_day = ?`, p.FPGate.FPSHA256, p.FPGate.WindowDay); n != 1 {
+		t.Fatalf("fingerprint gate count = %d, want 1", n)
+	}
+}
+
+func TestIssueStoresPublicKeyAndHashedFPRateKey(t *testing.T) {
 	st, db := newStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	const tok = "gwk_secret_plain"
+	const keyID = "device-key-one"
 	const fp = "fingerprint-plaintext-xyz"
 
-	p := baseParams("ins_h", dinstall.HashToken(tok), fp, now)
+	p := baseParams("ins_h", identity(keyID), fp, now)
 	// Force the fp into install_fp_rate by enabling the fp gate.
 	p.FPGate = dinstall.FPGate{
 		Enabled:   true,
@@ -87,15 +127,13 @@ func TestIssueStoresTokenAndFPAsHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var storedTok string
-	if err := db.Reader.QueryRow(ctx, `SELECT token_sha256 FROM installs LIMIT 1`).Scan(&storedTok); err != nil {
+	var storedKey []byte
+	var storedThumb string
+	if err := db.Reader.QueryRow(ctx, `SELECT public_key, key_thumbprint FROM installs LIMIT 1`).Scan(&storedKey, &storedThumb); err != nil {
 		t.Fatal(err)
 	}
-	if storedTok == tok {
-		t.Fatal("plaintext token stored")
-	}
-	if storedTok != dinstall.HashToken(tok) {
-		t.Fatal("stored token != SHA-256")
+	if len(storedKey) != 32 || storedThumb != keyID {
+		t.Fatalf("stored device identity = %x/%q", storedKey, storedThumb)
 	}
 
 	var storedFP string
@@ -126,7 +164,7 @@ func TestGlobalCapConcurrentNoOversell(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p := baseParams("ins_g"+itoa(i), dinstall.HashToken("gwk_g"+itoa(i)), "", now)
+			p := baseParams("ins_g"+itoa(i), identity("key_g"+itoa(i)), "", now)
 			p.IPGate.Key = "ipk-g" + itoa(i)
 			p.GlobalGate = dinstall.GlobalGate{Enabled: true, WindowDay: now.Format("2006-01-02"), Cap: cap}
 			results[i], errs[i] = st.Issue(ctx, p)
@@ -161,7 +199,7 @@ func TestB11NoCounterConsumedOnLaterGateReject(t *testing.T) {
 	fpHash := dinstall.HashFingerprint(fp)
 
 	// First issuance fills the fp daily cap (cap=1).
-	p1 := baseParams("ins_r1", dinstall.HashToken("gwk_r1"), fp, now)
+	p1 := baseParams("ins_r1", identity("key_r1"), fp, now)
 	p1.IPGate.Key = "ipk-shared"
 	p1.GlobalGate = dinstall.GlobalGate{Enabled: true, WindowDay: day, Cap: 100}
 	p1.FPGate = dinstall.FPGate{Enabled: true, FPSHA256: fpHash, WindowDay: day, Cap: 1, Cutoff: now.AddDate(1000, 0, 0)}
@@ -174,7 +212,7 @@ func TestB11NoCounterConsumedOnLaterGateReject(t *testing.T) {
 	globalBefore := readCount(t, ctx, db, `SELECT count FROM install_global_rate WHERE window_day=?`, day)
 
 	// Second issuance with same fp/IP/global trips the fp gate → reject.
-	p2 := baseParams("ins_r2", dinstall.HashToken("gwk_r2"), fp, now)
+	p2 := baseParams("ins_r2", identity("key_r2"), fp, now)
 	p2.IPGate.Key = "ipk-shared"
 	p2.GlobalGate = dinstall.GlobalGate{Enabled: true, WindowDay: day, Cap: 100}
 	p2.FPGate = dinstall.FPGate{Enabled: true, FPSHA256: fpHash, WindowDay: day, Cap: 1, Cutoff: now.AddDate(1000, 0, 0)}
@@ -218,7 +256,7 @@ func TestPerFPCooldownConcurrentNoDoublePass(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p := baseParams("ins_d"+itoa(i), dinstall.HashToken("gwk_d"+itoa(i)), "dave", now)
+			p := baseParams("ins_d"+itoa(i), identity("key_d"+itoa(i)), "dave", now)
 			p.IPGate.Key = "ipk-d" + itoa(i)
 			p.FPGate = dinstall.FPGate{Enabled: true, FPSHA256: fpHash, WindowDay: day, Cap: fpSentinel(), Cutoff: cutoff}
 			results[i], _ = st.Issue(ctx, p)
@@ -243,7 +281,7 @@ func TestDisabledFPGateNoRow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	for i := 0; i < 3; i++ {
-		p := baseParams("ins_e"+itoa(i), dinstall.HashToken("gwk_e"+itoa(i)), "", now)
+		p := baseParams("ins_e"+itoa(i), identity("key_e"+itoa(i)), "", now)
 		p.IPGate.Key = "ipk-e" + itoa(i)
 		if r, err := st.Issue(ctx, p); err != nil || !r.Admitted {
 			t.Fatalf("issue %d: %v %v", i, r.Admitted, err)
@@ -262,7 +300,7 @@ func TestDisabledIPGateNoRow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	p := baseParams("ins_noip", dinstall.HashToken("gwk_noip"), "", now)
+	p := baseParams("ins_noip", identity("key_noip"), "", now)
 	p.IPGate = dinstall.IPGate{Enabled: false, Key: "ipk-disabled", WindowHour: now.Format("2006-01-02T15"), Max: 0}
 	if r, err := st.Issue(ctx, p); err != nil || !r.Admitted {
 		t.Fatalf("disabled IP gate issue: admitted=%v err=%v", r.Admitted, err)
@@ -280,7 +318,7 @@ func TestB8RateBucketPrune(t *testing.T) {
 	t1 := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	t2 := t1.Add(2 * time.Hour) // different window_hour, same ip_key.
 
-	p1 := baseParams("ins_p1", dinstall.HashToken("gwk_p1"), "", t1)
+	p1 := baseParams("ins_p1", identity("key_p1"), "", t1)
 	p1.IPGate.Key = "ipk-prune"
 	if r, err := st.Issue(ctx, p1); err != nil || !r.Admitted {
 		t.Fatalf("issue 1: %v %v", r.Admitted, err)
@@ -289,7 +327,7 @@ func TestB8RateBucketPrune(t *testing.T) {
 		t.Fatalf("after issue 1 ip_rate rows=%d want 1", n)
 	}
 
-	p2 := baseParams("ins_p2", dinstall.HashToken("gwk_p2"), "", t2)
+	p2 := baseParams("ins_p2", identity("key_p2"), "", t2)
 	p2.IPGate.Key = "ipk-prune"
 	if r, err := st.Issue(ctx, p2); err != nil || !r.Admitted {
 		t.Fatalf("issue 2: %v %v", r.Admitted, err)
@@ -317,12 +355,12 @@ func TestB13IDRegenerateOnConflict(t *testing.T) {
 	// Pre-seed a row with a known id so the next Issue with that same id collides.
 	const dupID = "ins_dupe000000000000000000000000"
 	if _, err := db.Writer.Exec(ctx,
-		`INSERT INTO installs(id, token_sha256, status, created_at, last_seen_at) VALUES (?,?,?,?,?)`,
-		dupID, dinstall.HashToken("gwk_seed"), "active", now, now); err != nil {
+		`INSERT INTO installs(id, public_key, key_thumbprint, status, created_at, last_seen_at) VALUES (?,?,?,?,?,?)`,
+		dupID, make([]byte, 32), "seed-thumbprint", "active", now, now); err != nil {
 		t.Fatal(err)
 	}
 
-	p := baseParams(dupID, dinstall.HashToken("gwk_new"), "", now)
+	p := baseParams(dupID, identity("key_new"), "", now)
 	p.IPGate.Key = "ipk-dupe"
 	r, err := st.Issue(ctx, p)
 	if err != nil {
@@ -330,6 +368,9 @@ func TestB13IDRegenerateOnConflict(t *testing.T) {
 	}
 	if !r.Admitted {
 		t.Fatal("B13: should admit after regenerating id")
+	}
+	if r.InstallID == dupID {
+		t.Fatal("B13: result returned the colliding id instead of the regenerated id")
 	}
 	// Two rows now (the seed + the regenerated one), both with distinct ids.
 	if n := readCount(t, ctx, db, `SELECT COUNT(*) FROM installs`); n != 2 {
@@ -342,18 +383,18 @@ func TestLookupAndRefreshThrottle(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	p := baseParams("ins_lk", dinstall.HashToken("gwk_lk"), "", base)
+	p := baseParams("ins_lk", identity("key_lk"), "", base)
 	p.IPGate.Key = "ipk-lk"
 	if _, err := st.Issue(ctx, p); err != nil {
 		t.Fatal(err)
 	}
 
-	id, status, found, err := st.Lookup(ctx, dinstall.HashToken("gwk_lk"))
+	status, found, err := st.Lookup(ctx, "ins_lk")
 	if err != nil || !found {
 		t.Fatalf("lookup: found=%v err=%v", found, err)
 	}
-	if id != "ins_lk" || status != dinstall.StatusActive {
-		t.Fatalf("lookup bad: id=%q status=%q", id, status)
+	if status != dinstall.StatusActive {
+		t.Fatalf("lookup bad: status=%q", status)
 	}
 
 	// Pin last_seen far in the past, then a within-interval refresh is a no-op and a
@@ -376,8 +417,8 @@ func TestLookupAndRefreshThrottle(t *testing.T) {
 		t.Fatalf("cross-interval refresh: got=%v want=%v", got, after)
 	}
 
-	// Missing token → not found.
-	if _, _, found, _ := st.Lookup(ctx, dinstall.HashToken("nope")); found {
+	// Missing install id → not found.
+	if _, found, _ := st.Lookup(ctx, "ins_nope"); found {
 		t.Fatal("lookup of unknown token reported found")
 	}
 }
@@ -392,7 +433,7 @@ func TestInstallsToday(t *testing.T) {
 		t.Fatalf("before any issuance = (%d,%v) want (0,nil)", n, err)
 	}
 	for i := 0; i < 2; i++ {
-		p := baseParams("ins_t"+itoa(i), dinstall.HashToken("gwk_t"+itoa(i)), "", now)
+		p := baseParams("ins_t"+itoa(i), identity("key_t"+itoa(i)), "", now)
 		p.IPGate.Key = "ipk-t" + itoa(i)
 		p.GlobalGate = dinstall.GlobalGate{Enabled: true, WindowDay: day, Cap: 100}
 		if _, err := st.Issue(ctx, p); err != nil {

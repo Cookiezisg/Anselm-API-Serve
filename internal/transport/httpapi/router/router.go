@@ -13,6 +13,7 @@ import (
 	"net/http"
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
+	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
@@ -22,6 +23,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/healthz"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/install"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/models"
+	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/quota"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware"
 )
@@ -53,9 +55,10 @@ type PanicCounter interface {
 // label↔route↔use-case wiring lives in exactly one file.
 type Deps struct {
 	Install *appinstall.Service // POST /v1/install + GET /v1/install/challenge + auth
-	Chat    *appchat.Service    // POST /v1/chat/completions
-	Quota   *appquota.Service   // GET /v1/quota
-	Models  *appmodel.Catalog   // GET /v1/models
+	Proof   *appdeviceproof.Service
+	Chat    *appchat.Service  // POST /v1/chat/completions
+	Quota   *appquota.Service // GET /v1/quota
+	Models  *appmodel.Catalog // GET /v1/models
 
 	// Mx wraps each business route with HTTP RED; nil → routes mounted bare.
 	Mx Wrapper
@@ -76,7 +79,7 @@ type Deps struct {
 // httptest instead of calling a handler directly and bypassing the chain.
 //
 // The install service doubles as the shared Authenticator for quota/models (one
-// bearer→install lookup, never a second validator, §2).
+// proof-verified install lookup, never a second status implementation, §2).
 func BuildHandler(d Deps) http.Handler {
 	limit := d.MaxBodyBytes
 	if limit <= 0 {
@@ -84,12 +87,13 @@ func BuildHandler(d Deps) http.Handler {
 	}
 	// The install service doubles as the shared Authenticator for quota/models.
 	return assemble(routes{
-		install:   install.New(d.Install),
-		challenge: challenge.New(d.Install),
-		chat:      chat.New(d.Chat, limit),
-		quota:     quota.New(d.Install, d.Quota),
-		models:    models.New(d.Install, d.Models),
-		healthz:   healthz.New(),
+		install:        install.New(d.Install, d.Proof),
+		challenge:      challenge.New(d.Install),
+		proofChallenge: proof.New(d.Proof),
+		chat:           proof.Protect(d.Proof, chat.New(d.Chat, limit)),
+		quota:          proof.Protect(d.Proof, quota.New(d.Install, d.Quota)),
+		models:         proof.Protect(d.Proof, models.New(d.Install, d.Models)),
+		healthz:        healthz.New(),
 	}, d.Mx, d.OnPanic, limit)
 }
 
@@ -98,12 +102,13 @@ func BuildHandler(d Deps) http.Handler {
 // so the chain (Recover→DenyCORS→MaxBody→mux), the label↔path table, and the
 // 404/405/CORS behavior are covered without standing up real app services.
 type routes struct {
-	install   http.Handler
-	challenge http.Handler
-	chat      http.Handler
-	quota     http.Handler
-	models    http.Handler
-	healthz   http.Handler
+	install        http.Handler
+	challenge      http.Handler
+	proofChallenge http.Handler
+	chat           http.Handler
+	quota          http.Handler
+	models         http.Handler
+	healthz        http.Handler
 }
 
 // assemble mounts the route table and wraps it in the middleware chain — the ONE
@@ -124,6 +129,7 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 
 	mux.Handle("POST /v1/install", wrap("install", rt.install))
 	mux.Handle("GET /v1/install/challenge", wrap("install_challenge", rt.challenge))
+	mux.Handle("GET /v1/proof/challenge", wrap("proof_challenge", rt.proofChallenge))
 	mux.Handle("POST /v1/chat/completions", wrap("chat_completions", rt.chat))
 	mux.Handle("GET /v1/quota", wrap("quota", rt.quota))
 	mux.Handle("GET /v1/models", wrap("models", rt.models))

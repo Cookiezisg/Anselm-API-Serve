@@ -8,7 +8,7 @@ It does three things:
 
 1. **Route** — OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming, with `tools`/`tool_choice` for multi-turn tool calls). The complete message history determines the provider; the client cannot choose one, and there is no cross-provider fallback.
 2. **Meter** — before each upstream call it converts the exact provider/model rate card into cost, then atomically reserves the per-install monthly request count plus the operator global monthly spend budget. Successful calls settle against reported usage; ambiguous failures retain a conservative charge.
-3. **Rate-limit** — anonymous install tokens (stored only as SHA-256), plus optional Proof-of-Work and rate-limit gates that are off by default.
+3. **Bind and rate-limit** — every call proves possession of an installation Ed25519 key; copied ids and captured requests are unusable. Optional Proof-of-Work and issuance gates add Sybil cost.
 
 The code uses clean architecture (domain / app / infra / transport, plus a bootstrap composition root), with the dependency direction enforced by golangci-lint (depguard). There are tests across all four layers plus a loopback end-to-end suite; CI runs race tests, lint, govulncheck, gofmt, and a check that the embedded dashboard build matches its source.
 
@@ -33,19 +33,10 @@ make run                      # = go run ./cmd/gateway
 curl -s localhost:8080/healthz   # → {"status":"ok"}
 ```
 
-End to end (claim a token, then use it like any OpenAI-compatible endpoint):
-
-```sh
-TOKEN=$(curl -s -XPOST localhost:8080/v1/install \
-  -H 'Content-Type: application/json' -d '{}' | jq -r .token)
-
-curl -s localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"model":"anselm-auto","stream":true,
-       "messages":[{"role":"user","content":"hello"}]}'
-
-curl -s localhost:8080/v1/quota -H "Authorization: Bearer $TOKEN" | jq
-```
+End-to-end inference intentionally is not a copyable curl token flow. The Anselm sidecar registers
+an Ed25519 public key, keeps the encrypted private seed on the device, obtains a short-lived
+challenge, and signs the method, authority, target, and exact body of every request. See
+[ADR-0015](docs/decisions/0015-device-bound-request-proof.md) for the compact proof contract.
 
 ## Deterministic routing
 
@@ -76,10 +67,11 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/v1/install` | none | Issue an install token (`{token, monthlyQuota, resetAt}`); shown once |
-| `POST` | `/v1/chat/completions` | Bearer token | OpenAI-compatible inference; SSE or JSON per `stream` |
-| `GET` | `/v1/models` | Bearer token | OpenAI `{object:"list", data:[…]}` containing the single public model ID |
-| `GET` | `/v1/quota` | Bearer token | `{limit, used, remaining, resetAt, available}` |
+| `POST` | `/v1/install` | registration proof | Register a device public key; return `{installId, monthlyQuota, resetAt}` |
+| `GET` | `/v1/proof/challenge` | none | Issue a cacheable five-minute request nonce |
+| `POST` | `/v1/chat/completions` | device proof | OpenAI-compatible inference; SSE or JSON per `stream` |
+| `GET` | `/v1/models` | device proof | OpenAI `{object:"list", data:[…]}` containing the single public model ID |
+| `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
 
 Admin (`127.0.0.1:9090`, loopback-only, not proxied): `/metrics`, `/readyz` (`{db, upstream, disk}`), `/debug/pprof/*`, `/debug/vars`.

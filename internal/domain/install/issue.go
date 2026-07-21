@@ -7,11 +7,12 @@ import "time"
 // It is a pure domain value shared by the app port and its infra implementation
 // (so infra never imports app). The app resolves these from a config snapshot (a
 // disabled gate has Enabled false so the store never touches its table — dormant
-// zero-cost); the token hash + install id are supplied so domain owns hashing and
-// idgen owns id minting.
+// zero-cost); the verified public key, thumbprint, and proposed install id are
+// supplied by the app layer.
 type IssueParams struct {
 	InstallID   string
-	TokenSHA256 string
+	PublicKey   []byte
+	Thumbprint  string
 	Fingerprint string // plaintext for the installs row; "" → NULL.
 	Client      string // "" → NULL.
 	Now         time.Time
@@ -58,8 +59,10 @@ type FPGate struct {
 // row committed; otherwise Gate names the tripped guardrail (for the audit + the
 // wire-code mapping).
 type IssueResult struct {
-	Admitted bool
-	Gate     Gate
+	Admitted  bool
+	Gate      Gate
+	InstallID string
+	Existing  bool
 }
 
 // Gate identifies which guardrail tripped, for the unsampled WARN audit field and

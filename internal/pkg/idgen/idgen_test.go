@@ -1,7 +1,6 @@
 package idgen
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -43,31 +42,11 @@ func TestRequestIDPrefixAndWidth(t *testing.T) {
 	}
 }
 
-func TestTokenPrefixWidthAndEncoding(t *testing.T) {
-	tok := Token()
-	body, ok := strings.CutPrefix(tok, "gwk_")
-	if !ok {
-		t.Fatalf("Token() = %q, want gwk_ prefix", tok)
-	}
-	// RawURLEncoding: url-safe alphabet, no padding.
-	if strings.ContainsAny(body, "+/=") {
-		t.Fatalf("Token() body %q contains non-url-safe or padding chars", body)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(body)
-	if err != nil {
-		t.Fatalf("Token() body not base64url: %v", err)
-	}
-	if len(raw) != tokenEntropyBytes {
-		t.Fatalf("Token() entropy = %d bytes, want %d", len(raw), tokenEntropyBytes)
-	}
-}
-
 func TestUniquenessAcrossManyCalls(t *testing.T) {
 	const n = 50_000
 	cases := map[string]func() string{
 		"InstallID": InstallID,
 		"RequestID": RequestID,
-		"Token":     Token,
 	}
 	for name, gen := range cases {
 		seen := make(map[string]struct{}, n)
@@ -94,7 +73,7 @@ func TestConcurrentMintingNoDup(t *testing.T) {
 			defer wg.Done()
 			local := make([]string, 0, per)
 			for i := 0; i < per; i++ {
-				local = append(local, InstallID(), Token())
+				local = append(local, InstallID(), RequestID())
 			}
 			mu.Lock()
 			defer mu.Unlock()

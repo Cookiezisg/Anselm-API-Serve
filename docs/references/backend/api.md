@@ -11,7 +11,7 @@ audience: [human, ai]
 
 # HTTP API 契约（business / admin / dashboard 三 mux）
 
-> Go 1.22 method+path `ServeMux`。成功默认是裸实体，失败统一 `{"error":{"code","message"[,"details"]}}`；`/v1/models` 刻意保 OpenAI list wrapper。错误逐字值见 [error-codes.md](error-codes.md)，配置边界见 [config.md](config.md)。bearer 只认 `Authorization: Bearer <token>`。
+> Go 1.22 method+path `ServeMux`。成功默认是裸实体，失败统一 `{"error":{"code","message"[,"details"]}}`；`/v1/models` 刻意保 OpenAI list wrapper。错误逐字值见 [error-codes.md](error-codes.md)，配置边界见 [config.md](config.md)。业务身份统一采用 [ADR-0015](../../decisions/0015-device-bound-request-proof.md) 的 Ed25519 逐请求设备证明，无 bearer token。
 
 ## 1. business mux（`LISTEN_ADDR`，默认 `127.0.0.1:8080`）
 
@@ -19,14 +19,15 @@ audience: [human, ai]
 
 | 方法 + 路径 | label | auth | 成功 / 说明 |
 |---|---|---|---|
-| `POST /v1/install` | `install` | 无 | 每次新建 install + 一次性 token；handler 独立 8KiB body cap；Sybil/PoW 默认 dormant |
+| `POST /v1/install` | `install` | 注册 proof + public key | 公钥登记；同 key 幂等返回 `{installId,monthlyQuota,resetAt}`；handler 独立 8KiB body cap；Sybil/PoW 默认 dormant |
 | `GET /v1/install/challenge` | `install_challenge` | 无 | 120s 无状态 HMAC PoW challenge |
-| `POST /v1/chat/completions` | `chat_completions` | bearer | OpenAI-compatible chat；按 content capability 确定性路由；stream/non-stream 透传安全 body |
-| `GET /v1/quota` | `quota` | bearer | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 install/global 日成本钱包 |
-| `GET /v1/models` | `models` | bearer | `{"object":"list","data":[{"id":PUBLIC_MODEL_ID,"object":"model","owned_by":"anselm-gateway"}]}`，恰一个逻辑模型 |
+| `GET /v1/proof/challenge` | `proof_challenge` | 无 | 5 分钟 HMAC-authenticated request nonce，client 可缓存 |
+| `POST /v1/chat/completions` | `chat_completions` | device proof | OpenAI-compatible chat；proof 绑定 exact body；按 content capability 确定性路由 |
+| `GET /v1/quota` | `quota` | device proof | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 operator 月钱包 |
+| `GET /v1/models` | `models` | device proof | `{"object":"list","data":[{"id":PUBLIC_MODEL_ID,"object":"model","owned_by":"anselm-gateway"}]}`，恰一个逻辑模型 |
 | `GET /healthz` | 不包 RED | 无 | liveness；不碰 DB/provider |
 
-共享 auth 决策：空/未知 bearer→401，banned→403，lookup fault→500。带 `Origin` 的 `OPTIONS` 一律 403，且不发任何 `Access-Control-*`。
+设备证明头：protected call 带 `X-Anselm-Install-ID` + `X-Anselm-Proof`；registration 改带 `X-Anselm-Public-Key` + `X-Anselm-Proof`。proof payload 固定 `{v,kid,iat,jti,nonce,htm,htu,bh}`，Ed25519 签名覆盖 base64url payload；`htu` 是 lowercase authority + path/query，`bh` 是 exact body SHA-256。空/未知 install→401，坏签名/过期→401，重复 jti→409，banned→403。带 `Origin` 的 `OPTIONS` 一律 403，且不发任何 `Access-Control-*`。
 
 ## 2. `POST /v1/chat/completions`
 

@@ -28,7 +28,7 @@ func TestStreaming_RelayAndSettleOnUsage(t *testing.T) {
 		RL: &fakeRL{allow: true}, Throttle: fakeThrottle{}, Metrics: mx,
 	})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 200 {
@@ -56,7 +56,7 @@ func TestStreamingNegativeUsageCannotBeClampedIntoARefund(t *testing.T) {
 	q := &fakeQuota{}
 	up := &fakeUpstream{body: "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":-1,\"total_tokens\":100}}\ndata: [DONE]\n"}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, newFakeSink())
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, newFakeSink())
 	wg.Wait()
 	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 		t.Fatalf("malformed stream usage must retain full quote %d, got %v", q.reservedPUSD, got)
@@ -69,7 +69,7 @@ func TestNonStream_RelayAndSettle(t *testing.T) {
 	up := &fakeUpstream{body: upstreamBody}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 200 || sink.header("Content-Type") != "application/json" {
@@ -89,7 +89,7 @@ func TestNonStream_NoUsageSettlesFullEst(t *testing.T) {
 	up := &fakeUpstream{body: `{"id":"x"}`} // no usage object.
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	got := q.settles()
 	if len(got) != 1 || got[0] != q.reservedPUSD {
@@ -102,7 +102,7 @@ func TestNonStream_OversizedUpstreamBodyFailsClosedAndKeepsQuote(t *testing.T) {
 	up := &fakeUpstream{body: strings.Repeat("x", nonStreamBodyLimit+1)}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	if sink.statusCode() != apierr.ErrUpstreamError.Status {
 		t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
@@ -131,7 +131,7 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 			up := &fakeUpstream{body: tc.body}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 			wg.Wait()
 
 			if sink.statusCode() != apierr.ErrUpstreamError.Status {
@@ -171,7 +171,7 @@ func TestStreamingMalformedDataFrameIsSuppressedAndKeepsFullQuote(t *testing.T) 
 		"data: [DONE]\n"}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 200 || sink.header("Content-Type") != "text/event-stream" {
@@ -203,7 +203,7 @@ func TestStreamingOversizedFrameIsNeverPartiallyRelayedAndKeepsFullQuote(t *test
 		"data: {\"model\":\"" + billing.DeepSeekV4Flash + `","padding":"` + strings.Repeat("x", 1024*1024) + `"}` + "\n"}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
 	wg.Wait()
 
 	if got := sink.bodyString(); got != `data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n" {
@@ -231,7 +231,7 @@ func TestAmbiguousOpenFailuresKeepFullReservation(t *testing.T) {
 			up := &fakeUpstream{aerr: aerr}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 			wg.Wait()
 
 			if sink.statusCode() != aerr.Status {
@@ -251,7 +251,7 @@ func TestExplicitBusyFromOpenIsDefinitelyUnbilledAndRollsBack(t *testing.T) {
 	q := &fakeQuota{}
 	up := &fakeUpstream{aerr: apierr.ErrUpstreamBusy, exposure: billing.DefinitelyUnbilled}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, newFakeSink())
 	wg.Wait()
 	if q.rollbacks() != 1 || len(q.settles()) != 0 {
 		t.Fatalf("explicit busy must rollback only: rollbacks=%d settles=%v", q.rollbacks(), q.settles())
@@ -265,7 +265,7 @@ func TestDefinitelyUnbilledExposureRollsBackEvenWithGenericErrorCode(t *testing.
 	q := &fakeQuota{}
 	up := &fakeUpstream{aerr: apierr.ErrUpstreamError, exposure: billing.DefinitelyUnbilled}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, newFakeSink())
 	wg.Wait()
 	if q.rollbacks() != 1 || len(q.settles()) != 0 {
 		t.Fatalf("explicit refusal must rollback only: rollbacks=%d settles=%v", q.rollbacks(), q.settles())
@@ -279,7 +279,7 @@ func TestClientDisconnectMidStream_KeepsCount(t *testing.T) {
 	up := &fakeUpstream{body: "data: {\"choices\":[]}\ndata: more\n"} // no usage frame before "disconnect".
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := &disconnectSink{fakeSink: newFakeSink(), failAfter: 1}
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink.appSink())
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink.appSink())
 	wg.Wait()
 
 	if q.rollbacks() != 0 {
@@ -307,7 +307,7 @@ func TestStreamingUsageBeforeDONECannotRefundOnEOFOrDisconnect(t *testing.T) {
 			mx := newFakeMetrics()
 			up := &fakeUpstream{body: tc.body}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, tc.sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, tc.sink)
 			wg.Wait()
 
 			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
@@ -329,7 +329,7 @@ func TestStreamingDONEReadBeforeClientWriteFailureAllowsUsageSettle(t *testing.T
 	// The usage line and its newline succeed; writing the already-read DONE line
 	// fails on the third Write.
 	sink := &disconnectSink{fakeSink: newFakeSink(), failAfter: 2}
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink.appSink())
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink.appSink())
 	wg.Wait()
 
 	want := int64(10*140_000 + 2*280_000)
@@ -347,7 +347,7 @@ func TestBreakerOpen_ShedsWithoutSlot(t *testing.T) {
 	up := &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderDeepSeek: true}}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != apierr.ErrUpstreamBusy.Status {
@@ -379,13 +379,13 @@ func TestQueueWaitTimeout_BusyVsClientCancel(t *testing.T) {
 	holdWG.Add(1)
 	go func() {
 		defer holdWG.Done()
-		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, hold)
+		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, hold)
 	}()
 	waitForSlot(t, svc, 1)
 
 	// Second request must time out queuing → UPSTREAM_BUSY, reservation rolled back.
 	busy := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, busy)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, busy)
 	if busy.statusCode() != apierr.ErrUpstreamBusy.Status {
 		t.Fatalf("queue timeout status: %d", busy.statusCode())
 	}
@@ -394,7 +394,7 @@ func TestQueueWaitTimeout_BusyVsClientCancel(t *testing.T) {
 	cancelSink := newFakeSink()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already canceled before queueing.
-	svc.Handle(ctx, HandleInput{Token: "t", Body: []byte(goodBody)}, cancelSink)
+	svc.Handle(ctx, HandleInput{InstallID: "t", Body: []byte(goodBody)}, cancelSink)
 	if cancelSink.statusCode() != 0 || cancelSink.bodyString() != "" {
 		t.Fatalf("client-cancel must write nothing: status=%d body=%q", cancelSink.statusCode(), cancelSink.bodyString())
 	}
@@ -414,7 +414,7 @@ func TestNGreaterThanOne_400(t *testing.T) {
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
 	body := `{"model":"x","messages":[{"role":"user","content":"a"}],"n":3}`
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	if sink.statusCode() != 400 {
 		t.Fatalf("n>1 must 400, got %d", sink.statusCode())
@@ -432,7 +432,7 @@ func TestDangerFieldsStripped_ToolsPassed(t *testing.T) {
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: spy, RL: &fakeRL{allow: true}})
 	body := `{"model":"x","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}],"top_p":0.5,"logit_bias":{"1":2}}`
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	raw, err := json.Marshal(spy.request)
 	if err != nil {
@@ -455,7 +455,7 @@ func TestSettleErrorObservability_B2(t *testing.T) {
 	up := &fakeUpstream{body: `{"usage":{"total_tokens":5}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	if mx.settleFailures() != 1 {
 		t.Fatalf("a failed settle must be COUNTED (B2), got %d", mx.settleFailures())
@@ -464,13 +464,13 @@ func TestSettleErrorObservability_B2(t *testing.T) {
 
 func TestBannedAndAuthFailures(t *testing.T) {
 	cases := []struct {
-		name   string
-		auth   fakeAuth
-		token  string
-		status int
+		name      string
+		auth      fakeAuth
+		installID string
+		status    int
 	}{
-		{"no token", okAuth(), "", apierr.ErrInvalidToken.Status},
-		{"not found", fakeAuth{found: false}, "t", apierr.ErrInvalidToken.Status},
+		{"no install id", okAuth(), "", apierr.ErrInvalidInstall.Status},
+		{"not found", fakeAuth{found: false}, "t", apierr.ErrInvalidInstall.Status},
 		{"lookup error", fakeAuth{err: errBoom}, "t", 500},
 		{"banned", fakeAuth{id: "i", status: dominstall.StatusBanned, found: true}, "t", apierr.ErrAccountBanned.Status},
 	}
@@ -479,7 +479,7 @@ func TestBannedAndAuthFailures(t *testing.T) {
 			q := &fakeQuota{}
 			svc, wg := build(Deps{Auth: c.auth, Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: c.token, Body: []byte(goodBody)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: c.installID, Body: []byte(goodBody)}, sink)
 			wg.Wait()
 			if sink.statusCode() != c.status {
 				t.Fatalf("%s: status %d want %d", c.name, sink.statusCode(), c.status)
@@ -496,7 +496,7 @@ func TestRateLimited_AndDiskDegrade(t *testing.T) {
 	q := &fakeQuota{}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: false}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	if sink.statusCode() != apierr.ErrRateLimited.Status {
 		t.Fatalf("rate-limit status: %d", sink.statusCode())
@@ -506,7 +506,7 @@ func TestRateLimited_AndDiskDegrade(t *testing.T) {
 	q2 := &fakeQuota{}
 	svc2, wg2 := build(Deps{Auth: okAuth(), Quota: q2, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}, Disk: fakeDisk{degraded: true}})
 	sink2 := newFakeSink()
-	svc2.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink2)
+	svc2.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink2)
 	wg2.Wait()
 	if sink2.statusCode() != apierr.ErrDiskLow.Status {
 		t.Fatalf("disk-low status: %d", sink2.statusCode())
@@ -520,7 +520,7 @@ func TestReserveDenial_Surfaces(t *testing.T) {
 	q := &fakeQuota{reserveErr: apierr.ErrBudgetExhausted}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	if sink.statusCode() != apierr.ErrBudgetExhausted.Status {
 		t.Fatalf("reserve denial status: %d", sink.statusCode())
@@ -530,7 +530,7 @@ func TestReserveDenial_Surfaces(t *testing.T) {
 func TestBodyError_400(t *testing.T) {
 	svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", BodyError: errBoom}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", BodyError: errBoom}, sink)
 	wg.Wait()
 	if sink.statusCode() != 400 {
 		t.Fatalf("body error must 400, got %d", sink.statusCode())
@@ -551,7 +551,7 @@ func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
 	// ~60k chars → promptEst ≈ 72k (runes ×1.2), far above e.g. a 16384 cap.
 	body := `{"model":"x","messages":[{"role":"user","content":"` + strings.Repeat("a", 60_000) + `"}]}`
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 200 {
@@ -580,7 +580,7 @@ func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 	}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 400 {
@@ -628,7 +628,7 @@ func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
 			up := &fakeUpstream{body: `{"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
 			if sink.statusCode() != 200 {
 				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
@@ -699,7 +699,7 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 				Config: fakeConfig{c: cfg},
 			})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(requestBody(tc.media, tc.stream))}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(requestBody(tc.media, tc.stream))}, sink)
 			wg.Wait()
 
 			if sink.statusCode() != 200 {
@@ -726,7 +726,7 @@ func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	}, body: `{}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 503 || !strings.Contains(sink.bodyString(), "MULTIMODAL_UNAVAILABLE") {
@@ -740,7 +740,7 @@ func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	textQ := &fakeQuota{}
 	textSvc, textWG := build(Deps{Auth: okAuth(), Quota: textQ, Upstream: up, RL: &fakeRL{allow: true}})
 	textSink := newFakeSink()
-	textSvc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, textSink)
+	textSvc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, textSink)
 	textWG.Wait()
 	if textSink.statusCode() != 200 {
 		t.Fatalf("text must remain available, status=%d body=%s", textSink.statusCode(), textSink.bodyString())
@@ -760,7 +760,7 @@ func TestAudioIsExplicitlyUnavailableBeforeReserveOrRouting(t *testing.T) {
 	up := &fakeUpstream{}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 503 || !strings.Contains(sink.bodyString(), "AUDIO_UNAVAILABLE") {
@@ -792,7 +792,7 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 			}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
 			if sink.statusCode() != 200 {
 				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
@@ -820,7 +820,7 @@ func TestKimiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 			q := &fakeQuota{}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: tc.up, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 			wg.Wait()
 			for _, call := range tc.up.callSnapshot() {
 				if call.Provider != billing.ProviderKimi {
@@ -848,7 +848,7 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}}`}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 		sink := newFakeSink()
-		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 		wg.Wait()
 		want := int64(4*2_800 + 6*140_000 + 2*280_000)
 		if got := q.settles(); len(got) != 1 || got[0] != want {
@@ -863,7 +863,7 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 			"data: [DONE]\n"}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 		sink := newFakeSink()
-		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodStreamBody)}, sink)
+		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
 		wg.Wait()
 		want := int64(12*140_000 + 3*280_000)
 		if got := q.settles(); len(got) != 1 || got[0] != want {
@@ -875,7 +875,7 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 		q := &fakeQuota{}
 		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":99}}`}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
-		svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, newFakeSink())
+		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, newFakeSink())
 		wg.Wait()
 		if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 			t.Fatalf("malformed usage must retain full reservation: reserved=%d got=%v", q.reservedPUSD, got)
@@ -899,7 +899,7 @@ func TestKimiHardQuoteForImages(t *testing.T) {
 			up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 			sink := newFakeSink()
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, sink)
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
 			if q.plan.Provider != billing.ProviderKimi || q.plan.PromptQuote != billing.KimiInputLimit || q.plan.OutputQuote != billing.KimiOutputLimit || q.plan.InputClass != tc.wantClass {
 				t.Fatalf("Kimi hard plan=%+v", q.plan)
@@ -922,7 +922,7 @@ func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx, Logger: logger, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
 	body := `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	want := int64(100*140_000 + 100*280_000)
 	if got := q.settles(); len(got) != 1 || got[0] != want || got[0] <= q.reservedPUSD {
@@ -953,7 +953,7 @@ func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 			q := &fakeQuota{}
 			up := &fakeUpstream{}
 			svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
-			svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(tc.body)}, newFakeSink())
+			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, newFakeSink())
 			wg.Wait()
 			calls := up.callSnapshot()
 			if len(calls) != 1 {
@@ -978,7 +978,7 @@ func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
 	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: cfgSource})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(goodBody)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	// One startup read fixes semaphore capacity; exactly one entry read owns the
 	// whole request, including response headers.
@@ -998,7 +998,7 @@ func TestKimiPromptEstimateBeyondModelLimitIs400(t *testing.T) {
 	up := &fakeUpstream{}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	calls := len(up.callSnapshot())
 	if sink.statusCode() != 400 || q.reservedPUSD != 0 || calls != 0 {
@@ -1020,7 +1020,7 @@ func TestMultimodalInputCapDoesNotTokenizeBase64TransportText(t *testing.T) {
 	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
-	svc.Handle(context.Background(), HandleInput{Token: "t", Body: []byte(body)}, sink)
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	if sink.statusCode() != 200 || len(up.callSnapshot()) != 1 {
 		t.Fatalf("media transport encoding was treated as text tokens: status=%d body=%s calls=%d", sink.statusCode(), sink.bodyString(), len(up.callSnapshot()))

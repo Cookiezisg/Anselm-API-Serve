@@ -15,7 +15,7 @@ audience: [human, ai]
 
 ## 1. 系统边界
 
-Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**：它不生成内容、不存会话；它为 install bearer 用户代理两种能力，并在调用前用运营者真实价格悲观占款。
+Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**：它不生成内容、不存会话；它为持设备 Ed25519 私钥的 install 代理两种能力，并在调用前用运营者真实价格悲观占款。
 
 ```text
 纯文本完整历史 ──▶ DeepSeek V4 Flash
@@ -33,7 +33,7 @@ Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**�
 
 | listener | 默认 | 面 | 控制 |
 |---|---|---|---|
-| business | `127.0.0.1:8080` | `/v1/*`、health | Caddy 终止 TLS；install bearer |
+| business | `127.0.0.1:8080` | `/v1/*`、health | Caddy 终止 TLS；device proof |
 | admin | `127.0.0.1:9090` | metrics/readiness/pprof/expvar | 物理 loopback，无应用 auth，绝不反代 |
 | dashboard | `127.0.0.1:8081` | operator SPA/API | loopback + configurable `builtin` session/CSRF or preceding external IAP |
 
@@ -88,7 +88,7 @@ DeepSeek key 是启动必需；Kimi key 可稍后配置。缺 Kimi 只关闭多�
 
 | # | 动作 | 失败结果 / 账务 |
 |---:|---|---|
-| 1 | bearer lookup、banned 判定、rate limit、anomaly observe | 401/403/429；无 reserve |
+| 1 | device proof、公钥 lookup、banned 判定、rate limit、anomaly observe | 401/403/409/429；无 reserve |
 | 2 | diskguard、body cap、strict decode、messages/文本 shape | 400/503；无 reserve |
 | 3 | 完整 history 验证 content union；base64/MIME/magic/role/media totals | 400；无 reserve |
 | 4 | capability 二分；检查选中 backend 是否 configured | Kimi 缺 key→503；无 reserve |
@@ -164,7 +164,7 @@ open ── usage / conservative full quote ──▶ settled
 |---|---|---|
 | chat | `app/chat` | capability route + provider open/relay + accounting saga |
 | quota | `app/quota` | Plan reserve/settle/rollback/reconcile + client quota view |
-| install | `app/install` | bearer identity、Sybil/PoW issuance |
+| install | `app/install` | public-key identity、Sybil/PoW issuance |
 | model | `app/model` | 恰一个 provider-neutral public model |
 | health | `app/health` | liveness/readiness 聚合；active providers 的认证 exact-model cached probe |
 | dashboard | `app/dashboard` | spend/ledger/health/config/install 运维 read/write model |

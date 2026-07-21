@@ -1,3 +1,14 @@
+---
+id: DOC-032
+type: how-to
+status: active
+owner: @weilin
+created: 2026-07-21
+reviewed: 2026-07-21
+review-due: 2027-01-21
+audience: [human, ai]
+---
+
 # Cloudflare 生产环境防御与网络配置指南
 
 本指南客观记录了 Anselm-Gateway 部署于生产环境时，依赖 Cloudflare 实施的外围网络架构与安全防线。

@@ -1,16 +1,13 @@
 -- 0001_init: initial schema (8 tables + idx_ledger_open).
--- Forward-only DDL. IF NOT EXISTS is REQUIRED on the initial migration so it can
--- baseline a PRE-EXISTING unversioned DB (e.g. an old deploy's DB on the same
--- GATEWAY_DB_PATH): the runner records it as version 1 while the identical tables
--- are left untouched (data preserved). On a fresh DB it creates everything. The
--- schema here is byte-identical to the prior gateway's, so adopting an existing
--- DB is lossless. Later migrations (0002+) are real ALTERs and use no such guard.
+-- Forward-only DDL. IF NOT EXISTS makes fresh-database initialization idempotent;
+-- later migrations (0002+) are real ALTERs and use no such guard.
 
 -- installs: issued install identities. fingerprint is plaintext, risk-observation
 -- only — never a merge/dedup key (dedup goes through hash; see install_fp_rate).
 CREATE TABLE IF NOT EXISTS installs (
   id            TEXT PRIMARY KEY,
-  token_sha256  TEXT NOT NULL UNIQUE,
+  public_key    BLOB NOT NULL,
+  key_thumbprint TEXT NOT NULL UNIQUE,
   fingerprint   TEXT,
   client        TEXT,
   status        TEXT NOT NULL DEFAULT 'active',

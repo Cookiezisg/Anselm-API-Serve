@@ -1,4 +1,4 @@
-// Package quota is the thin HTTP handler for GET /v1/quota: bearer → install
+// Package quota is the thin HTTP handler for GET /v1/quota: device proof → install
 // lookup → app/quota.View → bare {limit,used,remaining,resetAt,available} entity.
 // The availability semantics live in app/quota (not here) so every caller agrees
 // on what "available" means; this handler only guards the method, runs the shared
@@ -16,14 +16,15 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
 
-// Authenticator is the shared bearer→install lookup (§2). The same port the chat
+// Authenticator is the shared install-id status lookup (§2). The same port the chat
 // and models handlers use — ONE auth implementation (*app/install.Service),
 // never a second validator.
 type Authenticator interface {
-	LookupInstall(ctx context.Context, token string) (id string, status dominstall.Status, found bool, err error)
+	LookupInstall(ctx context.Context, installID string) (id string, status dominstall.Status, found bool, err error)
 }
 
 // Viewer is the app/quota read-model surface. An interface so the handler unit-
@@ -60,7 +61,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.WriteErrorWith(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "method not allowed")
 		return
 	}
-	installID, ae := authInstall(r.Context(), h.auth, response.Bearer(r))
+	installID, ae := authInstall(r.Context(), h.auth, r.Header.Get(proofhttp.HeaderInstallID))
 	if ae != nil {
 		response.WriteError(w, ae)
 		return
@@ -83,20 +84,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authInstall runs the §2 auth decision tree shared by the token-gated endpoints:
-// empty/!found → INVALID_TOKEN (401); err → INTERNAL (500); banned → ACCOUNT_BANNED
+// authInstall runs the §2 status decision tree shared by proof-gated endpoints:
+// empty/!found → INVALID_INSTALL (401); err → INTERNAL (500); banned → ACCOUNT_BANNED
 // (403). Returns the install id on success. Exported-shape duplicated per package
 // would drift, so this is the one place quota encodes the tree.
-func authInstall(ctx context.Context, auth Authenticator, token string) (string, *apierr.APIError) {
-	if token == "" {
-		return "", apierr.ErrInvalidToken
+func authInstall(ctx context.Context, auth Authenticator, installID string) (string, *apierr.APIError) {
+	if installID == "" {
+		return "", apierr.ErrInvalidInstall
 	}
-	id, status, found, err := auth.LookupInstall(ctx, token)
+	id, status, found, err := auth.LookupInstall(ctx, installID)
 	if err != nil {
 		return "", apierr.Internal()
 	}
 	if !found {
-		return "", apierr.ErrInvalidToken
+		return "", apierr.ErrInvalidInstall
 	}
 	if status == dominstall.StatusBanned {
 		return "", apierr.ErrAccountBanned

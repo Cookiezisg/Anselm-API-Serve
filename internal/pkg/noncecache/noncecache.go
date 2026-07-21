@@ -1,9 +1,6 @@
-// Package noncecache provides the PoW nonce-once replay defense: a bounded,
-// TTL'd set of already-consumed challenge identities. The first UseOnce within
-// the TTL window admits a solution; any later submission for the same challenge
-// is a replay and is rejected — without this a single valid solve could be
-// replayed unboundedly inside the freshness window, amortizing the PoW cost to
-// zero (GW-INV-20 family, nonce-once via bounded LRU+TTL).
+// Package noncecache provides bounded, TTL'd replay-once sets for PoW challenges
+// and signed device-proof request ids. The first UseOnce within the TTL window
+// admits a value; later submissions are rejected.
 package noncecache
 
 import (
@@ -12,10 +9,9 @@ import (
 	"time"
 )
 
-// DefaultMax bounds the consumed-challenge set so a flood of distinct challenges
-// cannot grow the cache without limit. An entry is inserted only on a fully
-// verified solve, so reaching this many live entries implies a very high solve
-// rate; LRU eviction then drops the oldest, whose TTL is anyway about to lapse.
+// DefaultMax bounds a consumed-value set so distinct valid submissions cannot
+// grow memory without limit. Normal caches evict LRU; security-sensitive callers
+// use NewFailClosed so a live entry is never forgotten.
 const DefaultMax = 65536
 
 // Cache is a bounded, TTL'd set of consumed challenges. It keys on the challenge
@@ -30,6 +26,10 @@ type Cache struct {
 	max     int
 	ttl     time.Duration
 	now     func() time.Time
+	// failClosed rejects a never-seen value while all slots hold live entries.
+	// Device proofs use this mode so memory pressure can deny traffic but can
+	// never turn a consumed proof back into an admissible replay.
+	failClosed bool
 }
 
 type entry struct {
@@ -57,8 +57,17 @@ func NewWithMax(ttl time.Duration, max int) *Cache {
 	}
 }
 
+// NewFailClosed builds a bounded cache that never evicts a live entry. Once all
+// slots are live, new values are denied until expiry frees capacity. This mode is
+// for callers where accepting an evicted value would violate a security invariant.
+func NewFailClosed(ttl time.Duration, max int) *Cache {
+	c := NewWithMax(ttl, max)
+	c.failClosed = true
+	return c
+}
+
 // UseOnce atomically checks whether challenge has already been consumed and, if
-// not, marks it consumed. It returns true on the first use (admit the PoW) and
+// not, marks it consumed. It returns true on the first use and
 // false on any replay within the TTL (reject). An expired prior entry is treated
 // as never-seen — an expired challenge would already have failed the freshness
 // check elsewhere, so a same-string collision after expiry is itself rejected
@@ -82,15 +91,42 @@ func (c *Cache) UseOnce(challenge string) bool {
 		return true
 	}
 
+	c.evictExpiredLocked(now)
+	if c.failClosed && len(c.entries) >= c.max {
+		// A replay refreshes LRU recency, so an expired entry can sit ahead of
+		// a live tail entry. At capacity, do the bounded full sweep before
+		// denying admission; this preserves fail-closed safety without keeping
+		// reclaimable slots stranded until another request happens to touch them.
+		c.evictAllExpiredLocked(now)
+		if len(c.entries) >= c.max {
+			return false
+		}
+	}
 	e := &entry{challenge: challenge, expireAt: now.Add(c.ttl)}
 	c.entries[challenge] = c.ll.PushFront(e)
-	c.evictLocked(now)
+	if !c.failClosed {
+		c.evictOverflowLocked()
+	}
 	return true
 }
 
-// evictLocked drops expired entries from the LRU tail first, then (if still over
-// capacity) the least-recently-used ones until within max. Caller holds c.mu.
-func (c *Cache) evictLocked(now time.Time) {
+// evictAllExpiredLocked reclaims every expired entry. The O(max) scan is used
+// only by fail-closed caches at capacity, where avoiding a false saturation is
+// worth the bounded work. Caller holds c.mu.
+func (c *Cache) evictAllExpiredLocked(now time.Time) {
+	for el := c.ll.Back(); el != nil; {
+		previous := el.Prev()
+		e := el.Value.(*entry)
+		if !now.Before(e.expireAt) {
+			c.ll.Remove(el)
+			delete(c.entries, e.challenge)
+		}
+		el = previous
+	}
+}
+
+// evictExpiredLocked drops expired entries from the LRU tail. Caller holds c.mu.
+func (c *Cache) evictExpiredLocked(now time.Time) {
 	// Opportunistic TTL sweep from the tail (oldest, least-recently-touched):
 	// expired entries cluster there.
 	for {
@@ -105,7 +141,11 @@ func (c *Cache) evictLocked(now time.Time) {
 		c.ll.Remove(back)
 		delete(c.entries, e.challenge)
 	}
-	// Hard cap backstop: a burst of valid solves still overflowing drops LRU.
+}
+
+// evictOverflowLocked drops live LRU entries until within max. It is used only
+// by the original PoW mode; fail-closed proof caches never call it.
+func (c *Cache) evictOverflowLocked() {
 	for len(c.entries) > c.max {
 		back := c.ll.Back()
 		if back == nil {

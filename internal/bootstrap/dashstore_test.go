@@ -85,14 +85,14 @@ func TestDashStoreListsTodaySpendInMicroUSDFromNewTable(t *testing.T) {
 	store := dashStore{w: db.Writer, r: db.Reader, loc: time.UTC}
 
 	for _, row := range []struct {
-		id, tokenHash, created string
+		id, keyID, created string
 	}{
-		{id: "ins_old", tokenHash: "hash-old", created: "2026-01-01T00:00:00Z"},
-		{id: "ins_new", tokenHash: "hash-new", created: "2026-01-02T00:00:00Z"},
+		{id: "ins_old", keyID: "key-old", created: "2026-01-01T00:00:00Z"},
+		{id: "ins_new", keyID: "key-new", created: "2026-01-02T00:00:00Z"},
 	} {
 		if _, err := db.Writer.Exec(ctx, `
-			INSERT INTO installs(id, token_sha256, status, created_at)
-			VALUES (?, ?, 'active', ?)`, row.id, row.tokenHash, row.created); err != nil {
+			INSERT INTO installs(id, public_key, key_thumbprint, status, created_at)
+			VALUES (?, ?, ?, 'active', ?)`, row.id, []byte(row.keyID), row.keyID, row.created); err != nil {
 			t.Fatalf("insert install %s: %v", row.id, err)
 		}
 	}

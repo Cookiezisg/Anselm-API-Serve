@@ -90,11 +90,11 @@ func New(d Deps) *Service {
 	return s
 }
 
-// HandleInput is the transport-extracted request: the bearer token, the raw body
+// HandleInput is the transport-extracted request: the proof-verified install id, the raw body
 // (already MaxBytesReader-capped at transport), the rate-limit IP key, and the
 // request id. The use case owns no net/http types.
 type HandleInput struct {
-	Token     string
+	InstallID string
 	Body      []byte
 	BodyError error // non-nil ⇒ body read failed/over-cap (transport surfaces it).
 	IPKey     string
@@ -108,18 +108,18 @@ type HandleInput struct {
 // outcome is written to the sink. The single config snapshot is taken once and
 // reused for all guardrails + provider selection + response headers (GW-INV-08).
 func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
-	// 1) Auth — bearer present, then token→install lookup.
-	if in.Token == "" {
-		writeErr(sink, apierr.ErrInvalidToken)
+	// 1) Identity status — transport has already verified the device signature.
+	if in.InstallID == "" {
+		writeErr(sink, apierr.ErrInvalidInstall)
 		return
 	}
-	installID, status, found, err := s.auth.LookupInstall(ctx, in.Token)
+	installID, status, found, err := s.auth.LookupInstall(ctx, in.InstallID)
 	if err != nil {
 		writeErr(sink, apierr.Internal())
 		return
 	}
 	if !found {
-		writeErr(sink, apierr.ErrInvalidToken)
+		writeErr(sink, apierr.ErrInvalidInstall)
 		return
 	}
 	if status == dominstall.StatusBanned {

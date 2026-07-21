@@ -21,6 +21,8 @@ package e2e
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -37,6 +39,7 @@ import (
 	"time"
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
+	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
@@ -55,6 +58,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/noncecache"
+	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/router"
 )
 
@@ -167,6 +171,7 @@ func buildStackWithProviders(t *testing.T, upstreamURL, kimiURL string, mutate f
 	quotaSvc := appquota.New(quotaStore, quotaCfg{p: cfgP})
 	nonces := noncecache.New(10 * time.Minute)
 	installSvc := appinstall.New(cfgP, installStore, nonces, counterStub{}, powStub{})
+	proofSvc := appdeviceproof.New(installStore, noncecache.NewFailClosed(2*time.Minute, noncecache.DefaultMax))
 	modelCat := appmodel.New(cfgP)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -224,6 +229,7 @@ func buildStackWithProviders(t *testing.T, upstreamURL, kimiURL string, mutate f
 	// the real routing + middleware chain (no divergent copy).
 	handler := router.BuildHandler(router.Deps{
 		Install: installSvc,
+		Proof:   proofSvc,
 		Chat:    chatSvc,
 		Quota:   quotaSvc,
 		Models:  modelCat,
@@ -389,10 +395,96 @@ func fakeDeepSeekNonStream(t *testing.T, mode string, usageTokens int64) *httpte
 
 // --- helpers ------------------------------------------------------------------
 
-// installToken posts /v1/install over the real socket and returns the issued token
-// (top-level `token` field — the gateway writes a BARE entity, not a {"data":...}
+type proofTransport struct {
+	base    http.RoundTripper
+	private ed25519.PrivateKey
+}
+
+func newProofClient(t *testing.T, client *http.Client) *http.Client {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *client
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	clone.Transport = &proofTransport{base: base, private: private}
+	return &clone
+}
+
+func (t *proofTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Path == "/v1/proof/challenge" || req.URL.Path == "/v1/install/challenge" || req.URL.Path == "/healthz" {
+		return t.base.RoundTrip(req)
+	}
+	kid := req.Header.Get(proofhttp.HeaderInstallID)
+	public := t.private.Public().(ed25519.PublicKey)
+	if req.URL.Path == "/v1/install" {
+		thumb := sha256.Sum256(public)
+		kid = base64.RawURLEncoding.EncodeToString(thumb[:])
+	}
+	if kid == "" {
+		return t.base.RoundTrip(req)
+	}
+
+	challengeReq, _ := http.NewRequestWithContext(req.Context(), http.MethodGet,
+		req.URL.Scheme+"://"+req.URL.Host+"/v1/proof/challenge", nil)
+	challengeResp, err := t.base.RoundTrip(challengeReq)
+	if err != nil {
+		return nil, err
+	}
+	var challenge struct {
+		Nonce string `json:"nonce"`
+	}
+	err = json.NewDecoder(challengeResp.Body).Decode(&challenge)
+	_ = challengeResp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	raw := []byte(nil)
+	if req.Body != nil {
+		raw, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(strings.NewReader(string(raw)))
+	}
+	bh := sha256.Sum256(raw)
+	jti := make([]byte, 16)
+	_, _ = rand.Read(jti)
+	target := strings.ToLower(req.URL.Host) + req.URL.EscapedPath()
+	if req.URL.RawQuery != "" {
+		target += "?" + req.URL.RawQuery
+	}
+	payload, _ := json.Marshal(struct {
+		Version int    `json:"v"`
+		KeyID   string `json:"kid"`
+		Issued  int64  `json:"iat"`
+		ID      string `json:"jti"`
+		Nonce   string `json:"nonce"`
+		Method  string `json:"htm"`
+		Target  string `json:"htu"`
+		Body    string `json:"bh"`
+	}{1, kid, time.Now().Unix(), base64.RawURLEncoding.EncodeToString(jti), challenge.Nonce,
+		req.Method, target, base64.RawURLEncoding.EncodeToString(bh[:])})
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	clone := req.Clone(req.Context())
+	clone.Header = req.Header.Clone()
+	clone.Body = io.NopCloser(strings.NewReader(string(raw)))
+	clone.ContentLength = int64(len(raw))
+	clone.Header.Set(proofhttp.HeaderProof, encoded+"."+base64.RawURLEncoding.EncodeToString(ed25519.Sign(t.private, []byte(encoded))))
+	if req.URL.Path == "/v1/install" {
+		clone.Header.Set(proofhttp.HeaderPublicKey, base64.RawURLEncoding.EncodeToString(public))
+	}
+	return t.base.RoundTrip(clone)
+}
+
+// registerInstall posts /v1/install over the real socket and returns the public install id
+// (top-level `installId` field — the gateway writes a BARE entity, not a {"data":...}
 // envelope).
-func installToken(t *testing.T, srv *httptest.Server, client *http.Client) string {
+func registerInstall(t *testing.T, srv *httptest.Server, client *http.Client) string {
 	t.Helper()
 	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
 		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
@@ -401,15 +493,15 @@ func installToken(t *testing.T, srv *httptest.Server, client *http.Client) strin
 	}
 	defer resp.Body.Close()
 	var inst struct {
-		Token string `json:"token"`
+		InstallID string `json:"installId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
 		t.Fatal(err)
 	}
-	if inst.Token == "" {
-		t.Fatal("install returned no token")
+	if inst.InstallID == "" {
+		t.Fatal("install returned no install id")
 	}
-	return inst.Token
+	return inst.InstallID
 }
 
 // waitGlobalSpend polls the shared daily pUSD wallet until it equals want or the
@@ -486,7 +578,7 @@ func kimiCostPUSD(t *testing.T, prompt, completion int64) int64 {
 // --- tests --------------------------------------------------------------------
 
 // TestE2EInstallChatQuotaFlow drives the full client journey over a real socket:
-// POST /v1/install → use the issued token to POST /v1/chat/completions (streamed,
+// POST /v1/install → use the public id plus device proof to POST /v1/chat/completions (streamed,
 // relayed to the fake upstream) → GET /v1/quota and see the count reflected.
 // Asserts the gateway injected the upstream key, rewrote the model, PASSED tools
 // VERBATIM (the agentic contract), and stripped the upstream Set-Cookie — through
@@ -496,9 +588,9 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	// 1) Install → fresh token.
+	// 1) Install → public id bound to this client's proof key.
 	instResp, err := client.Post(srv.URL+"/v1/install", "application/json",
 		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
 	if err != nil {
@@ -509,13 +601,13 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 		t.Fatalf("install want 200 got %d", instResp.StatusCode)
 	}
 	var inst struct {
-		Token string `json:"token"`
+		InstallID string `json:"installId"`
 	}
 	if err := json.NewDecoder(instResp.Body).Decode(&inst); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(inst.Token, "gwk_") {
-		t.Fatalf("bad token: %q", inst.Token)
+	if !strings.HasPrefix(inst.InstallID, "ins_") {
+		t.Fatalf("bad install id: %q", inst.InstallID)
 	}
 
 	// 2) Chat (stream) → relayed to the fake upstream, streamed back to [DONE]. The
@@ -523,7 +615,7 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"garbage","messages":[{"role":"user","content":"hi"}],"stream":true,`+
 			`"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto","logit_bias":{"5":-100}}`))
-	req.Header.Set("Authorization", "Bearer "+inst.Token)
+	req.Header.Set("X-Anselm-Install-ID", inst.InstallID)
 	chatResp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -566,7 +658,7 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 
 	// 3) Quota → count reflects the one chat.
 	qreq, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/quota", nil)
-	qreq.Header.Set("Authorization", "Bearer "+inst.Token)
+	qreq.Header.Set("X-Anselm-Install-ID", inst.InstallID)
 	qResp, err := client.Do(qreq)
 	if err != nil {
 		t.Fatal(err)
@@ -609,8 +701,8 @@ func TestE2EMultimodalRoutesOnlyToKimiAndSettlesKimiCost(t *testing.T) {
 	s := buildStackWithProviders(t, deepSeek.URL, kimi.URL, nil)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
-	token := installToken(t, srv, client)
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
 
 	png := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
@@ -621,7 +713,7 @@ func TestE2EMultimodalRoutesOnlyToKimiAndSettlesKimiCost(t *testing.T) {
 		`{"type":"image_url","image_url":{"url":` + strconv.Quote(dataURI) + `}}]}` +
 		`]}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -671,9 +763,9 @@ func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 
 	multiTurn := `{"model":"deepseek-chat","stream":true,"messages":[` +
 		`{"role":"user","content":"weather?"},` +
@@ -681,7 +773,7 @@ func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
 		`{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}` +
 		`],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(multiTurn))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -708,15 +800,15 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 
 	body := `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}],` +
 		`"tool_choice":"none",` +
 		`"logit_bias":{"50256":-100},"function_call":"auto","response_format":{"type":"json_object"}}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -750,13 +842,13 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"garbage","messages":[{"role":"user","content":"hi"}],"stream":false}`))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -800,16 +892,16 @@ func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 
 	// The quote includes the conservative prompt estimate + clamped output bound.
 	// With no client max_tokens, at least 4096 output tokens are reserved at the
 	// DeepSeek output rate; a lower balance would prove an incorrect refund.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -848,12 +940,12 @@ func TestE2ENonStream8MBBodyLimit(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -870,7 +962,7 @@ func TestE2ENonStream8MBBodyLimit(t *testing.T) {
 }
 
 // TestE2EModelsDeclaration drives GET /v1/models over the real socket: an install
-// token → 200 + the one OpenAI-compatible provider-neutral logical model; an
+// device proof → 200 + the one OpenAI-compatible provider-neutral logical model; an
 // unauthenticated call → 401. Exercises the production routing + middleware chain
 // and the shared install auth without exposing either upstream model id.
 func TestE2EModelsDeclaration(t *testing.T) {
@@ -880,9 +972,9 @@ func TestE2EModelsDeclaration(t *testing.T) {
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	// Unauthenticated → 401 INVALID_TOKEN (same auth exit as /chat, /quota).
+	// Unauthenticated → 401 DEVICE_PROOF_REQUIRED.
 	noauth, err := client.Get(srv.URL + "/v1/models")
 	if err != nil {
 		t.Fatal(err)
@@ -894,13 +986,13 @@ func TestE2EModelsDeclaration(t *testing.T) {
 	}
 	_ = json.NewDecoder(noauth.Body).Decode(&env)
 	noauth.Body.Close()
-	if noauth.StatusCode != http.StatusUnauthorized || env.Error.Code != "INVALID_TOKEN" {
-		t.Fatalf("no-token /v1/models want 401 INVALID_TOKEN got %d %q", noauth.StatusCode, env.Error.Code)
+	if noauth.StatusCode != http.StatusUnauthorized || env.Error.Code != "DEVICE_PROOF_REQUIRED" {
+		t.Fatalf("unproved /v1/models want 401 DEVICE_PROOF_REQUIRED got %d %q", noauth.StatusCode, env.Error.Code)
 	}
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -948,12 +1040,12 @@ func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	huge := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 300*1024) + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(huge))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -978,12 +1070,12 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	over := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 5*1024) + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(over))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -995,7 +1087,7 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 
 	small := `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(small))
-	req2.Header.Set("Authorization", "Bearer "+token)
+	req2.Header.Set("X-Anselm-Install-ID", installID)
 	resp2, err := client.Do(req2)
 	if err != nil {
 		t.Fatal(err)
@@ -1006,18 +1098,17 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 	}
 }
 
-// TestE2EBadTokenUnauthorized: a syntactically-present but unknown bearer token →
-// 401 INVALID_TOKEN over the real stack (the §2 auth tree's !found exit).
-func TestE2EBadTokenUnauthorized(t *testing.T) {
+// TestE2EBadInstallUnauthorized: an unknown public id cannot resolve a verification key.
+func TestE2EBadInstallUnauthorized(t *testing.T) {
 	up, _ := fakeDeepSeek(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer gwk_does_not_exist")
+	req.Header.Set("X-Anselm-Install-ID", "ins_does_not_exist")
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1029,8 +1120,8 @@ func TestE2EBadTokenUnauthorized(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&env)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "INVALID_TOKEN" {
-		t.Fatalf("bad token want 401 INVALID_TOKEN got %d %q", resp.StatusCode, env.Error.Code)
+	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "INVALID_INSTALL" {
+		t.Fatalf("bad install want 401 INVALID_INSTALL got %d %q", resp.StatusCode, env.Error.Code)
 	}
 }
 
@@ -1041,13 +1132,13 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 	s := buildStackWith(t, up.URL, func(c *config.Config) { c.MonthlyQuota = 1 })
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	chat := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Anselm-Install-ID", installID)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -1081,12 +1172,12 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalMonthlySpendPUSD = 1 })
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1141,13 +1232,13 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
-	token := installToken(t, srv, client)
+	installID := registerInstall(t, srv, client)
 	chat := func() (*http.Response, []byte) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Anselm-Install-ID", installID)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -1243,7 +1334,7 @@ func TestE2EMethodAndRouteErrors(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
 	resp, err := client.Get(srv.URL + "/v1/chat/completions")
 	if err != nil {
@@ -1285,7 +1376,7 @@ func TestE2ERequestIDEchoed(t *testing.T) {
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
 	const rid = "e2e-correlation-123"
@@ -1312,9 +1403,8 @@ func TestE2EInstallGlobalCapOverSocket(t *testing.T) {
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
-
 	for i := 0; i < capN; i++ {
+		client := newProofClient(t, srv.Client())
 		resp, err := client.Post(srv.URL+"/v1/install", "application/json",
 			strings.NewReader(`{"fingerprint":"fp-`+strconv.Itoa(i)+`","client":"e2e"}`))
 		if err != nil {
@@ -1326,6 +1416,7 @@ func TestE2EInstallGlobalCapOverSocket(t *testing.T) {
 		resp.Body.Close()
 	}
 
+	client := newProofClient(t, srv.Client())
 	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
 		strings.NewReader(`{"fingerprint":"fp-over","client":"e2e"}`))
 	if err != nil {
@@ -1409,7 +1500,7 @@ func TestE2EPoWEnforceOverSocket(t *testing.T) {
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
 	// Missing X-PoW → 403 INSTALL_POW_REQUIRED.
 	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
@@ -1442,12 +1533,12 @@ func TestE2EPoWEnforceOverSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ok struct {
-		Token string `json:"token"`
+		InstallID string `json:"installId"`
 	}
 	_ = json.NewDecoder(resp2.Body).Decode(&ok)
 	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK || !strings.HasPrefix(ok.Token, "gwk_") {
-		t.Fatalf("mined PoW install want 200 + token got %d %q", resp2.StatusCode, ok.Token)
+	if resp2.StatusCode != http.StatusOK || !strings.HasPrefix(ok.InstallID, "ins_") {
+		t.Fatalf("mined PoW install want 200 + install id got %d %q", resp2.StatusCode, ok.InstallID)
 	}
 
 	// Replay the SAME proof → 403 INSTALL_POW_INVALID (nonce-once).
@@ -1484,7 +1575,7 @@ func TestE2EPoWShadowDoesNotBreakExisting(t *testing.T) {
 	})
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
-	client := srv.Client()
+	client := newProofClient(t, srv.Client())
 
 	resp, err := client.Post(srv.URL+"/v1/install", "application/json",
 		strings.NewReader(`{"fingerprint":"fp","client":"e2e"}`))
@@ -1492,12 +1583,12 @@ func TestE2EPoWShadowDoesNotBreakExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ok struct {
-		Token string `json:"token"`
+		InstallID string `json:"installId"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&ok)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(ok.Token, "gwk_") {
-		t.Fatalf("shadow no-PoW want 200 + token got %d %q", resp.StatusCode, ok.Token)
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(ok.InstallID, "ins_") {
+		t.Fatalf("shadow no-PoW want 200 + install id got %d %q", resp.StatusCode, ok.InstallID)
 	}
 
 	if _, _, required := fetchChallenge(t, srv, client); required {

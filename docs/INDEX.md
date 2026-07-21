@@ -10,7 +10,7 @@
 | 懂规矩（文档怎么写 / 同步 / 淘汰，三铁律 + 收尾清单） | [GOVERNANCE.md](GOVERNANCE.md)（DOC-000，强制规范） |
 | 懂系统（6 域 + 4 层 Clean Arch + 双 provider 隔离 + pUSD 悲观记账） | [concepts/architecture.md](concepts/architecture.md) |
 | 查硬契约（与代码逐字一致，**现行事实源**） | [references/backend/](references/backend/)（见下表） |
-| 查选型与取舍（为何这样设计） | [decisions/](decisions/)（ADR-001..014，不可变；0012 取代 001 的 raw-token 账本，0013 收口音频协议边界，0014 收口 dashboard 认证边界） |
+| 查选型与取舍（为何这样设计） | [decisions/](decisions/)（ADR-001..015，不可变；0012 成本账本，0013 音频边界，0014 dashboard 认证，0015 设备证明） |
 | 看重写期的抽取契约（**已 landed/superseded，作历史参考**） | [working/slice-plan.md](working/slice-plan.md) |
 
 ## references/backend 契约（reference，每次代码改动即同步）

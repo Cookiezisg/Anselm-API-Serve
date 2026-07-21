@@ -53,6 +53,7 @@ const (
 	statusUnauthorized        = 401
 	statusPaymentRequired     = 402
 	statusForbidden           = 403
+	statusConflict            = 409
 	statusTooManyRequests     = 429
 	statusBadGateway          = 502
 	statusServiceUnavailable  = 503
@@ -67,8 +68,16 @@ const (
 // client-safe (no upstream body, no key). These are the machine contract;
 // clients branch on Code (UPPER_SNAKE), never on an OpenAI-style type/param.
 var (
-	// ErrInvalidToken — missing or invalid install token.
-	ErrInvalidToken = NewError(statusUnauthorized, "INVALID_TOKEN", "missing or invalid install token")
+	// ErrInvalidInstall — the public install id is absent or unknown.
+	ErrInvalidInstall = NewError(statusUnauthorized, "INVALID_INSTALL", "missing or invalid install id")
+	// ErrDeviceProofRequired — request has no device-bound proof.
+	ErrDeviceProofRequired = NewError(statusUnauthorized, "DEVICE_PROOF_REQUIRED", "device proof is required")
+	// ErrDeviceProofInvalid — signature or signed request material is invalid.
+	ErrDeviceProofInvalid = NewError(statusUnauthorized, "DEVICE_PROOF_INVALID", "device proof is invalid")
+	// ErrDeviceProofNonceInvalid — challenge is forged, expired, or from a prior process.
+	ErrDeviceProofNonceInvalid = NewError(statusUnauthorized, "DEVICE_PROOF_NONCE_INVALID", "device proof challenge expired; fetch a fresh challenge")
+	// ErrDeviceProofReplayed — the signed request id was already consumed.
+	ErrDeviceProofReplayed = NewError(statusConflict, "DEVICE_PROOF_REPLAYED", "device proof was already used")
 	// ErrAccountBanned — this install has been disabled.
 	ErrAccountBanned = NewError(statusForbidden, "ACCOUNT_BANNED", "this install has been disabled")
 	// ErrRateLimited — per-minute rate or daily sublimit exceeded.

@@ -2,7 +2,6 @@ package response
 
 import (
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -76,25 +75,6 @@ func TestWriteError_RetryAfterFromDetails(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &env)
 	if env.Error.Details["retryAfterSec"] == nil {
 		t.Fatalf("details should carry retryAfterSec: %+v", env.Error.Details)
-	}
-}
-
-func TestBearer(t *testing.T) {
-	mk := func(h string) *http.Request {
-		r := httptest.NewRequest("POST", "/", nil)
-		if h != "" {
-			r.Header.Set("Authorization", h)
-		}
-		return r
-	}
-	if got := Bearer(mk("Bearer tok123")); got != "tok123" {
-		t.Fatalf("bearer: %q", got)
-	}
-	if got := Bearer(mk("Basic abc")); got != "" {
-		t.Fatalf("non-bearer must be empty: %q", got)
-	}
-	if got := Bearer(mk("")); got != "" {
-		t.Fatalf("absent must be empty: %q", got)
 	}
 }
 

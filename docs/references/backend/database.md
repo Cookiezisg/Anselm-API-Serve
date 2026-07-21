@@ -20,7 +20,8 @@ audience: [human, ai]
 | 列 | 类型 | 约束 / 语义 |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
-| `token_sha256` | TEXT | NOT NULL UNIQUE；只存 token hash |
+| `public_key` | BLOB | NOT NULL；32-byte Ed25519 public key |
+| `key_thumbprint` | TEXT | NOT NULL UNIQUE；`base64url(SHA-256(public_key))`，registration 幂等键 |
 | `fingerprint` | TEXT | nullable；风险观测，不是 merge/dedup key |
 | `client` | TEXT | nullable |
 | `status` | TEXT | NOT NULL DEFAULT `active` |

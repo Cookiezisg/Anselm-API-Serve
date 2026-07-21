@@ -7,27 +7,18 @@ import (
 	"testing"
 )
 
-func TestHashTokenIsSHA256Hex(t *testing.T) {
-	tok := "gwk_abc123"
-	want := sha256.Sum256([]byte(tok))
-	got := HashToken(tok)
+func TestHashFingerprintIsSHA256Hex(t *testing.T) {
+	fingerprint := "fingerprint-abc123"
+	want := sha256.Sum256([]byte(fingerprint))
+	got := HashFingerprint(fingerprint)
 	if got != hex.EncodeToString(want[:]) {
-		t.Fatalf("HashToken = %q, want hex sha256", got)
+		t.Fatalf("HashFingerprint = %q, want hex sha256", got)
 	}
 	if len(got) != 64 {
 		t.Fatalf("hex sha256 must be 64 chars, got %d", len(got))
 	}
-	if got == tok {
+	if got == fingerprint {
 		t.Fatal("hash equals plaintext")
-	}
-}
-
-func TestHashFingerprintMatchesHashToken(t *testing.T) {
-	// Both are plain SHA-256 hex; a fingerprint and a token with the same bytes
-	// hash identically (no salt) — the irreversible-store contract.
-	s := "same-bytes"
-	if HashFingerprint(s) != HashToken(s) {
-		t.Fatal("fingerprint and token hashing must both be plain SHA-256 hex")
 	}
 }
 

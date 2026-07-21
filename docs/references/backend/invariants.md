@@ -33,7 +33,7 @@ audience: [human, ai]
 | id | 一句话 | 失守后果 |
 |---|---|---|
 | GW-INV-11 | DeepSeek/Kimi key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index` | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
-| GW-INV-12 | install token 仅存 `SHA-256(token)`：发放返一次性 `gwk_`+32B token，`installs.token_sha256` UNIQUE；`/v1/install` 每次创建全新身份/额度池，绝不重显旧 token | DB 泄露可用 token 或 token 回显给错客户端 |
+| GW-INV-12 | 身份只由 Ed25519 possession proof 建立：DB 仅存 public key + UNIQUE thumbprint，`/install` 同 key 幂等；每个 protected request 签名绑定 install/kid、±90s iat、5min server nonce、一次性 jti、method、authority+target 与 exact body hash；replay cache 满载 fail closed；无 bearer 兼容 | 复制 install id/请求即可滥用、篡改 body/path、跨域复用或重放，或同设备重复领取额度池 |
 | GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars` 与 dashboard 均 loopback-only；`requireLoopback` 拒空 host/IP 非回环/解析到任一非回环地址；`/healthz` 不碰 DB | 管理/画像面公网暴露，远程 DoS 或凭证攻击 |
 | GW-INV-14 | `DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_*`、`INSTALL_POW_SECRET` 均 secret-env-only，不进 `Specs`/settings/Dump；Snapshot 只给安全状态/数量，日志 redaction 覆盖 auth、media data 与 provider key 字段 | secret 或 inline media 经配置/日志/导出泄露 |
 | GW-INV-15 | metric/audit 标签严格低基数：provider 仅 `deepseek|kimi`，另仅固定 `outcome`/`handler`/`result`；禁止 model、install_id、token、prompt、media、ip 入 label | Prometheus 基数爆炸或 PII/内容入时序 |

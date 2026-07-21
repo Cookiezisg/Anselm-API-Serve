@@ -18,6 +18,7 @@ import (
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
+	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	apphealth "github.com/sunweilin/anselm/gateway/internal/app/health"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
@@ -164,6 +165,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	nonces := noncecache.New(10 * time.Minute) // PoW replay-once (inert unless PoW on).
 	installSvc := appinstall.New(cfgP, installStore, nonces,
 		installsCreatedCounter{m: mx}, powCounter{m: mx})
+	proofSvc := appdeviceproof.New(installStore, noncecache.NewFailClosed(2*time.Minute, noncecache.DefaultMax))
 	modelCat := appmodel.New(cfgP)
 
 	// 8) Two provider-local upstream clients. Endpoint, key pool, transport and
@@ -238,6 +240,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 14) Business + admin handlers.
 	bizHandler := router.BuildHandler(router.Deps{
 		Install: installSvc,
+		Proof:   proofSvc,
 		Chat:    chatSvc,
 		Quota:   quotaSvc,
 		Models:  modelCat,

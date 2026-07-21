@@ -2,7 +2,6 @@ package install
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,8 +50,12 @@ func (s *fakeStore) Issue(_ context.Context, p install.IssueParams) (install.Iss
 	return s.issueResult, s.issueErr
 }
 
-func (s *fakeStore) Lookup(_ context.Context, _ string) (string, install.Status, bool, error) {
-	return s.lookupID, s.lookupStatus, s.lookupFound, s.lookupErr
+func (s *fakeStore) Lookup(_ context.Context, _ string) (install.Status, bool, error) {
+	return s.lookupStatus, s.lookupFound, s.lookupErr
+}
+
+func (s *fakeStore) PublicKey(context.Context, string) ([]byte, bool, error) {
+	return []byte("01234567890123456789012345678901"), true, nil
 }
 
 func (s *fakeStore) RefreshLastSeen(_ context.Context, _ string, _ time.Time, _ time.Duration) error {
@@ -107,38 +110,28 @@ func (c *labelCounter) total() int {
 
 // --- Issue tests ---
 
-func TestIssueFreshTokenEachCall(t *testing.T) {
-	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
+func TestIssuePersistsVerifiedDeviceIdentity(t *testing.T) {
+	store := &fakeStore{issueResult: install.IssueResult{Admitted: true, InstallID: "ins_device"}}
 	mxNew := &countCounter{}
 	s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, mxNew, nil)
 
 	req := install.NewRequest("fp-aaa", "anselm/0.1")
-	v1, gate, ae := s.Issue(context.Background(), req, "ipk1")
+	publicKey := []byte("01234567890123456789012345678901")
+	v1, gate, ae := s.Issue(context.Background(), req, publicKey, "thumbprint", "ipk1")
 	if ae != nil || gate != install.GateNone {
 		t.Fatalf("issue 1: gate=%q ae=%v", gate, ae)
 	}
-	v2, _, ae2 := s.Issue(context.Background(), req, "ipk1")
-	if ae2 != nil {
-		t.Fatal(ae2)
-	}
-	if v1.Token == "" || v2.Token == "" || v1.Token == v2.Token {
-		t.Fatalf("tokens must be fresh+distinct: %q %q", v1.Token, v2.Token)
-	}
-	if !strings.HasPrefix(v1.Token, "gwk_") {
-		t.Fatalf("token missing gwk_ prefix: %q", v1.Token)
+	if v1.InstallID != "ins_device" {
+		t.Fatalf("install id = %q", v1.InstallID)
 	}
 	if v1.MonthlyQuota != 5000 {
 		t.Fatalf("monthlyQuota=%d want 5000", v1.MonthlyQuota)
 	}
-	if mxNew.n != 2 {
-		t.Fatalf("installs_created inc=%d want 2", mxNew.n)
+	if mxNew.n != 1 {
+		t.Fatalf("installs_created inc=%d want 1", mxNew.n)
 	}
-	// The store stores only the hash, never the plaintext token.
-	if store.lastParams.TokenSHA256 == v2.Token {
-		t.Fatal("plaintext token passed to store")
-	}
-	if store.lastParams.TokenSHA256 != install.HashToken(v2.Token) {
-		t.Fatal("store did not receive SHA-256(token)")
+	if string(store.lastParams.PublicKey) != string(publicKey) || store.lastParams.Thumbprint != "thumbprint" {
+		t.Fatalf("device identity not passed to store: %+v", store.lastParams)
 	}
 }
 
@@ -154,7 +147,7 @@ func TestIssueGateRejectMapsDistinctCodes(t *testing.T) {
 	for _, tc := range cases {
 		store := &fakeStore{issueResult: install.IssueResult{Admitted: false, Gate: tc.gate}}
 		s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, nil, nil)
-		_, gate, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk")
+		_, gate, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), []byte("key"), "thumb", "ipk")
 		if ae == nil || ae.Code != tc.code {
 			t.Fatalf("gate %q: code=%v want %s", tc.gate, ae, tc.code)
 		}
@@ -170,7 +163,7 @@ func TestIssueGateRejectMapsDistinctCodes(t *testing.T) {
 func TestIssueGatesDefaultDisabledParams(t *testing.T) {
 	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
 	s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, nil, nil)
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp-aaa", ""), "ipk"); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp-aaa", ""), []byte("key"), "thumb", "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	if store.lastParams.GlobalGate.Enabled {
@@ -188,7 +181,7 @@ func TestIssueEmptyFPDisablesFPGate(t *testing.T) {
 	cfg.InstallPerFPDaily = 1
 	store := &fakeStore{issueResult: install.IssueResult{Admitted: true}}
 	s := New(fakeCfg{cfg}, store, fakeNonces{}, nil, nil)
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("", ""), "ipk"); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("", ""), []byte("key"), "thumb", "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	if store.lastParams.FPGate.Enabled {
@@ -205,7 +198,7 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 	s := New(fakeCfg{cfg}, store, fakeNonces{}, nil, nil)
 	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
 	s.SetClock(func() time.Time { return now })
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk"); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), []byte("key"), "thumb", "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	g := store.lastParams.FPGate
@@ -218,7 +211,7 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 
 	cfg.InstallPerFPDaily = 0
 	cfg.InstallPerFPCooldownSec = 60 // cap off, cooldown on
-	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), "ipk"); ae != nil {
+	if _, _, ae := s.Issue(context.Background(), install.NewRequest("fp", ""), []byte("key"), "thumb", "ipk"); ae != nil {
 		t.Fatal(ae)
 	}
 	g = store.lastParams.FPGate
@@ -239,14 +232,14 @@ func TestLookupThrottleNotWritePerCall(t *testing.T) {
 	s.SetClock(func() time.Time { return base })
 
 	// First lookup refreshes (no prior stamp).
-	if _, _, found, err := s.LookupInstall(context.Background(), "gwk_tok"); err != nil || !found {
+	if _, _, found, err := s.LookupInstall(context.Background(), "ins_test"); err != nil || !found {
 		t.Fatalf("lookup 1: found=%v err=%v", found, err)
 	}
 	// Many more within the interval (all < 10min from base): NO additional refresh
 	// write (the in-Go throttle gates the write pool).
 	s.SetClock(func() time.Time { return base.Add(5 * time.Second) })
 	for i := 0; i < 50; i++ {
-		if _, _, _, err := s.LookupInstall(context.Background(), "gwk_tok"); err != nil {
+		if _, _, _, err := s.LookupInstall(context.Background(), "ins_test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -256,7 +249,7 @@ func TestLookupThrottleNotWritePerCall(t *testing.T) {
 
 	// After the interval elapses, a refresh happens again.
 	s.SetClock(func() time.Time { return base.Add(LastSeenRefreshInterval + time.Minute) })
-	if _, _, _, err := s.LookupInstall(context.Background(), "gwk_tok"); err != nil {
+	if _, _, _, err := s.LookupInstall(context.Background(), "ins_test"); err != nil {
 		t.Fatal(err)
 	}
 	if store.calls() != 2 {
@@ -264,14 +257,14 @@ func TestLookupThrottleNotWritePerCall(t *testing.T) {
 	}
 }
 
-func TestLookupEmptyTokenNotFound(t *testing.T) {
+func TestLookupEmptyInstallIDNotFound(t *testing.T) {
 	store := &fakeStore{}
 	s := New(fakeCfg{testConfig(t)}, store, fakeNonces{}, nil, nil)
 	if _, _, found, err := s.LookupInstall(context.Background(), ""); found || err != nil {
-		t.Fatalf("empty token: found=%v err=%v want false,nil", found, err)
+		t.Fatalf("empty install id: found=%v err=%v want false,nil", found, err)
 	}
 	if store.calls() != 0 {
-		t.Fatal("empty token must not touch the store refresh")
+		t.Fatal("empty install id must not touch the store refresh")
 	}
 }
 
@@ -286,7 +279,7 @@ func TestLookupConcurrentThrottleRaceSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = s.LookupInstall(context.Background(), "gwk_tok")
+			_, _, _, _ = s.LookupInstall(context.Background(), "ins_test")
 		}()
 	}
 	wg.Wait()

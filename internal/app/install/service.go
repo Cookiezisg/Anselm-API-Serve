@@ -1,12 +1,12 @@
-// Package install is the install identity use-case: mint a brand-new token each
-// call (never echo/merge by fingerprint), run the Sybil gate phase in fixed order
+// Package install is the install identity use-case: register one public key per
+// device (idempotently by thumbprint), run the Sybil gate phase in fixed order
 // (per-IP/hour → global-daily-cap → per-fp daily+cooldown) with each gate
 // short-circuiting before any DB work when disabled, the off/shadow/enforce PoW
-// gate, and the throttled token→install auth lookup. It declares its infra needs
+// gate, and the throttled install-status lookup. It declares its infra needs
 // as ports (ports.go) and maps every reject to an apierr wire code; it imports
 // domain + pkg only, never infra.
 //
-// 领号用例:每次新 token(绝不按 fingerprint 回显/合并)、固定序 Sybil 闸(关时
+// 登记用例：同一设备公钥幂等复用 install id，且绝不按 fingerprint 合并；固定序 Sybil 闸（关时
 // DB 前短路、dormant 零成本)、PoW 三态闸、节流的鉴权查找;拒绝映射到 apierr。
 package install
 
@@ -73,32 +73,31 @@ func New(cfg ConfigLoader, store Store, nonces NonceUser, mxNew InstallsCreatedC
 // SetClock overrides the clock (tests only).
 func (s *Service) SetClock(now func() time.Time) { s.now = now }
 
-// IssueResultView is the success payload for a freshly issued install: the
-// plaintext token (returned ONLY here, never stored or re-displayed), the monthly
-// quota, and the next-month reset boundary. The transport renders it.
+// IssueResultView is the public registration result: install id, monthly quota,
+// and the next-month reset boundary. The transport renders it.
 type IssueResultView struct {
-	Token        string
+	InstallID    string
 	MonthlyQuota int64
 	ResetAt      time.Time
 }
 
-// Issue mints a brand-new install: a fresh token (store keeps only SHA-256), a
-// new install id, and a fresh quota pool — NEVER echoing or merging by
-// fingerprint (GW-INV-12). ipKey is the caller-derived hashed, /64-collapsed
+// Issue registers a public key. A new thumbprint gets a new install id and quota
+// pool; an existing thumbprint gets its original id without consuming issuance
+// gates. Fingerprint is NEVER an identity or merge key (GW-INV-12). ipKey is the caller-derived hashed, /64-collapsed
 // client IP (pkg/clientip): the transport owns IP derivation (it sees the
 // request), the app owns the gate orchestration. It resolves the per-gate
 // enable/ceilings from one config snapshot (a disabled gate is not passed to the
 // store, so its table is never touched — dormant zero-cost), then performs the
 // gates + INSERT atomically via the store. A gate reject maps to its distinct
 // apierr code; the transport emits the unsampled WARN audit.
-func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string) (IssueResultView, install.Gate, *apierr.APIError) {
+func (s *Service) Issue(ctx context.Context, req install.Request, publicKey []byte, thumbprint, ipKey string) (IssueResultView, install.Gate, *apierr.APIError) {
 	cfg := s.cfg.Load()
 	now := s.now().UTC()
 
-	token := idgen.Token()
 	p := install.IssueParams{
 		InstallID:   idgen.InstallID(),
-		TokenSHA256: install.HashToken(token),
+		PublicKey:   append([]byte(nil), publicKey...),
+		Thumbprint:  thumbprint,
 		Fingerprint: req.Fingerprint,
 		Client:      req.Client,
 		Now:         now,
@@ -111,11 +110,11 @@ func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string) 
 		GlobalGate: s.globalGate(cfg, now),
 		FPGate:     s.fpGate(cfg, req.Fingerprint, now),
 	}
-	return s.issueWith(ctx, cfg, token, p)
+	return s.issueWith(ctx, cfg, p)
 }
 
 // issueWith runs the atomic gates+insert and maps the outcome.
-func (s *Service) issueWith(ctx context.Context, cfg *config.Config, token string, p install.IssueParams) (IssueResultView, install.Gate, *apierr.APIError) {
+func (s *Service) issueWith(ctx context.Context, cfg *config.Config, p install.IssueParams) (IssueResultView, install.Gate, *apierr.APIError) {
 	res, err := s.store.Issue(ctx, p)
 	if err != nil {
 		return IssueResultView{}, install.GateNone, apierr.Internal()
@@ -123,11 +122,11 @@ func (s *Service) issueWith(ctx context.Context, cfg *config.Config, token strin
 	if !res.Admitted {
 		return IssueResultView{}, res.Gate, gateError(res.Gate)
 	}
-	if s.mxNew != nil {
+	if s.mxNew != nil && !res.Existing {
 		s.mxNew.Inc()
 	}
 	return IssueResultView{
-		Token:        token,
+		InstallID:    res.InstallID,
 		MonthlyQuota: cfg.MonthlyQuota,
 		ResetAt:      nextMonthReset(p.Now, cfg.Location),
 	}, install.GateNone, nil
@@ -192,25 +191,30 @@ func gateError(g install.Gate) *apierr.APIError {
 	}
 }
 
-// LookupInstall resolves a token to its (installID, status, found) for auth. It
-// hashes the token, looks up the install, and opportunistically refreshes
+// LookupInstall resolves a public install id to its status and opportunistically refreshes
 // last_seen_at — but THROTTLED IN-GO (B9): a bounded LRU of last-refresh stamps
 // gates the write so the single serialized writer sees at most one cosmetic write
 // per install per LastSeenRefreshInterval, NOT a write per auth. A refresh failure
 // never fails the lookup (a missed activity timestamp is purely cosmetic).
-func (s *Service) LookupInstall(ctx context.Context, token string) (id string, status install.Status, found bool, err error) {
-	if token == "" {
+func (s *Service) LookupInstall(ctx context.Context, installID string) (id string, status install.Status, found bool, err error) {
+	if installID == "" {
 		return "", "", false, nil
 	}
-	id, status, found, err = s.store.Lookup(ctx, install.HashToken(token))
+	status, found, err = s.store.Lookup(ctx, installID)
 	if err != nil || !found {
-		return id, status, found, err
+		return "", status, found, err
 	}
+	id = installID
 	now := s.now().UTC()
 	if s.shouldRefresh(id, now) {
 		_ = s.store.RefreshLastSeen(ctx, id, now, LastSeenRefreshInterval)
 	}
 	return id, status, true, nil
+}
+
+// PublicKey resolves the device key for request-proof verification.
+func (s *Service) PublicKey(ctx context.Context, installID string) ([]byte, bool, error) {
+	return s.store.PublicKey(ctx, installID)
 }
 
 // shouldRefresh is the in-Go throttle gate: true (and records now) only when the

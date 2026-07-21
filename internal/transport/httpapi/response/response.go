@@ -69,29 +69,3 @@ func writeAPIError(w http.ResponseWriter, ae *apierr.APIError) {
 		Details: ae.Details,
 	}})
 }
-
-// Bearer extracts the token from a "Bearer <token>" Authorization header,
-// returning "" when the header is absent or not the bearer scheme. The single
-// shared extractor for every token-gated endpoint (chat / models / quota), so
-// the parse rule lives in exactly one place.
-func Bearer(r *http.Request) string {
-	const p = "Bearer "
-	h := r.Header.Get("Authorization")
-	if len(h) > len(p) && h[:len(p)] == p {
-		return trimSpace(h[len(p):])
-	}
-	return ""
-}
-
-// trimSpace trims ASCII spaces/tabs from both ends (a bearer token has none,
-// but a stray trailing space from a hand-built header shouldn't break auth).
-// Local to avoid a strings import for one tiny use.
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}

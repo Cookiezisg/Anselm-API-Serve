@@ -7,15 +7,19 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
+	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/clientip"
+	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
 
@@ -30,16 +34,19 @@ const installBodyLimit int64 = 8 * 1024
 // stub; the concrete service satisfies it structurally.
 type Service interface {
 	PoWGate(ctx context.Context, powHeader, ipKey string) *apierr.APIError
-	Issue(ctx context.Context, req dominstall.Request, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError)
+	Issue(ctx context.Context, req dominstall.Request, publicKey []byte, thumbprint, ipKey string) (appinstall.IssueResultView, dominstall.Gate, *apierr.APIError)
 }
 
 // Handler serves POST /v1/install over a Service.
 type Handler struct {
-	svc Service
+	svc   Service
+	proof *appdeviceproof.Service
 }
 
 // New wires the handler to the use case.
-func New(svc Service) *Handler { return &Handler{svc: svc} }
+func New(svc Service, proof *appdeviceproof.Service) *Handler {
+	return &Handler{svc: svc, proof: proof}
+}
 
 // request is the /v1/install input shape (§3). Unknown fields are dropped by the
 // default decoder (not declared → ignored), never errored.
@@ -48,10 +55,10 @@ type request struct {
 	Client      string `json:"client"`
 }
 
-// body is the success entity (§3): the plaintext token (returned ONLY here),
-// the monthly quota, and the RFC3339 next-month reset.
+// body is the public success entity: install id, monthly quota, and the RFC3339
+// next-month reset.
 type body struct {
-	Token        string `json:"token"`
+	InstallID    string `json:"installId"`
 	MonthlyQuota int64  `json:"monthlyQuota"`
 	ResetAt      string `json:"resetAt"`
 }
@@ -75,15 +82,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req request
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, installBodyLimit)).Decode(&req); err != nil {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, installBodyLimit))
+	if err != nil {
 		response.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	var req request
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&req); err != nil {
+		response.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	reg, ae := proofhttp.Registration(h.proof, r, raw)
+	if ae != nil {
+		response.WriteError(w, ae)
 		return
 	}
 
 	// NewRequest trims+truncates so the Sybil bucket key and the stored row derive
 	// from the identical post-truncate string (domain owns the normalization).
-	res, gate, ae := h.svc.Issue(ctx, dominstall.NewRequest(req.Fingerprint, req.Client), ipKey)
+	res, gate, ae := h.svc.Issue(ctx, dominstall.NewRequest(req.Fingerprint, req.Client), reg.PublicKey, reg.Thumbprint, ipKey)
 	if ae != nil {
 		// A tripped gate is an audited security event; an internal fault (GateNone)
 		// renders INTERNAL without an audit line.
@@ -94,7 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.WriteJSON(w, http.StatusOK, body{
-		Token:        res.Token,
+		InstallID:    res.InstallID,
 		MonthlyQuota: res.MonthlyQuota,
 		ResetAt:      res.ResetAt.Format(time.RFC3339),
 	})

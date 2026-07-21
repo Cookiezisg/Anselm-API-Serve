@@ -24,7 +24,11 @@ audience: [human, ai]
 
 | wire code | HTTP status | message | 触发 / 备注 |
 |---|---|---|---|
-| `INVALID_TOKEN` | 401 | missing or invalid install token | bearer 缺失或非法 |
+| `INVALID_INSTALL` | 401 | missing or invalid install id | install id 缺失或未知 |
+| `DEVICE_PROOF_REQUIRED` | 401 | device proof is required | proof/header 缺失 |
+| `DEVICE_PROOF_INVALID` | 401 | device proof is invalid | 公钥/签名/iat/method/authority/target/body hash 非法 |
+| `DEVICE_PROOF_NONCE_INVALID` | 401 | device proof challenge expired; fetch a fresh challenge | nonce 过期、伪造或来自上个进程；client 刷新后重试一次 |
+| `DEVICE_PROOF_REPLAYED` | 409 | device proof was already used | `(kid,jti)` 已消费 |
 | `ACCOUNT_BANNED` | 403 | this install has been disabled | install 被封禁 |
 | `RATE_LIMITED` | 429 | rate or daily sub-limit exceeded | per-minute 速率、日次数子限额或 per-install 日成本钱包到顶 |
 | `QUOTA_EXHAUSTED` | 429 | monthly free-tier quota exhausted | 月度免费额度耗尽 |

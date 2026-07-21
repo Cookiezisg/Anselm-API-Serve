@@ -28,7 +28,7 @@ func TestHandler_NonStreamRoundTrip(t *testing.T) {
 
 	body := `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 
@@ -53,13 +53,13 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHandler_NoBearer401(t *testing.T) {
+func TestHandler_NoInstallID401(t *testing.T) {
 	h := New(newService(t, stubUpstream{}), 0)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"u","content":"x"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
-	if rec.Code != apierr.ErrInvalidToken.Status {
-		t.Fatalf("missing bearer status: %d", rec.Code)
+	if rec.Code != apierr.ErrInvalidInstall.Status {
+		t.Fatalf("missing install id status: %d", rec.Code)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestHandler_InjectedBodyLimitEnforced(t *testing.T) {
 
 	over := New(newService(t, stubUpstream{body: `{"usage":{"total_tokens":1}}`}), 16)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer tok")
+	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	over.ServeHTTP(rec, r)
 	if rec.Code != 400 {
@@ -84,7 +84,7 @@ func TestHandler_InjectedBodyLimitEnforced(t *testing.T) {
 
 	fits := New(newService(t, stubUpstream{body: `{"usage":{"total_tokens":1}}`}), int64(len(body)))
 	r2 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	r2.Header.Set("Authorization", "Bearer tok")
+	r2.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec2 := httptest.NewRecorder()
 	fits.ServeHTTP(rec2, r2)
 	if rec2.Code != 200 {

@@ -43,6 +43,17 @@ func New(writer, reader *orm.DB) *Store {
 func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.IssueResult, error) {
 	var result dinstall.IssueResult
 	err := s.w.Transaction(ctx, func(tx *orm.DB) error {
+		// Registration is idempotent by device key. The same installation may
+		// recover its public id without consuming another quota pool or gate bucket.
+		var existingID string
+		err := tx.QueryRow(ctx, `SELECT id FROM installs WHERE key_thumbprint = ?`, p.Thumbprint).Scan(&existingID)
+		if err == nil {
+			result = dinstall.IssueResult{Admitted: true, InstallID: existingID, Existing: true}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		// gate 1: per-IP hourly (skipped when disabled). Prunes stale windows (B8).
 		if p.IPGate.Enabled {
 			ok, err := bumpIPRate(ctx, tx, p.IPGate)
@@ -82,16 +93,18 @@ func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.Iss
 		// admit: insert the brand-new install row, regenerating the id once on a
 		// UNIQUE collision (B13). A second collision is astronomically improbable
 		// with a 16-byte id and surfaces as a real error rather than an infinite loop.
-		if err := insertInstall(ctx, tx, p.InstallID, p); err != nil {
+		actualID := p.InstallID
+		if err := insertInstall(ctx, tx, actualID, p); err != nil {
 			if isUniqueConflict(err) {
-				if err := insertInstall(ctx, tx, idgen.InstallID(), p); err != nil {
+				actualID = idgen.InstallID()
+				if err := insertInstall(ctx, tx, actualID, p); err != nil {
 					return err
 				}
 			} else {
 				return err
 			}
 		}
-		result = dinstall.IssueResult{Admitted: true, Gate: dinstall.GateNone}
+		result = dinstall.IssueResult{Admitted: true, Gate: dinstall.GateNone, InstallID: actualID}
 		return nil
 	})
 	// errGateReject is the internal sentinel that rolls the tx back on a gate
@@ -190,25 +203,38 @@ func bumpFPRate(ctx context.Context, tx *orm.DB, g dinstall.FPGate) (bool, error
 func insertInstall(ctx context.Context, tx *orm.DB, id string, p dinstall.IssueParams) error {
 	now := p.Now.UTC()
 	_, err := tx.Exec(ctx,
-		`INSERT INTO installs(id, token_sha256, fingerprint, client, status, created_at, last_seen_at)
-		   VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, p.TokenSHA256, nullStr(p.Fingerprint), nullStr(p.Client),
+		`INSERT INTO installs(id, public_key, key_thumbprint, fingerprint, client, status, created_at, last_seen_at)
+		   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, p.PublicKey, p.Thumbprint, nullStr(p.Fingerprint), nullStr(p.Client),
 		string(dinstall.StatusActive), now, now)
 	return err
 }
 
-// Lookup resolves a token hash to its install id+status from the read pool.
-func (s *Store) Lookup(ctx context.Context, tokenSHA256 string) (string, dinstall.Status, bool, error) {
-	var id, status string
+// Lookup resolves a public install id to its status from the read pool.
+func (s *Store) Lookup(ctx context.Context, installID string) (dinstall.Status, bool, error) {
+	var status string
 	err := s.r.QueryRow(ctx,
-		`SELECT id, status FROM installs WHERE token_sha256 = ?`, tokenSHA256).Scan(&id, &status)
+		`SELECT status FROM installs WHERE id = ?`, installID).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", "", false, err
+		return "", false, err
 	}
-	return id, dinstall.Status(status), true, nil
+	return dinstall.Status(status), true, nil
+}
+
+// PublicKey resolves the Ed25519 public key bound to installID.
+func (s *Store) PublicKey(ctx context.Context, installID string) ([]byte, bool, error) {
+	var key []byte
+	err := s.r.QueryRow(ctx, `SELECT public_key FROM installs WHERE id = ?`, installID).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return key, true, nil
 }
 
 // RefreshLastSeen bumps installs.last_seen_at, DB-side throttled by the WHERE
@@ -246,7 +272,7 @@ func nullStr(s string) any {
 }
 
 // isUniqueConflict reports whether err is a SQLite UNIQUE constraint violation
-// (the install id or token_sha256 collision path, B13). The pure-Go driver
+// (the install id or key thumbprint collision path, B13). The pure-Go driver
 // surfaces it in the error text; matching on the substring keeps this driver-
 // agnostic without importing the driver's error type.
 func isUniqueConflict(err error) bool {

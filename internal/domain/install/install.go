@@ -1,12 +1,12 @@
 // Package install is the PURE install-identity domain: the Install entity, its
 // Status enum, the request/result value shapes, and the SHA-256 hashing contract
-// for tokens and fingerprints. It has ZERO I/O — no os, no database/sql, no
+// for device keys and fingerprints. It has ZERO I/O — no os, no database/sql, no
 // net/http. Storage (installstore), config wiring, and the Sybil/PoW gate
 // orchestration are the app+infra layers' job; this package only owns the types
 // and the irreversible-hashing rule both the issuance and auth paths share.
 //
-// 红线(GW-INV-12/20):token 只在签发瞬间返回,服务端只存 SHA-256;fingerprint
-// 只作风控键、以 SHA-256 落库,绝不入库/入日志明文,且绝不作合并/去重键。
+// 红线(GW-INV-12/20)：服务端只存设备公钥，私钥永不出端；fingerprint
+// 只作风控键且绝不作身份、合并或去重键。
 package install
 
 import (
@@ -42,13 +42,14 @@ const (
 	MaxClientLen = 128
 )
 
-// Install is one issued install identity. The token is NEVER held here — only its
-// SHA-256 ever persists. Fingerprint/Client are observation-only metadata
+// Install is one registered device identity. PublicKey and Thumbprint are public;
+// no reusable credential exists. Fingerprint/Client are observation-only metadata
 // (Fingerprint is stored as given on the installs row for risk review, but it is
 // never a merge/dedup key; the per-fp Sybil bucket keys on HashFingerprint).
 type Install struct {
 	ID          string
-	TokenSHA256 string
+	PublicKey   []byte
+	Thumbprint  string
 	Fingerprint string // plaintext on the installs row (risk obs only); "" → NULL.
 	Client      string // client tag; "" → NULL.
 	Status      Status
@@ -76,15 +77,6 @@ func NewRequest(fingerprint, client string) Request {
 		cl = cl[:MaxClientLen]
 	}
 	return Request{Fingerprint: fp, Client: cl}
-}
-
-// HashToken returns the hex SHA-256 of a token — the only form that ever
-// persists (installs.token_sha256) and the lookup key on auth. A high-entropy
-// random token needs no salt/slow-hash; SHA-256 is the irreversible store-and-
-// compare contract shared by issuance and LookupInstall.
-func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }
 
 // HashFingerprint returns the hex SHA-256 of a fingerprint — the per-fp Sybil
