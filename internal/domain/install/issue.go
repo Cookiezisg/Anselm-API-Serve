@@ -21,9 +21,11 @@ type IssueParams struct {
 	FPGate     FPGate
 }
 
-// IPGate is the always-on per-IP hourly bucket (INSTALL_PER_IP_HOUR, min 1 —
-// never disabled). Key is the hashed, /64-collapsed client IP.
+// IPGate is the optional per-IP hourly bucket (INSTALL_PER_IP_HOUR, 0=off).
+// Enabled false short-circuits it before any DB work. Key is the hashed,
+// /64-collapsed client IP.
 type IPGate struct {
+	Enabled    bool
 	Key        string
 	WindowHour string // "2006-01-02T15" in RESET_TZ.
 	Max        int

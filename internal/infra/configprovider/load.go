@@ -97,9 +97,9 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	defaultMediaBytes := min(int64(3*1024*1024), c.MaxBodyBytes*3/4)
 	c.MaxMediaDecodedBytes = g.boundedInt64("MAX_MEDIA_DECODED_BYTES", defaultMediaBytes, 1, config.MaxMediaDecodedBytes)
 	c.NGlobalConcurrency = g.boundedInt("N_GLOBAL_CONCURRENCY", 8, 1, config.MaxNGlobalConcurrency)
-	c.RatePerMin = g.boundedInt("RATE_PER_MIN", 20, 0, config.MaxRatePerMin)
+	c.RatePerMin = g.boundedInt("RATE_PER_MIN", 0, 0, config.MaxRatePerMin)
 	c.DailySublimit = g.boundedInt64("DAILY_SUBLIMIT", 0, 0, config.MaxDailySublimit)
-	c.InstallPerIPHour = g.boundedInt("INSTALL_PER_IP_HOUR", 10, 1, config.MaxInstallPerIPHour)
+	c.InstallPerIPHour = g.boundedInt("INSTALL_PER_IP_HOUR", 0, 0, config.MaxInstallPerIPHour)
 
 	// M2 Sybil 领号闸:全部默认 0=禁用(默认配置下 /v1/install 行为逐字不变)。
 	c.InstallGlobalDailyCap = g.boundedInt64("INSTALL_GLOBAL_DAILY_CAP", 0, 0, config.MaxInstallGlobalDailyCap)

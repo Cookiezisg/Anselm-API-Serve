@@ -34,9 +34,9 @@ func validBase() Config {
 		MaxMediaParts:          8,
 		MaxMediaDecodedBytes:   3 * 1024 * 1024,
 		NGlobalConcurrency:     8,
-		RatePerMin:             20,
+		RatePerMin:             0,
 		DailySublimit:          0,
-		InstallPerIPHour:       10,
+		InstallPerIPHour:       0,
 
 		InstallPowMode:       PowModeOff,
 		InstallPowDifficulty: 20,

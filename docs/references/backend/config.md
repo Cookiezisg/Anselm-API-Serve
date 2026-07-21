@@ -43,9 +43,9 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | `MAX_MEDIA_DECODED_BYTES` | `min(3MiB, MAX_BODY_BYTES×3/4)` | 1 | 8,388,608 | 否 | 整请求累计 decoded media bytes；同时必须 ≤ body cap |
 | `MAX_BODY_BYTES` | 262144 | 4096 | 8,388,608 | **是** | business chat body cap；中间件装配一次 |
 | `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100,000 | **是** | 两 provider 共享的总 upstream 在飞 cap |
-| `RATE_PER_MIN` | 20 | 0 | 10,000,000 | 否 | per-install 分钟令牌桶；0=禁用 |
+| `RATE_PER_MIN` | 0 | 0 | 10,000,000 | 否 | per-install 分钟令牌桶；0=禁用 |
 | `DAILY_SUBLIMIT` | 0 | 0 | 1,000,000,000 | 否 | per-install 日请求次数子限；0=禁用 |
-| `INSTALL_PER_IP_HOUR` | 10 | 1 | 1,000,000 | 否 | `/install` per-IP 小时上限 |
+| `INSTALL_PER_IP_HOUR` | 0 | 0 | 1,000,000 | 否 | `/install` per-IP 小时上限；0=禁用 |
 | `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100,000,000 | 否 | 全局日领号 cap；0=禁用 |
 | `INSTALL_PER_FP_DAILY` | 0 | 0 | 1,000,000 | 否 | per-fingerprint 日领号；0=禁用 |
 | `INSTALL_PER_FP_COOLDOWN_SEC` | 0 | 0 | 86,400 | 否 | fp 相邻领号间隔；0=禁用 |

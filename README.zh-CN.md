@@ -93,7 +93,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,逗号分隔;不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(成对可选)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。
 
-公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`KIMI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。其他主要护栏有 `MONTHLY_QUOTA`、`MAX_TOKENS_CAP` / `INPUT_TOKEN_CAP`、`N_GLOBAL_CONCURRENCY`、`RATE_PER_MIN`。示例文件为本地开发保留可选的 dormant 反滥用闸;仓库内生产部署已启用有界输入/输出及领号/请求速率闸。
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_DAILY_SPEND_MICRO_USD=14000000`、`INSTALL_DAILY_SPEND_MICRO_USD=5600000`、`DEEPSEEK_DAILY_SPEND_MICRO_USD=14000000`、`KIMI_DAILY_SPEND_MICRO_USD=14000000`。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。默认对用户可见的使用护栏是每 install `MONTHLY_QUOTA=5000`;花费上限、有界输入/输出与 `N_GLOBAL_CONCURRENCY` 继续作为 operator 安全护栏。每分钟聊天频控、日请求子限、自动降速与领号频控默认都禁用(`0`/`off`)。
 
 ## 部署
 
@@ -105,7 +105,7 @@ VPS 上的 Caddy + systemd:
 - 生产强制配置 GitHub Environment secret `SERVER_KNOWN_HOSTS`,缺失或不含 `SERVER_HOST` 条目即 fail closed;不存在 `ssh-keyscan`/TOFU 回退。远端 data dir 为 `0700`,DB/WAL/SHM 与 secret env 为 `0600`;成功发版后只保留一个 root-only rollback bundle。
 - 服务器安装 schema-aware 人工回滚命令:`sudo /usr/local/sbin/anselm-gateway-rollback`(交互确认),自动化用 `sudo /usr/local/sbin/anselm-gateway-rollback --yes`。若主机/进程崩溃留下持久 transition marker,必须先恢复 marker 指向的精确 checksummed bundle。最可靠的入口始终是 `sudo <marker 中的 bundle>/recovery/rollback.sh --recover-incomplete`(非交互再加 `--yes`);全局入口若已升级,也支持同样的 recovery mode。每个 bundle 都携带该版精确 recovery program,回滚又会恢复旧全局入口,因此不会与更旧的保留 READY bundle 发生格式错配。永久 Caddy guard 则作为 inert 的受管安全 artifact 保留。回滚会同时恢复 DB 快照及整套运行 artifact;schema migration 后只切 binary symlink 明确不受支持且不安全。
 
-部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。生产默认闸为 `INPUT_TOKEN_CAP=131072`、`MAX_TOKENS_CAP=16384`、`MAX_MESSAGES=1024`、`MAX_MESSAGE_CHARS=262144`、`RATE_PER_MIN=8`、`DAILY_SUBLIMIT=100`、`INSTALL_GLOBAL_DAILY_CAP=100`、`INSTALL_PER_FP_DAILY=0`、`INSTALL_PER_FP_COOLDOWN_SEC=0`（调试期间临时关闭两条按设备领号闸）、`INSTALL_PER_IP_HOUR=10`、`TOKEN_ANOMALY_RPM=8`。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
+部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。生产默认闸为 `INPUT_TOKEN_CAP=131072`、`MAX_TOKENS_CAP=16384`、`MAX_MESSAGES=1024`、`MAX_MESSAGE_CHARS=262144`、`MONTHLY_QUOTA=5000`、`RATE_PER_MIN=0`、`DAILY_SUBLIMIT=0`、`INSTALL_GLOBAL_DAILY_CAP=0`、`INSTALL_PER_FP_DAILY=0`、`INSTALL_PER_FP_COOLDOWN_SEC=0`、`INSTALL_PER_IP_HOUR=0`、`TOKEN_ANOMALY_RPM=0`。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
 
 ## 开发
 

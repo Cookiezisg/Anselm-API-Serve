@@ -24,8 +24,8 @@ func newStore(t *testing.T) (*Store, *sqlite.DB) {
 	return New(db.Writer, db.Reader), db
 }
 
-// baseParams builds an admit-everything IssueParams (all M2 gates disabled, IP
-// gate high) for the given fp + token + day/hour window.
+// baseParams builds an admit-everything IssueParams (optional M2 gates disabled,
+// IP gate enabled with a high cap) for the given fp + token + day/hour window.
 func baseParams(id, tokenHash, fp string, now time.Time) dinstall.IssueParams {
 	return dinstall.IssueParams{
 		InstallID:   id,
@@ -33,6 +33,7 @@ func baseParams(id, tokenHash, fp string, now time.Time) dinstall.IssueParams {
 		Fingerprint: fp,
 		Now:         now,
 		IPGate: dinstall.IPGate{
+			Enabled:    true,
 			Key:        "ipk-" + id,
 			WindowHour: now.UTC().Format("2006-01-02T15"),
 			Max:        1_000_000,
@@ -253,6 +254,21 @@ func TestDisabledFPGateNoRow(t *testing.T) {
 	}
 	if n := readCount(t, ctx, db, `SELECT COUNT(*) FROM install_global_rate`); n != 0 {
 		t.Fatalf("install_global_rate has %d rows; disabled gate must write none", n)
+	}
+}
+
+func TestDisabledIPGateNoRow(t *testing.T) {
+	st, db := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	p := baseParams("ins_noip", dinstall.HashToken("gwk_noip"), "", now)
+	p.IPGate = dinstall.IPGate{Enabled: false, Key: "ipk-disabled", WindowHour: now.Format("2006-01-02T15"), Max: 0}
+	if r, err := st.Issue(ctx, p); err != nil || !r.Admitted {
+		t.Fatalf("disabled IP gate issue: admitted=%v err=%v", r.Admitted, err)
+	}
+	if n := readCount(t, ctx, db, `SELECT COUNT(*) FROM install_ip_rate`); n != 0 {
+		t.Fatalf("disabled IP gate wrote %d rows", n)
 	}
 }
 

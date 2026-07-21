@@ -281,7 +281,7 @@ func TestLoadLockFreeReturnsLatestAfterSwap(t *testing.T) {
 	p := New(mustLoad(t, minimalEnv()))
 	ss := newFakeStore()
 	before := p.Load()
-	if before.RatePerMin != 20 {
+	if before.RatePerMin != 0 {
 		t.Fatalf("seed RatePerMin = %d", before.RatePerMin)
 	}
 	if _, err := p.ApplyOverrides(context.Background(), map[string]string{"RATE_PER_MIN": "99"}, ss); err != nil {
@@ -292,7 +292,7 @@ func TestLoadLockFreeReturnsLatestAfterSwap(t *testing.T) {
 		t.Fatalf("after swap RatePerMin = %d, want 99", after.RatePerMin)
 	}
 	// The previously-held snapshot is immutable — never mutated by the swap.
-	if before.RatePerMin != 20 {
+	if before.RatePerMin != 0 {
 		t.Fatalf("old snapshot mutated: %d", before.RatePerMin)
 	}
 }
@@ -330,7 +330,7 @@ func TestApplyOverridesNoSwapOnValidateFailure(t *testing.T) {
 	if len(ss.persisted) != 0 {
 		t.Fatalf("persisted despite validate failure: %v", ss.persisted)
 	}
-	if p.Load().RatePerMin != 20 {
+	if p.Load().RatePerMin != 0 {
 		t.Fatalf("live config swapped despite validate failure")
 	}
 }
@@ -356,7 +356,7 @@ func TestApplyOverridesNoSwapOnPersistFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "persist overrides") {
 		t.Fatalf("want persist error, got %v", err)
 	}
-	if p.Load().RatePerMin != 20 {
+	if p.Load().RatePerMin != 0 {
 		t.Fatalf("live config swapped despite persist failure: %d", p.Load().RatePerMin)
 	}
 }
@@ -377,7 +377,7 @@ func TestApplyOverridesEmptyNoOp(t *testing.T) {
 }
 
 func TestLoadWithOverlayOrderEnvThenDB(t *testing.T) {
-	base := mustLoad(t, minimalEnv()) // RatePerMin default 20
+	base := mustLoad(t, minimalEnv()) // RatePerMin default 0
 	ss := newFakeStore()
 	ss.data["RATE_PER_MIN"] = "77"      // DB overlay overrides env default
 	ss.data["MONTHLY_QUOTA"] = "123456" // ditto

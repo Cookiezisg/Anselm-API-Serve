@@ -38,13 +38,13 @@ for pair in \
 	'MAX_TOKENS_CAP="16384"' \
 	'MAX_MESSAGES="1024"' \
 	'MAX_MESSAGE_CHARS="262144"' \
-	'RATE_PER_MIN="8"' \
-	'DAILY_SUBLIMIT="100"' \
-	'INSTALL_GLOBAL_DAILY_CAP="100"' \
+	'RATE_PER_MIN="0"' \
+	'DAILY_SUBLIMIT="0"' \
+	'INSTALL_GLOBAL_DAILY_CAP="0"' \
 	'INSTALL_PER_FP_DAILY="0"' \
 	'INSTALL_PER_FP_COOLDOWN_SEC="0"' \
-	'INSTALL_PER_IP_HOUR="10"' \
-	'TOKEN_ANOMALY_RPM="8"'; do
+	'INSTALL_PER_IP_HOUR="0"' \
+	'TOKEN_ANOMALY_RPM="0"'; do
 	grep -Fqx "${pair}" "${STAGE}/gateway.env" || fail "missing production config: ${pair}"
 done
 (cd "${STAGE}" && sha256sum --strict -c manifest.sha256 >/dev/null) || fail "payload manifest failed"

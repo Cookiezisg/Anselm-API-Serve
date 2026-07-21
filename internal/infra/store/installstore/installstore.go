@@ -43,14 +43,16 @@ func New(writer, reader *orm.DB) *Store {
 func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.IssueResult, error) {
 	var result dinstall.IssueResult
 	err := s.w.Transaction(ctx, func(tx *orm.DB) error {
-		// gate 1: per-IP hourly (always on, min 1). Prunes stale windows (B8).
-		ok, err := bumpIPRate(ctx, tx, p.IPGate)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateIP}
-			return errGateReject
+		// gate 1: per-IP hourly (skipped when disabled). Prunes stale windows (B8).
+		if p.IPGate.Enabled {
+			ok, err := bumpIPRate(ctx, tx, p.IPGate)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				result = dinstall.IssueResult{Admitted: false, Gate: dinstall.GateIP}
+				return errGateReject
+			}
 		}
 
 		// gate 2: global daily coarse valve (skipped when disabled).
@@ -111,9 +113,9 @@ var errGateReject = errors.New("installstore: gate reject")
 // windows (B8: retain only the current window). A conditional UPDATE bumps only
 // while below the cap; RowsAffected==0 means the limit is hit.
 func bumpIPRate(ctx context.Context, tx *orm.DB, g dinstall.IPGate) (bool, error) {
-	// B8 prune: drop older windows for this key so install_ip_rate (always-on, can't
-	// be disabled) never accumulates history. Lexical compare is valid for the
-	// "2006-01-02T15" window format. Retains the current window.
+	// B8 prune: drop older windows for this key so an enabled install_ip_rate gate
+	// never accumulates history. Lexical compare is valid for the "2006-01-02T15"
+	// window format. Retains the current window.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM install_ip_rate WHERE ip_key = ? AND window_hour < ?`,
 		g.Key, g.WindowHour); err != nil {

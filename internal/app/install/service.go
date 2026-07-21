@@ -103,6 +103,7 @@ func (s *Service) Issue(ctx context.Context, req install.Request, ipKey string) 
 		Client:      req.Client,
 		Now:         now,
 		IPGate: install.IPGate{
+			Enabled:    cfg.InstallPerIPHour > 0,
 			Key:        ipKey,
 			WindowHour: now.In(cfg.Location).Format("2006-01-02T15"),
 			Max:        cfg.InstallPerIPHour,

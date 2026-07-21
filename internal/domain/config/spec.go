@@ -206,9 +206,9 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.DailySublimit, 10) }},
-		{Key: "INSTALL_PER_IP_HOUR", Tier: TierRuntimeHot, Bounded: true, Min: 1, Max: int64(MaxInstallPerIPHour),
+		{Key: "INSTALL_PER_IP_HOUR", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: int64(MaxInstallPerIPHour),
 			apply: func(c *Config, raw string) error {
-				n, err := reqInt("INSTALL_PER_IP_HOUR", raw, 1, MaxInstallPerIPHour)
+				n, err := reqInt("INSTALL_PER_IP_HOUR", raw, 0, MaxInstallPerIPHour)
 				if err == nil {
 					c.InstallPerIPHour = n
 				}
