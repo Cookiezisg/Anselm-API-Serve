@@ -19,10 +19,13 @@ import {
   Spin,
   Space,
   Button,
+  App,
+  Input,
+  Modal,
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { OverviewResponse, AlertState, ProviderStatus } from '../lib/types'
-import { getOverview, ApiError } from '../lib/api'
+import { getOverview, resetAllMonthlyQuota, ApiError } from '../lib/api'
 import { formatMicroUsd } from '../lib/money'
 
 const { Title, Text } = Typography
@@ -67,9 +70,11 @@ function ProviderCard({ name, route, state }: { name: string; route: string; sta
 }
 
 export default function Overview() {
+  const { message } = App.useApp()
   const [data, setData] = useState<OverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [resettingQuota, setResettingQuota] = useState(false)
   const timer = useRef<number | null>(null)
 
   const refresh = useCallback(async () => {
@@ -121,6 +126,55 @@ export default function Overview() {
     }
   }, [refresh])
 
+  const confirmQuotaReset = () => {
+    let reason = ''
+    Modal.confirm({
+      title: '重置全员本月请求额度？',
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 8 }}>
+          <Text>
+            此操作会清零当前月所有 install 的已用请求次数，让每个人重新获得其配置的月额度。全局支出预算和成本账本不会改变。
+          </Text>
+          <Input.TextArea
+            autoFocus
+            maxLength={256}
+            rows={3}
+            placeholder="重置原因（将记录到审计）"
+            showCount
+            onChange={(event) => {
+              reason = event.target.value
+            }}
+          />
+        </Space>
+      ),
+      okText: '确认重置',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const trimmed = reason.trim()
+        if (!trimmed) {
+          message.warning('请填写重置原因')
+          return Promise.reject(new Error('reset reason required'))
+        }
+        setResettingQuota(true)
+        try {
+          const result = await resetAllMonthlyQuota(trimmed)
+          message.success(`已重置 ${result.period} 月额度（${fmtInt(result.resetInstalls)} 个 install 有已用次数）`)
+          await refresh()
+        } catch (e) {
+          if (e instanceof ApiError) {
+            message.error(e.message)
+          } else {
+            message.error('重置额度失败')
+          }
+          throw e
+        } finally {
+          setResettingQuota(false)
+        }
+      },
+    })
+  }
+
   if (loading && !data) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
@@ -171,6 +225,29 @@ export default function Overview() {
               status={budgetPct >= 95 ? 'exception' : budgetPct >= 80 ? 'active' : 'normal'}
               style={{ marginTop: 16 }}
             />
+          </Card>
+
+          <Card
+            title="全员月请求额度"
+            style={{ marginBottom: 16 }}
+            extra={
+              <Button
+                danger
+                onClick={confirmQuotaReset}
+                loading={resettingQuota}
+                disabled={data.openReservations > 0}
+              >
+                重置全员额度
+              </Button>
+            }
+          >
+            <Space direction="vertical" size={4}>
+              <Text>将当前月所有 install 的已用请求次数清零；每人重新获得其配置的月请求额度。</Text>
+              <Text type="secondary">不会重置全局支出预算，也不会删除成本账本或历史消费。</Text>
+              {data.openReservations > 0 && (
+                <Text type="warning">当前有 {fmtInt(data.openReservations)} 个请求待结算；完成后才能安全重置。</Text>
+              )}
+            </Space>
           </Card>
 
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

@@ -561,3 +561,63 @@ func TestOpenReservationsCountsOnlyOpen(t *testing.T) {
 	}
 	_ = open
 }
+
+func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.T) {
+	s := newTestStore(t)
+	p := mustPlan(t, billing.ProviderDeepSeek, 100, 20)
+	open := reserve(t, s, "ins_open", p, limits())
+	settled := reserve(t, s, "ins_settled", p, limits())
+	if err := s.Settle(context.Background(), settled, settled.ReservedPUSD); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	if _, err := s.ResetMonthlyRequests(context.Background(), testPeriod()); !errors.Is(err, quota.ErrMonthlyResetBlocked) {
+		t.Fatalf("reset with open ledger error = %v, want ErrMonthlyResetBlocked", err)
+	}
+	if got := readMonth(t, s, "ins_open", testPeriod().Month); got != 1 {
+		t.Fatalf("blocked reset changed open install count to %d, want 1", got)
+	}
+	if err := s.Settle(context.Background(), open, open.ReservedPUSD); err != nil {
+		t.Fatalf("settle open: %v", err)
+	}
+	oldPeriod := quota.Period{Month: "2026-05", Day: "2026-05-31"}
+	oldOpen, err := s.Reserve(context.Background(), "ins_previous", p, oldPeriod, limits())
+	if err != nil {
+		t.Fatalf("reserve old-period request: %v", err)
+	}
+	if _, err := s.ResetMonthlyRequests(context.Background(), testPeriod()); !errors.Is(err, quota.ErrMonthlyResetBlocked) {
+		t.Fatalf("reset with old-period open ledger error = %v, want ErrMonthlyResetBlocked", err)
+	}
+	if err := s.Settle(context.Background(), oldOpen, oldOpen.ReservedPUSD); err != nil {
+		t.Fatalf("settle old-period request: %v", err)
+	}
+
+	beforeSpend, beforeRequests := readGlobalMonth(t, s, testPeriod().Month)
+	reset, err := s.ResetMonthlyRequests(context.Background(), testPeriod())
+	if err != nil {
+		t.Fatalf("reset monthly requests: %v", err)
+	}
+	if reset != 2 {
+		t.Fatalf("reset installs = %d, want 2", reset)
+	}
+	for _, id := range []string{"ins_open", "ins_settled"} {
+		if got := readMonth(t, s, id, testPeriod().Month); got != 0 {
+			t.Fatalf("%s month count = %d, want 0", id, got)
+		}
+	}
+	afterSpend, afterRequests := readGlobalMonth(t, s, testPeriod().Month)
+	if afterSpend != beforeSpend || afterRequests != beforeRequests {
+		t.Fatalf("quota reset changed global month spend/request stats: before=(%d,%d) after=(%d,%d)",
+			beforeSpend, beforeRequests, afterSpend, afterRequests)
+	}
+
+	// A reservation made after the reset belongs entirely to the fresh counter;
+	// its definite-unbilled rollback must still reach exactly zero.
+	fresh := reserve(t, s, "ins_open", p, limits())
+	if err := s.Rollback(context.Background(), fresh); err != nil {
+		t.Fatalf("rollback fresh reservation: %v", err)
+	}
+	if got := readMonth(t, s, "ins_open", testPeriod().Month); got != 0 {
+		t.Fatalf("fresh rollback count = %d, want 0", got)
+	}
+}

@@ -65,6 +65,7 @@ infra 返回 `CallFailure{APIError, Exposure}`；app 只以 `Exposure.MayHaveCha
 |---|---|---|---|
 | `DISK_LOW` | 503 | service temporarily read-only: low disk space | REL-6 低磁盘只读降级（GW-INV-29），reserve 前即 shed |
 | `LOGIN_LOCKED` | 429 | too many attempts, retry later | dashboard per-IP 退避；`details.retryAfterSec`（int）+ 同步 `Retry-After` 头（GW-INV-19） |
+| `QUOTA_RESET_BUSY` | 409 | quota reset is waiting for active requests to settle | dashboard 正在重置当前月全员请求额度，但仍有 `spend_ledger.state='open'`；等待请求落到终态后重试（GW-INV-46） |
 
 ## 5. 归一与内部码
 

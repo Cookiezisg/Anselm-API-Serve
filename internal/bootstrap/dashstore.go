@@ -22,6 +22,8 @@ import (
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
+	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/orm"
 )
 
@@ -30,6 +32,29 @@ type dashStore struct {
 	w   *orm.DB
 	r   *orm.DB
 	loc *time.Location
+}
+
+// quotaResetSource supplies the dashboard's manual per-install request reset.
+// Period selection is a composition concern because RESET_TZ belongs to the
+// configured runtime; the atomic open-ledger guard and counter mutation remain
+// in quotastore's serialized writer transaction.
+type quotaResetSource struct {
+	store *quotastore.Store
+	loc   *time.Location
+	now   func() time.Time
+}
+
+func (s quotaResetSource) ResetAllMonthlyQuota(ctx context.Context) (appdash.QuotaResetResult, error) {
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	p := quota.SnapshotPeriod(now(), s.loc)
+	reset, err := s.store.ResetMonthlyRequests(ctx, p)
+	if err != nil {
+		return appdash.QuotaResetResult{}, err
+	}
+	return appdash.QuotaResetResult{Period: p.Month, ResetInstalls: reset}, nil
 }
 
 // GlobalBudget (BudgetSource): the current RESET_TZ month plus the operator

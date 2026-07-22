@@ -170,6 +170,7 @@ Kimi adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 | `POST /api/config` | builtin: session + CSRF；external: IAP | runtime-hot batch，全有或全无 |
 | `GET /api/installs` | builtin: session；external: IAP | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
 | `POST /api/installs/ban` / `unban` | builtin: session + CSRF；external: IAP | install 状态变更 |
+| `POST /api/quota/reset` | builtin: session + CSRF；external: IAP | body `{reason}`（非空，审计原因）；原子清零当前 `RESET_TZ` 月所有 `quota_monthly.requests>0`，返回 `{period,resetInstalls}`；任何 `spend_ledger(open)` 存在时 `409 QUOTA_RESET_BUSY`；绝不改 pUSD 钱包、日统计或 ledger 历史 |
 | `GET /api/audit` / `GET /api/export` | builtin: session；external: IAP | 审计 / 一致 DB snapshot |
 | `GET /` | 否 | embedded SPA/static fallback |
 

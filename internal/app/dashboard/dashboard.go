@@ -11,13 +11,17 @@ package dashboard
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/install"
+	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/alert"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 )
@@ -35,6 +39,7 @@ type Deps struct {
 	Config       ConfigSource
 	Lister       InstallLister
 	Mutator      StatusMutator
+	QuotaReset   QuotaResetter
 	Export       Snapshotter
 	Logger       Logger
 	Clock        Clock
@@ -214,6 +219,39 @@ func (s *Service) Ban(ctx context.Context, actor, id, reason string) error {
 // Unban flips an install back to active (reason optional).
 func (s *Service) Unban(ctx context.Context, actor, id string) error {
 	return s.mutate(ctx, "unban", actor, id, "", install.StatusActive)
+}
+
+// ResetAllMonthlyQuota starts a fresh current-month request entitlement for all
+// installs. It intentionally does not alter spending or ledger history: this is
+// a product quota reset, never a financial-accounting reset. The port keeps the
+// open-ledger check and counter update atomic on the serialized writer.
+func (s *Service) ResetAllMonthlyQuota(ctx context.Context, actor, reason string) (QuotaResetResult, error) {
+	if len(reason) > MaxReasonChars {
+		reason = reason[:MaxReasonChars]
+	}
+	if s.d.QuotaReset == nil {
+		return QuotaResetResult{}, fmt.Errorf("dashboard: quota resetter not configured")
+	}
+
+	result, err := s.d.QuotaReset.ResetAllMonthlyQuota(ctx)
+	if err != nil {
+		if errors.Is(err, quota.ErrMonthlyResetBlocked) {
+			return QuotaResetResult{}, apierr.ErrQuotaResetBusy
+		}
+		s.d.Logger.Error("dashboard_quota_reset_failed", "event", "dashboard_audit", "error", err.Error())
+		return QuotaResetResult{}, err
+	}
+	s.audit.record(AuditEvent{
+		Action:  "quota_reset",
+		Target:  result.Period,
+		Reason:  reason,
+		Outcome: "ok",
+		Actor:   actor,
+	})
+	s.d.Logger.Warn("dashboard_quota_reset", "event", "dashboard_audit",
+		"period", result.Period, "reset_installs", result.ResetInstalls,
+		"reason", reason, "outcome", "ok", "actor", actor)
+	return result, nil
 }
 
 // ErrInstallNotFound is returned by Ban/Unban when no install matches the id.

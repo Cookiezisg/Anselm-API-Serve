@@ -121,6 +121,9 @@ var (
 
 	// ErrDiskLow — REL-6 low-disk read-only degradation (GW-INV-29).
 	ErrDiskLow = NewError(statusServiceUnavailable, "DISK_LOW", "service temporarily read-only: low disk space")
+	// ErrQuotaResetBusy — a dashboard-wide quota reset must wait until all
+	// current-month reservations have reached a terminal ledger state.
+	ErrQuotaResetBusy = NewError(statusConflict, "QUOTA_RESET_BUSY", "quota reset is waiting for active requests to settle")
 )
 
 // CodeUpstreamRejected is the wire code for an upstream-originated request

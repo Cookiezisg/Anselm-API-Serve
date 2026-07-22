@@ -142,6 +142,8 @@ audience: [human, ai]
 
 `CallFailure.APIError` 不参与状态选择：只有独立 `ChargeExposure=DefinitelyUnbilled` 调 Rollback；`ChargePossible` 以 full reservation 调 Settle。`ReconcileOrphans(cutoff)` 先从读池枚举 aged open id，再逐行在写 tx 里 CAS 为 `orphaned`。它不退款：网络/进程崩溃无法证明 provider 未收费。
 
+dashboard 的全员月请求额度重置也在同一写池事务：先检查全库 `spend_ledger(open)` 为零，才将当前月所有正的 `quota_monthly.requests` 置零。它不写 `global_spend_monthly`、三张日统计表或 `spend_ledger`；因此是权益周期操作而非成本账务修订。
+
 ## 4. 0002 从 v1 迁移
 
 ### 4.1 v1 accounting 表（迁移后只读保留）

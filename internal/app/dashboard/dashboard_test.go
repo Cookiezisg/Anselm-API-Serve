@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/install"
+	"github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 )
 
@@ -102,6 +104,17 @@ type fakeMutator struct {
 func (f *fakeMutator) SetStatus(_ context.Context, id string, st install.Status) (bool, error) {
 	f.calls = append(f.calls, id+":"+string(st))
 	return f.found, f.err
+}
+
+type fakeQuotaResetter struct {
+	result QuotaResetResult
+	err    error
+	calls  int
+}
+
+func (f *fakeQuotaResetter) ResetAllMonthlyQuota(context.Context) (QuotaResetResult, error) {
+	f.calls++
+	return f.result, f.err
 }
 
 type fakeSnapshotter struct {
@@ -345,6 +358,31 @@ func TestBanUnbanAuditAndNotFound(t *testing.T) {
 	ev2, _ := svc2.Audit(0, 10)
 	if len(ev2) != 1 || ev2[0].Outcome != "not_found" {
 		t.Fatalf("want one not_found audit, got %+v", ev2)
+	}
+}
+
+func TestResetAllMonthlyQuotaAuditsOnlySuccessfulReset(t *testing.T) {
+	resetter := &fakeQuotaResetter{result: QuotaResetResult{Period: "2026-07", ResetInstalls: 12}}
+	svc := New(Deps{QuotaReset: resetter})
+	got, err := svc.ResetAllMonthlyQuota(context.Background(), "admin", "new allowance window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != resetter.result || resetter.calls != 1 {
+		t.Fatalf("result/calls = (%+v,%d), want (%+v,1)", got, resetter.calls, resetter.result)
+	}
+	ev, _ := svc.Audit(0, 10)
+	if len(ev) != 1 || ev[0].Action != "quota_reset" || ev[0].Target != "2026-07" || ev[0].Reason != "new allowance window" {
+		t.Fatalf("quota reset audit = %+v", ev)
+	}
+
+	resetter.err = quota.ErrMonthlyResetBlocked
+	if _, err := svc.ResetAllMonthlyQuota(context.Background(), "admin", "retry"); !errors.Is(err, apierr.ErrQuotaResetBusy) {
+		t.Fatalf("blocked reset error = %v, want ErrQuotaResetBusy", err)
+	}
+	ev, _ = svc.Audit(0, 10)
+	if len(ev) != 1 {
+		t.Fatalf("blocked reset must not add audit event, got %+v", ev)
 	}
 }
 

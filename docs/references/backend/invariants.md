@@ -27,6 +27,7 @@ audience: [human, ai]
 | GW-INV-08 | Reserve 只接受由精确 provider/model rate card 构造且可自校验的冻结 `billing.Plan`；跨 provider raw token 绝不相加，只有 pUSD 可进入余额 | 伪造零价 plan 或把不同价格 token 当同一金额导致超卖 |
 | GW-INV-09 | Settle 从累计 usage 逐字段取最大快照，按冻结 rate card refund/top-up operator 月钱包与日统计表；任何 negative/malformed/duplicate 或 case-fold 等价 billing key 证据 sticky，后续正常帧不可洗白；missing/negative/矛盾/不可计价 usage 保留全 reservation。Kimi 退款须有正 `total_tokens≥prompt+completion` 且 reasoning≤`total-prompt`；DeepSeek cache hit+miss 不得超过 prompt，未报告部分按 miss；actual 超 quote 仍如实 top-up 并发 `billing_drift` | 多帧 usage 重复累加、last-key-wins 洗掉负数、畸形帧被后续值掩盖、未知用量被退款或已发生支出被 cap 隐藏 |
 | GW-INV-10 | DeepSeek quote=`UTF-8 byte-fallback prompt 上界（含 tools/tool_choice/message tool continuation 与 64 token/message framing）+ clamped output`；Kimi K2.6 compatibility 因不能证明 thinking 上界而 reserve 完整 `262,144` input + `32,768` output hard limits；任一已启用 route 的单请求 quote 必须能装入 operator 月预算，否则配置 fail-fast | 请求注定无法 reserve、byte-split tokenizer/tool 字段造成欠预留，或 Kimi hidden thinking 造成欠预留 |
+| GW-INV-46 | dashboard 手动全员月请求额度重置只可操作当前 `RESET_TZ` 月的 `quota_monthly.requests`；同一写池事务先确认全库无 `spend_ledger(state='open')` 再清零，绝不改 pUSD 钱包、日统计或 ledger 历史；请求排在 reset 后才 reserve，归属新权益窗口 | 未终态 reservation 随后 rollback 扣掉新额度、手动权益操作掩盖真实 provider 成本，或并发请求落入语义不明的周期 |
 
 ## B. 安全
 

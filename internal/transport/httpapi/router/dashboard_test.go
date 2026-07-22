@@ -45,6 +45,17 @@ func (fakeProviders) BreakerOpen(provider billing.Provider) bool {
 	return provider == billing.ProviderDeepSeek
 }
 
+type fakeQuotaResetter struct {
+	result appdash.QuotaResetResult
+	err    error
+	calls  int
+}
+
+func (f *fakeQuotaResetter) ResetAllMonthlyQuota(context.Context) (appdash.QuotaResetResult, error) {
+	f.calls++
+	return f.result, f.err
+}
+
 // countingRate proves B16: each /api/overview poll calls Snapshot independently;
 // concurrent pollers do not corrupt the shared sampler (pkg/ratesample is the real
 // implementation; we wire it directly and Observe to feed a window).
@@ -55,6 +66,9 @@ func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *m
 		Providers: fakeProviders{},
 		Rate:      sampler,
 		Config:    fakeConfig{},
+		QuotaReset: &fakeQuotaResetter{result: appdash.QuotaResetResult{
+			Period: "2026-07", ResetInstalls: 2,
+		}},
 	})
 	gate := &mwdash.Gate{Sessions: mwdash.NewSessionStore(0, nil), SecureCookie: false}
 	h, err := dashhandler.New(dashhandler.Config{
@@ -80,6 +94,9 @@ func newExternalDashHandler(t *testing.T, sampler *ratesample.Sampler) http.Hand
 		Providers: fakeProviders{},
 		Rate:      sampler,
 		Config:    fakeConfig{},
+		QuotaReset: &fakeQuotaResetter{result: appdash.QuotaResetResult{
+			Period: "2026-07", ResetInstalls: 2,
+		}},
 	})
 	h, err := dashhandler.New(dashhandler.Config{Service: svc, AuthMode: "external"})
 	if err != nil {
@@ -175,6 +192,12 @@ func TestExternalDashboardBypassesGoSessionAndCSRF(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("external session endpoint: want 404, got %d", rec.Code)
 	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("external quota reset must not require Go CSRF: got %d (%s)", rec.Code, rec.Body.String())
+	}
 }
 
 // login performs POST /login and returns the session cookie + csrf token.
@@ -248,6 +271,7 @@ func TestAllAPIRequireSession(t *testing.T) {
 		{http.MethodGet, "/api/installs"},
 		{http.MethodPost, "/api/installs/ban"},
 		{http.MethodPost, "/api/installs/unban"},
+		{http.MethodPost, "/api/quota/reset"},
 		{http.MethodGet, "/api/audit"},
 		{http.MethodGet, "/api/export"},
 	}
@@ -311,6 +335,49 @@ func TestCSRFReject(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid CSRF: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQuotaResetRequiresCSRFAndReason(t *testing.T) {
+	srv, _ := newDashHandler(t, ratesample.New(60))
+	cookie, csrf := login(t, srv, "admin", "s3cret")
+
+	// Like every dashboard mutation, quota reset cannot be CSRF-forged.
+	req := httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`))
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF: want 403, got %d", rec.Code)
+	}
+
+	// A successful, authenticated reset needs an auditable reason.
+	req = httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"  "}`))
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.AddCookie(cookie)
+	req.Header.Set(mwdash.CSRFHeader, csrf)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing reason: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`))
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.AddCookie(cookie)
+	req.Header.Set(mwdash.CSRFHeader, csrf)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("quota reset: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var result appdash.QuotaResetResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Period != "2026-07" || result.ResetInstalls != 2 {
+		t.Fatalf("quota reset result = %+v", result)
 	}
 }
 

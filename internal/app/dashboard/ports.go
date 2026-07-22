@@ -115,6 +115,22 @@ type StatusMutator interface {
 	SetStatus(ctx context.Context, id string, status install.Status) (found bool, err error)
 }
 
+// QuotaResetter atomically starts a fresh per-install request entitlement for
+// the current reset month. It never changes billed pUSD, daily statistics, or
+// spend-ledger history. The concrete store rejects the reset while a current
+// month reservation remains open, preserving reserve/rollback conservation.
+type QuotaResetter interface {
+	ResetAllMonthlyQuota(ctx context.Context) (QuotaResetResult, error)
+}
+
+// QuotaResetResult is the safe, aggregate outcome of a successful reset. An
+// install without a month row, or with zero requests already, already has all
+// of its entitlement and is not counted in ResetInstalls.
+type QuotaResetResult struct {
+	Period        string `json:"period"`
+	ResetInstalls int64  `json:"resetInstalls"`
+}
+
 // Snapshotter produces a CONSISTENT on-disk DB snapshot (VACUUM INTO a temp file)
 // and returns the path; the caller streams it then calls Cleanup. The snapshot
 // contains ONLY committed disk state — never an in-memory secret. Satisfied by an

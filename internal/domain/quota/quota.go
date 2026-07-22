@@ -27,6 +27,11 @@ var (
 	ErrSublimitExceeded = errors.New("quota: daily request sublimit exceeded")
 	// ErrBudgetExceeded — the shared monthly pUSD wallet would be exceeded.
 	ErrBudgetExceeded = errors.New("quota: global monthly spend budget exceeded")
+	// ErrMonthlyResetBlocked — a manual reset of the current month's request
+	// entitlement cannot proceed while any reservation is still open. The
+	// maintenance operation waits for all settlements, keeping its boundary
+	// simple and avoiding an overlap with an unfinished accounting mutation.
+	ErrMonthlyResetBlocked = errors.New("quota: monthly reset blocked by open reservations")
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE

@@ -116,6 +116,13 @@ export interface AuditEvent {
 
 // GET /api/audit response (api.go).
 export interface AuditResponse {
-  events: AuditEvent[] | null
-  nextCursor: string
+	events: AuditEvent[] | null
+	nextCursor: string
+}
+
+// POST /api/quota/reset response (dashboard handler): only the current reset
+// month and an aggregate count are exposed; no install-level usage is returned.
+export interface QuotaResetResponse {
+	period: string
+	resetInstalls: number
 }

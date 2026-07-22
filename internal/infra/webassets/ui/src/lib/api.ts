@@ -10,8 +10,9 @@ import type {
   DashboardAuthMode,
   OverviewResponse,
   ConfigResponse,
-  InstallsResponse,
-  AuditResponse,
+	InstallsResponse,
+	AuditResponse,
+	QuotaResetResponse,
 } from './types'
 
 // csrfToken lives ONLY in JS memory (never a cookie/localStorage): it is lost on
@@ -201,6 +202,14 @@ export function unbanInstall(installId: string): Promise<{ install_id: string; s
     body: { install_id: installId },
     csrf: true,
   })
+}
+
+export function resetAllMonthlyQuota(reason: string): Promise<QuotaResetResponse> {
+	return request<QuotaResetResponse>('/api/quota/reset', {
+		method: 'POST',
+		body: { reason },
+		csrf: true,
+	})
 }
 
 // exportUrl is the GET /api/export download href (a plain anchor navigation so the

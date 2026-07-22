@@ -261,6 +261,13 @@ type unbanRequest struct {
 	InstallID string `json:"install_id"`
 }
 
+// quotaResetRequest is deliberately reason-only: this operation always resets
+// every install's current RESET_TZ month, never an arbitrary period or a spend
+// balance. The reason is retained in the dashboard audit ring.
+type quotaResetRequest struct {
+	Reason string `json:"reason"`
+}
+
 // Ban flips an install to banned. Requires CSRF + a non-empty reason (audited).
 func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
 	if !h.requireCSRF(w, r) {
@@ -308,6 +315,35 @@ func (h *Handler) Unban(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.WriteJSON(w, http.StatusOK, map[string]string{"install_id": id, "status": "active"})
+}
+
+// ResetAllMonthlyQuota restores the configured monthly request entitlement for
+// every install in the current RESET_TZ month. It requires a non-empty audit
+// reason and never changes pUSD spending or ledger history.
+func (h *Handler) ResetAllMonthlyQuota(w http.ResponseWriter, r *http.Request) {
+	if !h.requireCSRF(w, r) {
+		return
+	}
+	var req quotaResetRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&req); err != nil {
+		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid quota reset body")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "reason is required (audited)")
+		return
+	}
+	result, err := h.svc.ResetAllMonthlyQuota(r.Context(), h.actor(r), reason)
+	if err != nil {
+		if errors.Is(err, apierr.ErrQuotaResetBusy) {
+			response.WriteError(w, apierr.ErrQuotaResetBusy)
+			return
+		}
+		response.WriteErrorWith(w, http.StatusInternalServerError, "INTERNAL", "quota reset failed")
+		return
+	}
+	response.WriteJSON(w, http.StatusOK, result)
 }
 
 // writeMutateErr maps a ban/unban error: a no-match id ⇒ 404 INSTALL_NOT_FOUND;

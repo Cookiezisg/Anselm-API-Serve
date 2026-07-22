@@ -8,6 +8,7 @@ import (
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/infra/sqlite"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
 )
 
 func newDashStoreTestDB(t *testing.T) *sqlite.DB {
@@ -121,5 +122,46 @@ func TestDashStoreListsTodaySpendInMicroUSDFromNewTable(t *testing.T) {
 	}
 	if rows[1].ID != "ins_old" || rows[1].TodaySpendMicroUSD != 0 {
 		t.Fatalf("older row = %+v, want ins_old with zero spend", rows[1])
+	}
+}
+
+func TestQuotaResetSourceResetsOnlyTheCurrentMonth(t *testing.T) {
+	db := newDashStoreTestDB(t)
+	ctx := context.Background()
+	if _, err := db.Writer.Exec(ctx, `
+		INSERT INTO quota_monthly(install_id, period_month, requests) VALUES
+		('ins_current_1', '2026-07', 7),
+		('ins_current_2', '2026-07', 3),
+		('ins_previous', '2026-06', 9)`); err != nil {
+		t.Fatalf("seed monthly quota: %v", err)
+	}
+	source := quotaResetSource{
+		store: quotastore.New(db.Writer, db.Reader),
+		loc:   time.UTC,
+		now:   func() time.Time { return time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC) },
+	}
+	got, err := source.ResetAllMonthlyQuota(ctx)
+	if err != nil {
+		t.Fatalf("reset monthly quota: %v", err)
+	}
+	if got.Period != "2026-07" || got.ResetInstalls != 2 {
+		t.Fatalf("reset result = %+v, want current period / two installs", got)
+	}
+	for _, tc := range []struct {
+		id, period string
+		want       int64
+	}{
+		{"ins_current_1", "2026-07", 0},
+		{"ins_current_2", "2026-07", 0},
+		{"ins_previous", "2026-06", 9},
+	} {
+		var requests int64
+		if err := db.Reader.QueryRow(ctx,
+			`SELECT requests FROM quota_monthly WHERE install_id = ? AND period_month = ?`, tc.id, tc.period).Scan(&requests); err != nil {
+			t.Fatalf("read %s/%s: %v", tc.id, tc.period, err)
+		}
+		if requests != tc.want {
+			t.Fatalf("%s/%s requests = %d, want %d", tc.id, tc.period, requests, tc.want)
+		}
 	}
 }

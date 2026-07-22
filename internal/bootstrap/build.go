@@ -289,6 +289,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 			Config:       dashCfgSource{p: cfgP, ss: ss},
 			Lister:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
 			Mutator:      dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
+			QuotaReset:   quotaResetSource{store: quotaStore, loc: effective.Location},
 			Export:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
 			Logger:       dashLogger{l: log},
 		})

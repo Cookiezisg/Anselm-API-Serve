@@ -443,6 +443,39 @@ func (s *Store) OpenReservations(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// ResetMonthlyRequests resets every install's request counter for p.Month. It
+// is deliberately narrower than a billing reset: spend aggregates and ledger
+// history stay untouched. The open-ledger guard and the UPDATE share one
+// serialized writer transaction, so an earlier reservation cannot later roll
+// back into the newly reset counter. Reservations queued behind this operation
+// are unambiguously part of the new entitlement window.
+func (s *Store) ResetMonthlyRequests(ctx context.Context, p quota.Period) (int64, error) {
+	var reset int64
+	err := s.writer.Transaction(ctx, func(tx *orm.DB) error {
+		var open int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM spend_ledger WHERE state = ?`, stateOpen).Scan(&open); err != nil {
+			return fmt.Errorf("quotastore: count open reservations: %w", err)
+		}
+		if open != 0 {
+			return quota.ErrMonthlyResetBlocked
+		}
+
+		res, err := tx.Exec(ctx,
+			`UPDATE quota_monthly SET requests = 0 WHERE period_month = ? AND requests > 0`,
+			p.Month)
+		if err != nil {
+			return fmt.Errorf("quotastore: reset monthly requests: %w", err)
+		}
+		reset, err = rowsAffected(res)
+		if err != nil {
+			return fmt.Errorf("quotastore: reset monthly request rows: %w", err)
+		}
+		return nil
+	})
+	return reset, err
+}
+
 type conditionalMiss struct{ op string }
 
 func (e *conditionalMiss) Error() string { return "quotastore: " + e.op + ": condition not met" }

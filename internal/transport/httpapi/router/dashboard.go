@@ -45,6 +45,7 @@ func BuildDashboardHandler(d DashboardDeps) http.Handler {
 		mux.Handle("GET /api/installs", requireSession(http.HandlerFunc(d.Handler.Installs)))
 		mux.Handle("POST /api/installs/ban", requireSession(http.HandlerFunc(d.Handler.Ban)))
 		mux.Handle("POST /api/installs/unban", requireSession(http.HandlerFunc(d.Handler.Unban)))
+		mux.Handle("POST /api/quota/reset", requireSession(http.HandlerFunc(d.Handler.ResetAllMonthlyQuota)))
 		mux.Handle("GET /api/audit", requireSession(http.HandlerFunc(d.Handler.Audit)))
 		mux.Handle("GET /api/export", requireSession(http.HandlerFunc(d.Handler.Export)))
 	} else {
@@ -54,6 +55,7 @@ func BuildDashboardHandler(d DashboardDeps) http.Handler {
 		mux.HandleFunc("GET /api/installs", d.Handler.Installs)
 		mux.HandleFunc("POST /api/installs/ban", d.Handler.Ban)
 		mux.HandleFunc("POST /api/installs/unban", d.Handler.Unban)
+		mux.HandleFunc("POST /api/quota/reset", d.Handler.ResetAllMonthlyQuota)
 		mux.HandleFunc("GET /api/audit", d.Handler.Audit)
 		mux.HandleFunc("GET /api/export", d.Handler.Export)
 	}
