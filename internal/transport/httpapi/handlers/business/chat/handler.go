@@ -6,6 +6,7 @@
 package chat
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
@@ -56,16 +57,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read the body here (not in the use case) so app/chat stays net/http-free.
-	// A read error (incl. MaxBytesReader over-cap) is surfaced as BodyError; the
-	// use case turns it into 400 at the body gate, in cheapest-first order.
+	// A read error is surfaced as BodyError; MaxBytesReader over-cap is marked
+	// separately so the use case returns precise 413 instead of malformed-JSON
+	// 400 or a misleading model-context error.
 	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.bodyLimit))
+	var maxBytesErr *http.MaxBytesError
 
 	in := appchat.HandleInput{
-		InstallID: installID,
-		Body:      body,
-		BodyError: bodyErr,
-		IPKey:     clientip.Key(clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"))),
-		RequestID: w.Header().Get("X-Request-ID"), // set by Recover middleware.
+		InstallID:    installID,
+		Body:         body,
+		BodyError:    bodyErr,
+		BodyTooLarge: errors.As(bodyErr, &maxBytesErr),
+		IPKey:        clientip.Key(clientip.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"))),
+		RequestID:    w.Header().Get("X-Request-ID"), // set by Recover middleware.
 	}
 
 	sink := newSink(w)

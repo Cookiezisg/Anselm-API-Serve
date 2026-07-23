@@ -97,8 +97,11 @@ type HandleInput struct {
 	InstallID string
 	Body      []byte
 	BodyError error // non-nil ⇒ body read failed/over-cap (transport surfaces it).
-	IPKey     string
-	RequestID string
+	// BodyTooLarge distinguishes the exact transport memory envelope from a
+	// malformed body. It must never be reported as a model-context failure.
+	BodyTooLarge bool
+	IPKey        string
+	RequestID    string
 }
 
 // Handle runs the EXACT cheapest-first gate order then the reserve→forward→settle
@@ -146,6 +149,10 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 3) Body read result + strict decode + non-empty messages.
+	if in.BodyTooLarge {
+		writeErr(sink, apierr.ErrRequestBodyTooLarge)
+		return
+	}
 	if in.BodyError != nil {
 		writeErr(sink, apierr.ErrBadRequest)
 		return
@@ -198,18 +205,18 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 
-	// 5) Input-token cap. Text requests count their whole body. Multimodal
-	// requests count text + tool schemas but not base64 bytes: Kimi tokenizes
-	// decoded image/audio rather than their transport encoding, while media size
-	// is already bounded by the strict cumulative MediaLimits above. A provider
-	// media-context rejection remains an explicit 400 UPSTREAM_REJECTED.
+	// 5) Build a conservative prompt quote for accounting only. This is a
+	// byte-level upper bound, not the selected provider's tokenizer, so it MUST
+	// NOT decide whether a request fits the model. Exact shape/body/media guards
+	// above protect gateway resources; the upstream model is the sole context
+	// authority and normalizes a real rejection to UPSTREAM_REJECTED.
+	//
+	// Multimodal quotes exclude base64 transport bytes: Kimi tokenizes decoded
+	// media rather than its wire encoding, and Kimi's plan reserves the complete
+	// model input hard limit below.
 	promptEst := req.PromptEstimate()
 	if modality == domchat.ModalityMultimodal {
 		promptEst = req.TextPromptEstimate()
-	}
-	if cfg.InputTokenCap > 0 && promptEst > cfg.InputTokenCap {
-		writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large"))
-		return
 	}
 
 	// 6) Bound caller-owned max_tokens for this exact model, then freeze a
@@ -282,9 +289,6 @@ func billingPlan(provider billing.Provider, model string, req domchat.InboundReq
 		// fault, never something a client's model string can repair.
 		return billing.Plan{}, apierr.Internal()
 	}
-	if promptEst > card.InputLimit {
-		return billing.Plan{}, apierr.NewError(apierr.ErrBadRequest.Status, "BAD_REQUEST", "input too large")
-	}
 	if provider == billing.ProviderKimi {
 		plan, err := billing.NewPlan(provider, model, billing.InputStandard, card.InputLimit, card.OutputLimit)
 		if err != nil {
@@ -292,7 +296,13 @@ func billingPlan(provider billing.Provider, model string, req domchat.InboundReq
 		}
 		return plan, nil
 	}
-	plan, err := billing.NewPlan(provider, model, billing.InputStandard, promptEst, maxTok)
+	// The byte upper bound can exceed the model token limit while the real
+	// tokenizer input still fits. Reserve the largest amount the provider could
+	// possibly accept, forward, and settle from authoritative usage. This keeps
+	// the wallet proof conservative without turning an accounting estimate into
+	// a false context gate.
+	promptQuote := min64(promptEst, card.InputLimit)
+	plan, err := billing.NewPlan(provider, model, billing.InputStandard, promptQuote, maxTok)
 	if err != nil {
 		return billing.Plan{}, apierr.Internal()
 	}

@@ -29,12 +29,12 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 - **记账**:请求先冻结 provider/model/rate card 并换算为整数 pUSD；per-install 月请求额度 + operator 全局月 pUSD 钱包在单 `BEGIN IMMEDIATE` **双闸原子预留**，日表只做统计/审计。仅明确未计费可 rollback；provider `Open` 尝试后的 timeout/connect/error/client-cancel 等歧义结果按 full quote settle。`spend_ledger.state='open'` 终态 CAS 单赢家，period 入口快照一次贯穿，orphan 不退钱；崩溃只多扣不少扣。
 - **安全**:DeepSeek/Kimi 各自只在 cloned request 注入 provider-local key，redirect/上游 header/body/error 原文不得带 key 离端或透传；客户端无 bearer，install 以 Ed25519 公钥登记、逐请求 proof 绑定 authority/target/body 并防重放；admin/metrics/pprof + 管理后台仅 loopback(绑定 fail-fast、不上公网)；日志/指标无 key/prompt/media/proof/ip，label 仅低基数闭集；XFF 仅信回环直连对端。
 - **可靠**:两 provider 共享唯一 N_global，但 endpoint/key pool/per-key health/process breaker 物理隔离；选定后无 fallback、无跨池 key。**故障分类排除 client-cancel、429 与 400/413/422 请求拒绝**(不触进程 breaker)；其他显式 3xx/4xx 拒绝可证明未计费，但仍与 provider health 分类正交；多 key/排队/retry 不放大总在飞；关停 DB 最后关(bgWG 排空)。
-- **输入/路由**:严格 top-level/content-part 关闭联合类，拒 `n>1`；客户端 `model` 只是逻辑 alias、绝不选 provider。完整 history 皆文本→DeepSeek，任一合法 user inline jpeg/png/webp 图片或 mp4 视频→Kimi；合法 wav/mp3 `input_audio` 先完成协议/形状/bytes 校验，再在 reserve/Open 前固定 `503 AUDIO_UNAVAILABLE`（当前无音频上游）。远程 URL/PDF/file 一律拒绝。Kimi 未配置时文本/readiness 正常，合法图片/视频固定 `503 MULTIMODAL_UNAVAILABLE`。`MAX_BODY_BYTES` 默认 256KiB，media 再受 parts/decoded-byte 上限；`INPUT_TOKEN_CAP` 只限文本/tools estimate。provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`(闭集 reason、原文不透传、非故障非重试)。
+- **输入/路由**:严格 top-level/content-part 关闭联合类，拒 `n>1`；客户端 `model` 只是逻辑 alias、绝不选 provider。完整 history 皆文本→DeepSeek，任一合法 user inline jpeg/png/webp 图片或 mp4 视频→Kimi；合法 wav/mp3 `input_audio` 先完成协议/形状/bytes 校验，再在 reserve/Open 前固定 `503 AUDIO_UNAVAILABLE`（当前无音频上游）。远程 URL/PDF/file 一律拒绝。Kimi 未配置时文本/readiness 正常，合法图片/视频固定 `503 MULTIMODAL_UNAVAILABLE`。body/message/media 形状有界；`INPUT_TOKEN_CAP` 仅兼容保留，UTF-8 estimate 只做 DeepSeek 报价、**绝不准入拒绝**，真实 context hard limit 由 provider 判定。provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`(闭集 reason、原文不透传、非故障非重试)；本地/边缘 body cap 统一 `413 REQUEST_BODY_TOO_LARGE`。
 
 ## 4. 工作流(切片纪律)
 
 地基优先的 Clean Arch 重写**已完成**并落 `main`;后续每处改动仍按同一纪律走:`domain → app → infra → transport → 测试 → ref 文档`，GW-INV 当验收。
-- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 是重写期的抽取契约、现已 landed/superseded，作历史参考非现行准绳。当前 capability/provider/pUSD 决策以 ADR-0012 为准；ADR-001 raw-token 账本及 ADR-005/006 被其定向取代的部分只是历史。
+- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 是重写期的抽取契约、现已 landed/superseded，作历史参考非现行准绳。capability/provider/pUSD 主决策见 ADR-0012，上下文准入与 route profile 由 ADR-0016 定向补充；ADR-001 raw-token 账本及 ADR-005/006 被取代部分只是历史。
 
 ## 5. 门禁命令
 

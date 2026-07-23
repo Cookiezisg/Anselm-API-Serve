@@ -100,7 +100,7 @@ func TestSemanticsMonthlySpendMustBePositive(t *testing.T) {
 
 func TestSemanticsMultimodalQuoteVsMonthlyBudget(t *testing.T) {
 	c := validBase()
-	c.GlobalMonthlySpendPUSD = 100_000_000_000 // $0.10: above text, below Kimi hard quote.
+	c.GlobalMonthlySpendPUSD = 200_000_000_000 // $0.20: above full text quote, below Kimi hard quote.
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
 		t.Fatalf("want quote>monthly-budget error, got %v", err)
@@ -124,10 +124,10 @@ func TestSemanticsKimiDisabledDoesNotConstrainTextStartup(t *testing.T) {
 	c := validBase()
 	c.KimiAPIKeys = nil
 	c.MultimodalUpstreamModel = "inactive-unknown-model"
-	// $0.10 is safely above this text fixture's worst quote, but below the
+	// $0.20 is safely above the complete text-model quote, but below the
 	// conservative Kimi full-model quote. With no Kimi credential, only the
 	// text route is active and startup must remain healthy.
-	c.GlobalMonthlySpendPUSD = 100_000 * billing.PicoUSDPerMicroUSD
+	c.GlobalMonthlySpendPUSD = 200_000 * billing.PicoUSDPerMicroUSD
 	if err := c.ValidateSemantics(); err != nil {
 		t.Fatalf("inactive Kimi constrained text-only startup: %v", err)
 	}

@@ -30,10 +30,10 @@
 }
 
 {$GATEWAY_DOMAIN} {
-	# 边缘请求体上限:与网关 MAX_BODY_BYTES(deploy.yml,5MiB)对齐,超限在边缘
+	# 边缘请求体上限:与网关 MAX_BODY_BYTES(deploy.yml,8MiB)对齐,超限在边缘
 	# 即拒(413),不进网关缓冲。改 MAX_BODY_BYTES 时同步改这里。
 	request_body {
-		max_size 5MiB
+		max_size 8MiB
 	}
 	# request_body rejects before Go can render its canonical API envelope. Map
 	# that one edge-generated error back onto the same public contract; all other
@@ -42,7 +42,7 @@
 	handle_errors {
 		@body_too_large expression {http.error.status_code} == 413
 		header @body_too_large Content-Type "application/json"
-		respond @body_too_large `{"error":{"code":"BAD_REQUEST","message":"invalid request body"}}` 400
+		respond @body_too_large `{"error":{"code":"REQUEST_BODY_TOO_LARGE","message":"request body exceeds the configured size limit"}}` 413
 	}
 
 	# 流式 SSE:关闭缓冲,逐帧即时下发(否则 Caddy 会缓冲住流式 token)。

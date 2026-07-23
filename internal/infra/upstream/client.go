@@ -539,7 +539,11 @@ func rejectionReason(body io.Reader) string {
 	}
 	msg := strings.ToLower(env.Error.Message)
 	switch {
-	case strings.Contains(msg, "context length"):
+	case strings.Contains(msg, "context length"),
+		strings.Contains(msg, "context window"),
+		strings.Contains(msg, "input too large"),
+		strings.Contains(msg, "too many input tokens"),
+		strings.Contains(msg, "maximum input"):
 		return apierr.RejectedContextLength
 	case strings.Contains(msg, "max_tokens"):
 		return apierr.RejectedMaxTokens

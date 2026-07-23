@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dmodel "github.com/sunweilin/anselm/gateway/internal/domain/model"
 )
@@ -16,7 +17,10 @@ type fakeCfg struct{ c *config.Config }
 func (f *fakeCfg) Load() *config.Config { return f.c }
 
 func TestListExposesOneLogicalModel(t *testing.T) {
-	cat := New(&fakeCfg{c: &config.Config{PublicModelID: "anselm-auto"}})
+	cat := New(&fakeCfg{c: &config.Config{
+		PublicModelID: "anselm-auto", MaxTokensCap: 16_384,
+		DeepSeekAPIKeys: []string{"text"}, KimiAPIKeys: []string{"media"},
+	}})
 	env := cat.List()
 	if env.Object != dmodel.ObjectList {
 		t.Fatalf("object = %q want list", env.Object)
@@ -27,6 +31,12 @@ func TestListExposesOneLogicalModel(t *testing.T) {
 	m := env.Data[0]
 	if m.ID != "anselm-auto" || m.Object != dmodel.ObjectModel || m.OwnedBy != dmodel.OwnedBy {
 		t.Fatalf("data[0] = %+v", m)
+	}
+	if m.AnselmCapabilities == nil ||
+		m.AnselmCapabilities.Text.InputLimit != billing.DeepSeekInputLimit ||
+		m.AnselmCapabilities.Multimodal.InputLimit != billing.KimiInputLimit ||
+		m.AnselmCapabilities.Text.OutputLimit != 16_384 {
+		t.Fatalf("route capabilities = %+v", m.AnselmCapabilities)
 	}
 }
 

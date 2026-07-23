@@ -189,7 +189,7 @@ func TestEstimateBoundsEveryForwardedMessageByte(t *testing.T) {
 
 func TestBoundMaxTokens(t *testing.T) {
 	wire, quote := BoundMaxTokens(nil, 100)
-	if wire != nil || quote != 100 {
+	if wire == nil || *wire != 100 || quote != 100 {
 		t.Fatalf("absent client max_tokens: wire=%v quote=%d", wire, quote)
 	}
 	client := int64(7)

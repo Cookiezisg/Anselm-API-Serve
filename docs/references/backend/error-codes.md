@@ -34,7 +34,8 @@ audience: [human, ai]
 | `QUOTA_EXHAUSTED` | 429 | monthly free-tier quota exhausted | 月度免费额度耗尽 |
 | `UPSTREAM_BUSY` | 429 | upstream capacity is busy, retry shortly | shared queue 满/超时、provider/process breaker open、provider 429；当前 CallFailure 为明确未计费，rollback；429 本身不自动 retry |
 | `BUDGET_EXHAUSTED` | **402** | daily service budget reached, try again tomorrow | 所选 provider 或 shared global 日 pUSD 钱包到顶；注意是 402 非 429 |
-| `BAD_REQUEST` | 400 | invalid request body | body/shape/content 非法，含 n>1、unsupported/remote media、media limits、文本输入 cap、quote 超 install 日容量；生产 Caddy 的 5MiB edge cap 也把原生 413 归一为同一 JSON/status，不暴露第二套 wire 契约 |
+| `BAD_REQUEST` | 400 | invalid request body | body JSON/shape/content 非法，含 n>1、unsupported/remote media、media limits、quote 无法装入配置预算；不含 context estimate 与 body byte cap |
+| `REQUEST_BODY_TOO_LARGE` | **413** | request body exceeds the configured size limit | Go MaxBytesReader 或生产 Caddy 8MiB edge cap；两层同一 JSON/status |
 | `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 请求含合法 media，但 deployment 未配置 `KIMI_API_KEY`；reserve/Open 前拒绝；文本能力仍正常；无 fallback |
 | `AUDIO_UNAVAILABLE` | **503** | audio input is not available on this deployment | 请求含合法 `input_audio`，但当前路由表无音频上游；严格校验后、reserve/Open 前拒绝；不受 `KIMI_API_KEY` 是否配置影响；无 fallback |
 | `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |

@@ -87,7 +87,7 @@ func TestLoadBaseDefaults(t *testing.T) {
 		t.Fatalf("DeepSeekBaseURL = %q", c.DeepSeekBaseURL)
 	}
 	// Spec defaults.
-	if c.MonthlyQuota != 5000 || c.MaxTokensCap != 4096 || c.InputTokenCap != 16384 {
+	if c.MonthlyQuota != 5000 || c.MaxTokensCap != 4096 || c.InputTokenCap != 0 {
 		t.Fatalf("numeric defaults wrong: quota=%d maxtok=%d input=%d", c.MonthlyQuota, c.MaxTokensCap, c.InputTokenCap)
 	}
 	if c.MaxMessages != 256 || c.MaxMessageChars != 131072 || c.NGlobalConcurrency != 8 {
@@ -124,9 +124,9 @@ func TestLoadBaseMaxBodyBytesExplicit(t *testing.T) {
 	}
 }
 
-func TestLoadBaseInputTokenCapZeroDisables(t *testing.T) {
-	// INPUT_TOKEN_CAP=0 disables the input estimate gate — must load without error
-	// The text model's own context limit becomes the request-time guard; land 0.
+func TestLoadBaseInputTokenCapZeroCompatibilityValue(t *testing.T) {
+	// The deprecated key still parses so old env/settings remain bootable, but
+	// its value no longer affects request admission.
 	env := minimalEnv()
 	env["INPUT_TOKEN_CAP"] = "0"
 	c := mustLoad(t, env)
@@ -183,7 +183,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 		{"pow secret required", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enforce" }, nil, "CONFIG_POW_SECRET_REQUIRED"},
 		{"per-req exceeds monthly budget", func(m map[string]string) {
 			m["KIMI_API_KEY"] = "gem-key"
-			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "100000"
+			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
 		}, nil, "multimodal hard-limit quote"},
 		{"dashboard builtin missing password", func(m map[string]string) {
 			m["DASHBOARD_AUTH_MODE"] = "builtin"
@@ -216,7 +216,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 
 func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveKimi(t *testing.T) {
 	env := minimalEnv()
-	env["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "100000"
+	env["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
 	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
 	if _, err := LoadBase(envMap(env)); err != nil {
 		t.Fatalf("Kimi-disabled deployment should validate only active text cost: %v", err)

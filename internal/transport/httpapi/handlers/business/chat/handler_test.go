@@ -75,11 +75,11 @@ func TestHandler_InjectedBodyLimitEnforced(t *testing.T) {
 	r.Header.Set("X-Anselm-Install-ID", "ins_test")
 	rec := httptest.NewRecorder()
 	over.ServeHTTP(rec, r)
-	if rec.Code != 400 {
-		t.Fatalf("body over injected limit want 400, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != 413 {
+		t.Fatalf("body over injected limit want 413, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "BAD_REQUEST") {
-		t.Fatalf("over-cap envelope want BAD_REQUEST, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "REQUEST_BODY_TOO_LARGE") {
+		t.Fatalf("over-cap envelope want REQUEST_BODY_TOO_LARGE, got %s", rec.Body.String())
 	}
 
 	fits := New(newService(t, stubUpstream{body: `{"usage":{"total_tokens":1}}`}), int64(len(body)))

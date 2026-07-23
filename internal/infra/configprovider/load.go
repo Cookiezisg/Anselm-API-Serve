@@ -81,8 +81,10 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.GlobalMonthlySpendPUSD = monthlySpendMicro * billing.PicoUSDPerMicroUSD
 
 	c.MaxTokensCap = g.boundedInt64("MAX_TOKENS_CAP", 4096, 1, config.MaxTokensCap)
-	// INPUT_TOKEN_CAP=0 disables the input estimate gate (upstream model judges).
-	c.InputTokenCap = g.boundedInt64("INPUT_TOKEN_CAP", 16384, 0, config.MaxInputTokenCap)
+	// Compatibility-only legacy knob. Context admission is always delegated to
+	// the selected upstream; keep parsing the value so old deployments roll
+	// forward without an unknown/invalid setting.
+	c.InputTokenCap = g.boundedInt64("INPUT_TOKEN_CAP", 0, 0, config.MaxInputTokenCap)
 	c.MaxMessages = g.boundedInt("MAX_MESSAGES", 256, 1, config.MaxMessages)
 	c.MaxMessageChars = g.boundedInt("MAX_MESSAGE_CHARS", 131072, 1, config.MaxMessageChars)
 	// Default mirrors domain/chat.BodyDecodeLimit (the historical 256KiB contract).

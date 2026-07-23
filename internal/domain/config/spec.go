@@ -87,9 +87,10 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.MaxTokensCap, 10) }},
-		// INPUT_TOKEN_CAP=0 disables the gateway-side input estimate gate entirely
-		// (the upstream model's own context limit is the judge; its 4xx rejection is
-		// relayed as 400 UPSTREAM_REJECTED). The reservation still uses the estimate.
+		// INPUT_TOKEN_CAP is retained only so an existing dashboard/env overlay can
+		// roll through this release without becoming invalid. It has no admission
+		// effect: byte estimates are accounting bounds, while the upstream model is
+		// the context authority.
 		{Key: "INPUT_TOKEN_CAP", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxInputTokenCap,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("INPUT_TOKEN_CAP", raw, 0, MaxInputTokenCap)

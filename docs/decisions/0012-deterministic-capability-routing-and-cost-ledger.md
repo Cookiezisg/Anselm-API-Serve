@@ -11,6 +11,8 @@ audience: [human, ai]
 
 # 0012 — 确定性 capability 路由、provider 隔离与 pUSD 成本账本
 
+> 上下文准入、route capability 发布及 absent `max_tokens` 的现行决策见 [ADR-0016](0016-provider-authoritative-context-admission.md)；它定向取代本文当时的单值 256K 展示与 omitted-wire 行为，其余路由/账本决策不变。
+
 ## 背景 / Context
 
 网关同时提供纯文本与多模态能力，但两个上游的能力、计价和故障域不同：DeepSeek V4 Flash 是文本模型；Kimi K2.6 接受本文限定的图像/视频输入。不同 provider 的 token 价格不可直接相加，Kimi OpenAI compatibility 的 thinking token 与 usage 字段也不能证明一个比模型硬上限更小的账单上界。

@@ -208,8 +208,9 @@ func estimatePromptTokens(msgs []Message, includeMediaPayload bool) int64 {
 
 // BoundMaxTokens returns the provider wire max_tokens plus the output-token quote
 // used by accounting. A positive client max_tokens is respected, but never above
-// the operator/model cap. An absent or non-positive client value is omitted on
-// the wire while accounting still reserves the cap as the conservative bound.
+// the operator/model cap. An absent or non-positive value becomes the explicit
+// cap on the wire as well as in accounting: input headroom and reservation must
+// describe the same request, independent of a provider's changing default.
 func BoundMaxTokens(client *int64, capTok int64) (*int64, int64) {
 	if client != nil && *client > 0 {
 		v := *client
@@ -218,7 +219,8 @@ func BoundMaxTokens(client *int64, capTok int64) (*int64, int64) {
 		}
 		return &v, v
 	}
-	return nil, capTok
+	v := capTok
+	return &v, v
 }
 
 // Sanitize builds the provider-independent body from a decoded inbound request:
@@ -283,17 +285,16 @@ func (in InboundRequest) ShapeError(maxMessages, maxChars int) string {
 	return CheckMessageShape(in.Messages, maxMessages, maxChars)
 }
 
-// PromptEstimate is the full input-side estimate: prompt tokens (messages) plus
-// both opaque tool-definition fields. Both the input cap check and the reserve
-// estimate use THIS value so no forwarded tool JSON is silently free.
+// PromptEstimate is the conservative accounting estimate for messages plus
+// both opaque tool-definition fields. It is deliberately not a tokenizer and
+// must never be used for request admission.
 func (in InboundRequest) PromptEstimate() int64 {
 	return EstimatePromptTokens(in.Messages) + EstimateRawTokens(in.Tools) + EstimateRawTokens(in.ToolChoice)
 }
 
-// TextPromptEstimate is the gateway-side context estimate used for a
-// multimodal request's INPUT_TOKEN_CAP/model precheck. Binary media is governed
-// by MediaLimits and provider tokenization; text and tool schemas remain fully
-// counted here.
+// TextPromptEstimate is the text/tool portion of a multimodal request's
+// accounting evidence. Binary media is governed by MediaLimits, Kimi's full
+// hard-limit reservation, and provider tokenization.
 func (in InboundRequest) TextPromptEstimate() int64 {
 	return EstimateTextPromptTokens(in.Messages) + EstimateRawTokens(in.Tools) + EstimateRawTokens(in.ToolChoice)
 }

@@ -86,6 +86,11 @@ func TestRejectionReason(t *testing.T) {
 			want: apierr.RejectedContextLength,
 		},
 		{
+			name: "provider input too large wording",
+			body: `{"error":{"message":"input too large"}}`,
+			want: apierr.RejectedContextLength,
+		},
+		{
 			name: "garbage non-JSON body",
 			body: "<html><body>upstream proxy said no</body></html>",
 			want: apierr.RejectedInvalid,

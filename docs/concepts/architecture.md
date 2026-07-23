@@ -92,7 +92,7 @@ DeepSeek key 是启动必需；Kimi key 可稍后配置。缺 Kimi 只关闭多�
 | 2 | diskguard、body cap、strict decode、messages/文本 shape | 400/503；无 reserve |
 | 3 | 完整 history 验证 content union；base64/MIME/magic/role/media totals | 400；无 reserve |
 | 4 | capability 二分；检查选中 backend 是否 configured | Kimi 缺 key→503；无 reserve |
-| 5 | 文本/tools estimate cap；模型 input hard limit；固定输出档位 | 400；无 reserve |
+| 5 | 固定显式输出档位；文本/tools byte estimate 仅生成保守 quote（clamp 到模型 input hard limit） | quote/config 不可承受才拒；不按 estimate 判 context |
 | 6 | 冻结 provider/model/rate-card Plan；Kimi 按 full hard limits quote | 无精确 card/quote 不可装入 install cap→fail closed/400 |
 | 7 | 单事务 reserve 月额度 + install/provider/global 三 pUSD 钱包 | 429 quota/rate 或 402 budget |
 | 8 | provider-local breaker fast path + shared N_global 有界排队 | Open 前失败，完整 rollback |
@@ -127,7 +127,7 @@ Plan = provider + actual model + rate-card version
      + input class + input/output quote + reserved pUSD
 ```
 
-内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + 每消息 64 token framing 余量）和固定输出档位；Kimi compatibility 不能证明 hidden thinking 的较小上界，所以 reserve 模型完整 input/output hard limits，usage 可证明后再 refund。流式累计 usage 逐字段取最大值而不求和；任一帧出现负数/畸形证据会 sticky 到终局，不能被后续较大正常值洗白。Kimi 只有正且不小于 `prompt+completion` 的 `total_tokens` 才可能退款；DeepSeek 的 cache hit/miss 合计不得超过 prompt，未报告部分按 miss。`INPUT_TOKEN_CAP` 只挡文本/tools estimate；media 用 part/decoded-byte 上限控制内存与形状，实际 media token 由 Kimi 判定，但绝不会削弱 full-limit 成本预留。
+内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + framing 余量）和固定输出档位；该上界只为防少预留，超过 1M 时 quote clamp 到模型 input limit，绝不当 tokenizer/context 准入判断。Kimi compatibility 不能证明 hidden thinking 的较小上界，所以 reserve 模型完整 input/output hard limits，usage 可证明后再 refund。流式 usage 逐字段取最大值而不求和；畸形证据 sticky。`INPUT_TOKEN_CAP` 仅兼容保留；body/message/media shape 管内存，选中 provider 管真实 context。
 
 ## 6. Unit of Work 与状态机
 

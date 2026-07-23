@@ -50,6 +50,7 @@ func LoginLocked(retryAfterSec int) *APIError {
 // domain; the values are the spec.
 const (
 	statusBadRequest          = 400
+	statusRequestTooLarge     = 413
 	statusUnauthorized        = 401
 	statusPaymentRequired     = 402
 	statusForbidden           = 403
@@ -82,6 +83,10 @@ var (
 	ErrAccountBanned = NewError(statusForbidden, "ACCOUNT_BANNED", "this install has been disabled")
 	// ErrRateLimited — per-minute rate or daily sublimit exceeded.
 	ErrRateLimited = NewError(statusTooManyRequests, "RATE_LIMITED", "rate or daily sub-limit exceeded")
+	// ErrRequestBodyTooLarge — the exact HTTP request body crossed the
+	// configured memory-safety envelope. This is deliberately distinct from a
+	// model context rejection.
+	ErrRequestBodyTooLarge = NewError(statusRequestTooLarge, "REQUEST_BODY_TOO_LARGE", "request body exceeds the configured size limit")
 	// ErrQuotaExhausted — monthly free-tier quota exhausted.
 	ErrQuotaExhausted = NewError(statusTooManyRequests, "QUOTA_EXHAUSTED", "monthly free-tier quota exhausted")
 	// ErrUpstreamBusy — upstream capacity busy (queue full/timeout, breaker open,

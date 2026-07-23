@@ -11,6 +11,7 @@ import (
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
+	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 )
 
@@ -537,28 +538,54 @@ func TestBodyError_400(t *testing.T) {
 	}
 }
 
-func TestInputTokenCapZero_DisablesGateAndReachesReserve(t *testing.T) {
-	// INPUT_TOKEN_CAP=0 disables the input gate: a prompt whose estimate far
-	// exceeds any plausible nonzero cap must pass through to Reserve (the model's
-	// own context limit judges instead). The test install spend wallet remains
-	// ample, so the pre-reserve spend-cap check stays out of the way too.
+func TestBodyTooLarge_413DistinctFromContext(t *testing.T) {
+	svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: &fakeUpstream{}, RL: &fakeRL{allow: true}})
+	sink := newFakeSink()
+	svc.Handle(context.Background(), HandleInput{InstallID: "t", BodyTooLarge: true, BodyError: errBoom}, sink)
+	wg.Wait()
+	if sink.statusCode() != 413 || !strings.Contains(sink.bodyString(), "REQUEST_BODY_TOO_LARGE") {
+		t.Fatalf("body cap must be precise: status=%d body=%s", sink.statusCode(), sink.bodyString())
+	}
+}
+
+func TestDeepSeekOverLimitByteEstimateIsClampedForReserveAndForwarded(t *testing.T) {
+	req, derr := domchat.DecodeInbound([]byte(goodBody))
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	plan, ae := billingPlan(
+		billing.ProviderDeepSeek, billing.DeepSeekV4Flash, req,
+		billing.DeepSeekInputLimit+500_000, 16_384,
+	)
+	if ae != nil {
+		t.Fatalf("accounting estimate must not reject: %v", ae)
+	}
+	if plan.PromptQuote != billing.DeepSeekInputLimit {
+		t.Fatalf("prompt quote=%d want model limit=%d", plan.PromptQuote, billing.DeepSeekInputLimit)
+	}
+}
+
+func TestLegacyInputTokenCapDoesNotGateAndRequestReachesReserve(t *testing.T) {
+	// INPUT_TOKEN_CAP is compatibility-only: even a tiny nonzero legacy value
+	// must not turn the conservative accounting estimate into an admission
+	// decision. The provider owns the real context limit.
 	cfg := testCfg()
-	cfg.InputTokenCap = 0
+	cfg.InputTokenCap = 1
 	q := &fakeQuota{}
 	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 
-	// ~60k chars → promptEst ≈ 72k (runes ×1.2), far above e.g. a 16384 cap.
+	// ~60k chars is far above the deliberately tiny legacy value.
 	body := `{"model":"x","messages":[{"role":"user","content":"` + strings.Repeat("a", 60_000) + `"}]}`
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 
 	if sink.statusCode() != 200 {
-		t.Fatalf("cap=0 must disable the input gate, got status %d body=%q", sink.statusCode(), sink.bodyString())
+		t.Fatalf("legacy input cap must not gate, got status %d body=%q", sink.statusCode(), sink.bodyString())
 	}
-	// Reserve WAS reached, with est = promptEst + maxTok (the estimate still
-	// feeds the reservation even when the gate is off).
+	// Reserve still receives the prompt quote: removing admission does not make
+	// forwarded prompt/tool bytes free.
 	if q.plan.PromptQuote <= 60_000 {
 		t.Fatalf("Reserve not reached with the full prompt quote: plan=%+v", q.plan)
 	}
@@ -941,7 +968,7 @@ func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 		wantWire  *int64
 		wantQuote int64
 	}{
-		{"DeepSeek absent max_tokens omitted on wire but quoted at cap", `{"messages":[{"role":"user","content":"hi"}]}`, nil, billing.DeepSeekOutputLimit},
+		{"DeepSeek absent max_tokens explicitly capped on wire and quote", `{"messages":[{"role":"user","content":"hi"}]}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
 		{"DeepSeek high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
 		{"DeepSeek lower client max_tokens respected", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, ptrInt64(1), 1},
 		{"Kimi high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.KimiOutputLimit), billing.KimiOutputLimit},
@@ -987,31 +1014,28 @@ func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
 	}
 }
 
-func TestKimiPromptEstimateBeyondModelLimitIs400(t *testing.T) {
+func TestKimiPromptEstimateBeyondModelLimitStillReachesUpstream(t *testing.T) {
 	cfg := testCfg()
-	cfg.InputTokenCap = 0 // exercise the model hard-limit guard, not generic cap.
+	cfg.InputTokenCap = 1 // compatibility-only; must have no execution effect.
 	cfg.MaxMessageChars = 2_000_000
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.KimiInputLimit)) +
 		`"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
-	up := &fakeUpstream{}
+	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Config: fakeConfig{c: cfg}})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
 	calls := len(up.callSnapshot())
-	if sink.statusCode() != 400 || q.reservedPUSD != 0 || calls != 0 {
-		t.Fatalf("status=%d reserved=%d call_count=%d", sink.statusCode(), q.reservedPUSD, calls)
+	if sink.statusCode() != 200 || q.reservedPUSD == 0 || calls != 1 {
+		t.Fatalf("conservative estimate must not gate: status=%d reserved=%d call_count=%d", sink.statusCode(), q.reservedPUSD, calls)
 	}
 }
 
-func TestMultimodalInputCapDoesNotTokenizeBase64TransportText(t *testing.T) {
+func TestMultimodalAccountingEstimateDoesNotTokenizeBase64TransportText(t *testing.T) {
 	cfg := testCfg()
-	// The byte-fallback estimator includes fixed request/message framing. Keep a
-	// small cap above that legitimate text/metadata bound but far below the 64KiB
-	// base64 transport payload this test proves is excluded.
-	cfg.InputTokenCap = 256
+	cfg.InputTokenCap = 1 // proves this legacy setting is irrelevant to admission.
 	cfg.MaxMediaDecodedBytes = 128 * 1024
 	png := append([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}, make([]byte, 64*1024)...)
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)

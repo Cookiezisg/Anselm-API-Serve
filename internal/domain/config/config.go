@@ -104,16 +104,19 @@ type Config struct {
 	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
 	GlobalMonthlySpendPUSD int64 // GLOBAL_MONTHLY_SPEND_MICRO_USD converted to pUSD
 	MaxTokensCap           int64 // MAX_TOKENS_CAP(caller max_tokens 保险丝;兼缺省请求预留额输出分量)
-	InputTokenCap          int64 // INPUT_TOKEN_CAP(单请求输入估算上限;0=禁用,交上游模型判定)
-	MaxMessages            int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
-	MaxMessageChars        int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)
-	MaxMediaParts          int   // MAX_MEDIA_PARTS(整请求媒体 part 数上限)
-	MaxMediaDecodedBytes   int64 // MAX_MEDIA_DECODED_BYTES(base64 解码后总字节)
-	MaxBodyBytes           int64 // MAX_BODY_BYTES(请求体字节上限;内存保护,重启生效)
-	NGlobalConcurrency     int   // N_GLOBAL_CONCURRENCY(全局在飞并发)
-	RatePerMin             int   // RATE_PER_MIN(每 install 分钟令牌桶)
-	DailySublimit          int64 // DAILY_SUBLIMIT(每 install 日次数子限额;0=禁用)
-	InstallPerIPHour       int   // INSTALL_PER_IP_HOUR(/install 单 IP 时频控)
+	// InputTokenCap is a compatibility-only legacy setting. Byte estimates are
+	// not tokenizer truth and no longer reject requests; the field remains so
+	// existing env/dashboard overlays keep loading during a rolling upgrade.
+	InputTokenCap        int64 // INPUT_TOKEN_CAP(已弃用、无执行效果；上下文由上游模型判定)
+	MaxMessages          int   // MAX_MESSAGES(messages 数组元素数上限,OWASP API4)
+	MaxMessageChars      int   // MAX_MESSAGE_CHARS(单条 message content 字符数上限)
+	MaxMediaParts        int   // MAX_MEDIA_PARTS(整请求媒体 part 数上限)
+	MaxMediaDecodedBytes int64 // MAX_MEDIA_DECODED_BYTES(base64 解码后总字节)
+	MaxBodyBytes         int64 // MAX_BODY_BYTES(请求体字节上限;内存保护,重启生效)
+	NGlobalConcurrency   int   // N_GLOBAL_CONCURRENCY(全局在飞并发)
+	RatePerMin           int   // RATE_PER_MIN(每 install 分钟令牌桶)
+	DailySublimit        int64 // DAILY_SUBLIMIT(每 install 日次数子限额;0=禁用)
+	InstallPerIPHour     int   // INSTALL_PER_IP_HOUR(/install 单 IP 时频控)
 
 	// M2 防 Sybil 领号闸(全部默认 0=禁用,默认配置下 /v1/install 行为逐字不变):
 	InstallGlobalDailyCap   int64 // INSTALL_GLOBAL_DAILY_CAP(全局每日领号粗阀;0=禁用,须远高于真实日活)
@@ -274,10 +277,10 @@ func (c *Config) ValidateSemantics() error {
 		return fmt.Errorf("SEC-2 config: PUBLIC_MODEL_ID must be 1..%d ASCII bytes using letters, digits, '.', '_', '-', ':', or '/'", MaxPublicModelIDBytes)
 	}
 	textOutput := min(c.MaxTokensCap, billing.DeepSeekOutputLimit)
-	textPrompt := c.InputTokenCap
-	if textPrompt > billing.DeepSeekInputLimit {
-		return fmt.Errorf("SEC-2 config: INPUT_TOKEN_CAP exceeds the text model input limit")
-	}
+	// With estimator admission removed, the provable worst case is the complete
+	// text-model input limit (an over-limit byte quote is clamped to this bound
+	// before Reserve). Validate that one such request fits the monthly wallet.
+	textPrompt := billing.DeepSeekInputLimit
 	textPlan, err := billing.NewPlan(billing.ProviderDeepSeek, c.TextUpstreamModel,
 		billing.InputStandard, textPrompt, textOutput)
 	if err != nil {

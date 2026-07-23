@@ -48,7 +48,7 @@ Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level
 
 Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. If `KIMI_API_KEY` is absent, text remains available and accepted image/video requests return `503 MULTIMODAL_UNAVAILABLE`.
 
-The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking` and `reasoning_effort` do not change this tier. Caller request knobs such as `max_tokens` remain OpenAI-compatible passthrough fields: a positive `max_tokens` is forwarded after clamping to `MAX_TOKENS_CAP` and the selected model's hard output limit, while an absent value is omitted on the wire and reserved conservatively for accounting. Text has DeepSeek's 1M input context; media has Kimi's 262K input context, so a single product-facing context number should be the conservative 256K.
+The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Kimi `thinking.enabled` and no `reasoning_effort`. Client-supplied `thinking` and `reasoning_effort` do not change this tier. A positive `max_tokens` is clamped to `MAX_TOKENS_CAP` and the selected model's output limit; an absent or non-positive value is normalized to that same explicit product cap, so wire behavior, accounting, and client context headroom agree. Text has DeepSeek's 1M input context and media has Kimi's 262,144 input context. `GET /v1/models` publishes both route profiles in the namespaced `anselm_capabilities` extension, allowing the desktop agent to choose the budget dynamically instead of pretending one conservative number describes both routes.
 
 ## Dashboard
 
@@ -70,7 +70,7 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 | `POST` | `/v1/install` | registration proof | Register a device public key; return `{installId, monthlyQuota, resetAt}` |
 | `GET` | `/v1/proof/challenge` | none | Issue a cacheable five-minute request nonce |
 | `POST` | `/v1/chat/completions` | device proof | OpenAI-compatible inference; SSE or JSON per `stream` |
-| `GET` | `/v1/models` | device proof | OpenAI `{object:"list", data:[…]}` containing the single public model ID |
+| `GET` | `/v1/models` | device proof | OpenAI model list with one public ID plus route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
 
@@ -85,7 +85,7 @@ Loading order is env defaults, then a `settings`-table DB overlay (runtime-edita
 
 Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` (required, comma-separated for multiple keys), `KIMI_API_KEY` (optional, comma-separated; omitting it disables only image/video requests), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
 
-The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). It uses a 5 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; bounded input/output and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. Per-minute chat throttling, daily request sublimits, automatic token throttling, and install issuance throttles default to disabled (`0`/`off`).
+The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). Production accepts an 8 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying usage guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; structural body/message/media limits and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. The conservative UTF-8 prompt estimate is accounting evidence only and never a context-admission gate; the selected upstream is the hard input-limit authority.
 
 ## Deployment
 
@@ -97,7 +97,7 @@ Caddy + systemd on a VPS:
 - Production requires a pinned `SERVER_KNOWN_HOSTS` GitHub Environment secret; deployment fails closed when it is absent or has no entry for `SERVER_HOST`. There is no `ssh-keyscan`/TOFU fallback. The remote data directory is `0700`, DB/WAL/SHM and secret env are `0600`, and the successful release retains one root-only rollback bundle.
 - A schema-aware manual rollback is installed as `sudo /usr/local/sbin/anselm-gateway-rollback` (interactive confirmation) or `sudo /usr/local/sbin/anselm-gateway-rollback --yes` (automation). If a host/process crash leaves the persistent transition marker, recover the exact checksummed bundle named there. The most reliable entry is always `sudo <bundle-from-marker>/recovery/rollback.sh --recover-incomplete` (add `--yes` non-interactively); the global command supports the same mode when it has already been upgraded. Every bundle carries its exact recovery program, while rollback restores the previous global entry so it cannot drift from an older retained READY bundle. The inert Caddy guard remains a managed safety artifact. Rollback restores the retained DB snapshot and all matching runtime artifacts; switching the binary symlink alone is unsupported and unsafe after a schema migration.
 
-The deployment target (domain, ACME email) is injected from GitHub secrets and is not committed. Production defaults include `INPUT_TOKEN_CAP=131072`, `MAX_TOKENS_CAP=16384`, `MAX_MESSAGES=1024`, `MAX_MESSAGE_CHARS=262144`, `MONTHLY_QUOTA=5000`, `RATE_PER_MIN=0`, `DAILY_SUBLIMIT=0`, `INSTALL_GLOBAL_DAILY_CAP=0`, `INSTALL_PER_FP_DAILY=0`, `INSTALL_PER_FP_COOLDOWN_SEC=0`, `INSTALL_PER_IP_HOUR=0`, and `TOKEN_ANOMALY_RPM=0`. See [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and [`deploy/`](deploy/).
+The deployment target (domain, ACME email) is injected from GitHub secrets and is not committed. Production defaults include compatibility-only `INPUT_TOKEN_CAP=0`, `MAX_TOKENS_CAP=16384`, `MAX_MESSAGES=4096`, `MAX_MESSAGE_CHARS=4194304`, `MAX_BODY_BYTES=8388608`, `MONTHLY_QUOTA=5000`, and disabled optional traffic throttles (`0`/`off`). See [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and [`deploy/`](deploy/).
 
 ## Development
 
@@ -121,7 +121,7 @@ This is a thin gateway by design: two fixed content-shape routes, one operator's
 
 - [`concepts/architecture.md`](docs/concepts/architecture.md) — the system model
 - [`references/backend/`](docs/references/backend/) — contracts kept in sync with the code (api / config / database / error-codes / invariants)
-- [`decisions/`](docs/decisions/) — ADR-001..012 (design decisions, kept immutable)
+- [`decisions/`](docs/decisions/) — ADR-001..016 (design decisions, kept immutable)
 
 ## License
 

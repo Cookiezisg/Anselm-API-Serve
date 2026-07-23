@@ -6,6 +6,7 @@
 package model
 
 import (
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/domain/model"
 )
@@ -32,10 +33,34 @@ func New(cfg ConfigLoader) *Catalog {
 // are intentionally absent: request shape selects text vs multimodal and a
 // client can never buy/select a hidden "tier" through the model string.
 func (c *Catalog) List() model.ListEnvelope {
-	id := c.cfg.Load().PublicModelID
+	cfg := c.cfg.Load()
+	id := cfg.PublicModelID
 	data := make([]model.Model, 0, 1)
 	if id != "" {
-		data = append(data, model.Model{ID: id, Object: model.ObjectModel, OwnedBy: model.OwnedBy})
+		data = append(data, model.Model{
+			ID: id, Object: model.ObjectModel, OwnedBy: model.OwnedBy,
+			AnselmCapabilities: &model.AnselmCapabilities{
+				Version: 1,
+				Routing: model.RoutingByContent,
+				Text: model.RouteProfile{
+					InputLimit:  billing.DeepSeekInputLimit,
+					OutputLimit: min64(cfg.MaxTokensCap, billing.DeepSeekOutputLimit),
+					Available:   len(cfg.DeepSeekAPIKeys) > 0,
+				},
+				Multimodal: model.RouteProfile{
+					InputLimit:  billing.KimiInputLimit,
+					OutputLimit: min64(cfg.MaxTokensCap, billing.KimiOutputLimit),
+					Available:   len(cfg.KimiAPIKeys) > 0,
+				},
+			},
+		})
 	}
 	return model.ListEnvelope{Object: model.ObjectList, Data: data}
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -47,7 +47,7 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 
 Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。未配 `KIMI_API_KEY` 时纯文本仍可用，合法图片/视频请求返回 `503 MULTIMODAL_UNAVAILABLE`。
 
-网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。`max_tokens` 这类调用参数仍保持 OpenAI 兼容透传：正数 `max_tokens` 会在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp 后转发；未传时 wire 不主动塞值，但账务按保守上限预留。纯文本实际有 DeepSeek 的 1M input context；媒体实际有 Kimi 的 262K input context，所以产品侧如果只展示一个上下文数字，应保守写 256K。
+网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。正数 `max_tokens` 在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp；未传或非正值也归一成同一个显式产品 cap，使 wire、账务与客户端预留的上下文 headroom 一致。纯文本是 DeepSeek 1M input，媒体是 Kimi 262,144 input；`GET /v1/models` 通过 namespaced `anselm_capabilities` 同时发布两条 route profile，桌面 Agent 按实际请求动态选预算，不再用单一 256K 假装代表两路。
 
 ## 管理后台
 
@@ -69,7 +69,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 | `POST` | `/v1/install` | registration proof | 登记设备公钥；返回 `{installId, monthlyQuota, resetAt}` |
 | `GET` | `/v1/proof/challenge` | 无 | 发一个可缓存五分钟的 request nonce |
 | `POST` | `/v1/chat/completions` | device proof | OpenAI 兼容推理;按 `stream` 返 SSE 或 JSON |
-| `GET` | `/v1/models` | device proof | OpenAI `{object:"list", data:[…]}`,内含唯一公开模型 ID |
+| `GET` | `/v1/models` | device proof | 一个公开 ID，并带 route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
@@ -84,7 +84,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
 
-公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。它使用 5 MiB request body,最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；有界输入/输出与 `N_GLOBAL_CONCURRENCY` 继续作为服务安全护栏。每分钟聊天频控、日请求子限、自动降速与领号频控默认都禁用(`0`/`off`)。
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。生产 body 上限 8 MiB，最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；body/message/media 形状与 `N_GLOBAL_CONCURRENCY` 是服务安全护栏。UTF-8 保守 prompt estimate 只用于记账报价，不再做上下文准入；实际 route 的 provider 才是 input hard limit 权威。
 
 ## 部署
 
@@ -96,7 +96,7 @@ VPS 上的 Caddy + systemd:
 - 生产强制配置 GitHub Environment secret `SERVER_KNOWN_HOSTS`,缺失或不含 `SERVER_HOST` 条目即 fail closed;不存在 `ssh-keyscan`/TOFU 回退。远端 data dir 为 `0700`,DB/WAL/SHM 与 secret env 为 `0600`;成功发版后只保留一个 root-only rollback bundle。
 - 服务器安装 schema-aware 人工回滚命令:`sudo /usr/local/sbin/anselm-gateway-rollback`(交互确认),自动化用 `sudo /usr/local/sbin/anselm-gateway-rollback --yes`。若主机/进程崩溃留下持久 transition marker,必须先恢复 marker 指向的精确 checksummed bundle。最可靠的入口始终是 `sudo <marker 中的 bundle>/recovery/rollback.sh --recover-incomplete`(非交互再加 `--yes`);全局入口若已升级,也支持同样的 recovery mode。每个 bundle 都携带该版精确 recovery program,回滚又会恢复旧全局入口,因此不会与更旧的保留 READY bundle 发生格式错配。永久 Caddy guard 则作为 inert 的受管安全 artifact 保留。回滚会同时恢复 DB 快照及整套运行 artifact;schema migration 后只切 binary symlink 明确不受支持且不安全。
 
-部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。生产默认闸为 `INPUT_TOKEN_CAP=131072`、`MAX_TOKENS_CAP=16384`、`MAX_MESSAGES=1024`、`MAX_MESSAGE_CHARS=262144`、`MONTHLY_QUOTA=5000`、`RATE_PER_MIN=0`、`DAILY_SUBLIMIT=0`、`INSTALL_GLOBAL_DAILY_CAP=0`、`INSTALL_PER_FP_DAILY=0`、`INSTALL_PER_FP_COOLDOWN_SEC=0`、`INSTALL_PER_IP_HOUR=0`、`TOKEN_ANOMALY_RPM=0`。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
+部署目标(域名、ACME 邮箱)经 GitHub secret 注入、不入库。生产默认包括仅为兼容保留的 `INPUT_TOKEN_CAP=0`、`MAX_TOKENS_CAP=16384`、`MAX_MESSAGES=4096`、`MAX_MESSAGE_CHARS=4194304`、`MAX_BODY_BYTES=8388608`、`MONTHLY_QUOTA=5000`，可选流控默认 `0`/`off`。见 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 与 [`deploy/`](deploy/)。
 
 ## 开发
 
