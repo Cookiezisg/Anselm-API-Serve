@@ -1065,3 +1065,90 @@ func waitForSlot(t *testing.T, s *Service, n int) {
 	}
 	t.Fatalf("slot never occupied")
 }
+
+// The cross-cutting case this gateway never had (ADR 0011): a chat request naming a media lease.
+// Its absence is exactly why the desktop could ship "lease URL as image_url" while this side
+// rejected every one of them — each repo's tests covered only its own half.
+//
+// 本网关此前**从未有过**的跨接用例(ADR 0011):一个指称 media lease 的 chat 请求。正因为它缺席,桌面端才
+// 能发布「lease URL 即 image_url」而这一侧把它们全数拒绝——两仓测试各只覆盖自己那半。
+func TestMediaLeaseReferenceIsVerifiedThenAbsolutizedForUpstream(t *testing.T) {
+	const rel = "/v1/media/leases/mls_ok/content?token=tok"
+	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + rel + `"}}]}]}`
+
+	t.Run("verified reference reaches upstream ABSOLUTE", func(t *testing.T) {
+		leases := &fakeLeases{}
+		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}, Leases: leases})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{InstallID: "ins_caller", Body: []byte(body)}, sink)
+		wg.Wait()
+
+		if len(leases.calls) != 1 || leases.calls[0].LeaseID != "mls_ok" || leases.calls[0].Token != "tok" {
+			t.Fatalf("every reference must be verified exactly once: %+v", leases.calls)
+		}
+		// The predicate must run against the AUTHENTICATED install — the id the Authenticator
+		// resolved, never the string the client sent. Verifying the client-supplied value would
+		// let a caller claim to be whoever owns the lease.
+		// 谓词必须针对**已鉴权**的 install——鉴权器解析出的那个 id,绝不是客户端发来的字符串。拿客户端
+		// 自报的值去校验,等于让调用方自称是 lease 的主人。
+		if leases.calls[0].InstallID != "inst1" {
+			t.Fatalf("VerifyLease must be asked about the RESOLVED install, got %q", leases.calls[0].InstallID)
+		}
+		if len(up.calls) != 1 {
+			t.Fatalf("a verified reference must reach upstream, calls=%d", len(up.calls))
+		}
+		parts, ok := up.calls[0].Request.Messages[0].Content.Parts()
+		if !ok || len(parts) != 1 || parts[0].ImageURL == nil {
+			t.Fatalf("upstream request lost its media part: %+v", up.calls[0].Request.Messages[0])
+		}
+		if got, want := parts[0].ImageURL.URL, "https://gw.example"+rel; got != want {
+			t.Fatalf("upstream must receive the gateway-absolutized URL\n got: %s\nwant: %s", got, want)
+		}
+	})
+
+	t.Run("unverifiable reference never reaches upstream", func(t *testing.T) {
+		leases := &fakeLeases{err: apierr.ErrMediaLeaseNotFound}
+		up := &fakeUpstream{body: `{}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}, Leases: leases})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{InstallID: "ins_caller", Body: []byte(body)}, sink)
+		wg.Wait()
+		if len(up.calls) != 0 {
+			t.Fatal("an unverifiable lease must never be forwarded")
+		}
+		if sink.statusCode() != 404 || !strings.Contains(sink.bodyString(), "MEDIA_LEASE_NOT_FOUND") {
+			t.Fatalf("want 404 MEDIA_LEASE_NOT_FOUND, got %d %s", sink.status, sink.bodyString())
+		}
+	})
+
+	t.Run("media disabled refuses rather than forwards", func(t *testing.T) {
+		up := &fakeUpstream{body: `{}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}}) // Leases nil
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{InstallID: "ins_caller", Body: []byte(body)}, sink)
+		wg.Wait()
+		if len(up.calls) != 0 {
+			t.Fatal("with media disabled nothing could have issued that lease; it must not be forwarded")
+		}
+		if sink.statusCode() != 503 || !strings.Contains(sink.bodyString(), "MEDIA_UNAVAILABLE") {
+			t.Fatalf("want 503 MEDIA_UNAVAILABLE, got %d %s", sink.status, sink.bodyString())
+		}
+	})
+
+	t.Run("an absolute URL is still refused outright", func(t *testing.T) {
+		leases := &fakeLeases{}
+		up := &fakeUpstream{body: `{}`}
+		abs := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://evil.example` + rel + `"}}]}]}`
+		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}, Leases: leases})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{InstallID: "ins_caller", Body: []byte(abs)}, sink)
+		wg.Wait()
+		if len(leases.calls) != 0 || len(up.calls) != 0 {
+			t.Fatal("a client-supplied host must never be verified nor forwarded")
+		}
+		if sink.statusCode() != 400 {
+			t.Fatalf("an absolute URL must be a content error, got %d %s", sink.status, sink.bodyString())
+		}
+	})
+}

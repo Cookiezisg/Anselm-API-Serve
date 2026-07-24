@@ -245,6 +245,9 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Logger:   chatLogger{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 		BgWG:     bgWG,
+		// nil when MEDIA_ENABLED=false; chat then refuses a request that names a lease rather than
+		// forwarding it. nil 表示媒体未启用;chat 此时拒绝携带 lease 的请求而非转发。
+		Leases: mediaLeasesOrNil(mediaSvc),
 	})
 	speechSvc := appspeech.New(appspeech.Deps{
 		Auth:    installSvc,
@@ -395,4 +398,20 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 			dashboard: effective.DashboardAddr,
 		},
 	}, nil
+}
+
+// mediaLeasesOrNil keeps the chat port genuinely nil when media is disabled. Assigning a typed nil
+// pointer straight into the interface would produce a NON-nil interface holding a nil pointer — the
+// classic Go trap — and chat's `s.leases == nil` guard would silently stop working, turning a
+// "refuse, nothing could have issued this lease" into a nil dereference on the first request that
+// names one.
+//
+// mediaLeasesOrNil 保证媒体禁用时 chat 端口**真的**是 nil。把类型化的 nil 指针直接塞进接口会得到一个
+// **非 nil** 的接口(里面装着 nil 指针)——Go 的经典陷阱——chat 的 `s.leases == nil` 守卫会静默失效,
+// 把「拒绝:本部署签发不出这个 lease」变成第一个携带 lease 的请求上的空指针解引用。
+func mediaLeasesOrNil(svc *appmedia.Service) appchat.MediaLeases {
+	if svc == nil {
+		return nil
+	}
+	return svc
 }

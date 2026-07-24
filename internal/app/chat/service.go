@@ -38,6 +38,7 @@ type Service struct {
 	log      Logger
 	mx       Metrics
 	bgWG     WaitGroupLike
+	leases   MediaLeases
 
 	sem chan struct{} // N_global slots (cap fixed at construction).
 }
@@ -56,6 +57,22 @@ type Deps struct {
 	Logger   Logger
 	Metrics  Metrics
 	BgWG     WaitGroupLike
+	// Leases resolves media lease references a request may carry (ADR 0011). nil when
+	// MEDIA_ENABLED is false — in which case a request that names a lease is refused rather than
+	// silently forwarded, because nothing could have issued that lease.
+	// Leases 解析请求可能携带的媒体 lease 引用(ADR 0011)。MEDIA_ENABLED=false 时为 nil——此时携带
+	// lease 的请求会被**拒绝**而非静默转发,因为根本没有东西能签发过那个 lease。
+	Leases MediaLeases
+}
+
+// MediaLeases verifies that a lease reference belongs to the CALLING install and is still usable.
+// Implemented by the media service; see its VerifyLease for why chat needs a predicate stricter
+// than the unauthenticated provider-fetch route's.
+//
+// MediaLeases 校验 lease 引用属于**发起请求的 install** 且仍可用。由 media service 实现;chat 为何需要
+// 比「未鉴权的 provider 拉取路由」更严的谓词,见其 VerifyLease。
+type MediaLeases interface {
+	VerifyLease(ctx context.Context, installID, leaseID, token string) (mimeType string, err error)
 }
 
 // New wires the Service and fixes the N_global semaphore capacity from the
@@ -69,7 +86,7 @@ func New(d Deps) *Service {
 	s := &Service{
 		auth: d.Auth, quota: d.Quota, upstream: d.Upstream, rl: d.RL,
 		throttle: d.Throttle, disk: d.Disk, cfg: d.Config, clock: d.Clock,
-		log: d.Logger, mx: d.Metrics, bgWG: d.BgWG,
+		log: d.Logger, mx: d.Metrics, bgWG: d.BgWG, leases: d.Leases,
 		sem: make(chan struct{}, n),
 	}
 	if s.throttle == nil {
@@ -195,6 +212,33 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		writeErr(sink, apierr.ErrAudioUnavailable)
 		return
 	}
+	// 4b) Resolve any media lease references BEFORE routing, reserving or forwarding (ADR 0011).
+	// Each one is a CLAIM until verified: it must name a lease this gateway issued to THIS install
+	// and still active. Only after every reference verifies is the request absolutized against the
+	// gateway's own public origin — absolutizing first would hand an unverified reference to the
+	// upstream provider, which is precisely the SSRF the relative-only wire prevents.
+	//
+	// 4b) 在路由/预留/转发**之前**解析媒体 lease 引用(ADR 0011)。每个引用在校验前都只是**主张**:它必须
+	// 指称本网关签发给**当前 install** 且仍 active 的 lease。**全部**校验通过后才用网关自己的公开 origin
+	// 绝对化——先绝对化就等于把未经校验的引用交给上游 provider,正是「只收相对形」所防的那条 SSRF。
+	if refs := req.MediaLeaseRefs(); len(refs) > 0 {
+		if s.leases == nil {
+			// Nothing could have issued this lease on this deployment. 本部署根本签发不出这个 lease。
+			writeErr(sink, apierr.ErrMediaUnavailable)
+			return
+		}
+		for _, ref := range refs {
+			if _, err := s.leases.VerifyLease(ctx, installID, ref.LeaseID, ref.Token); err != nil {
+				// One collapsed answer for absent / foreign / expired / tampered — never an
+				// existence oracle over another install's lease ids.
+				// 不存在/非本人/已过期/被篡改共用一个答复——绝不做他人 lease id 的存在性预言机。
+				writeErr(sink, apierr.ErrMediaLeaseNotFound)
+				return
+			}
+		}
+		req = req.WithAbsoluteMediaLeaseURLs(cfg.MediaPublicBaseURL)
+	}
+
 	provider, model, modelOutputLimit := routeFor(modality, cfg)
 	if !s.upstream.Available(provider) {
 		if provider == billing.ProviderQwen {

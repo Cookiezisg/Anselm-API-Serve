@@ -105,3 +105,71 @@ func (in InboundRequest) MediaLeaseRefs() []MediaLeaseRef {
 	}
 	return refs
 }
+
+// WithAbsoluteMediaLeaseURLs returns a copy of the request whose recognised lease references are
+// rewritten to `base + relativePath`. It lives in this package because ContentPart slices hang off
+// Content's unexported field: rewriting anywhere else would mean exporting the innards of the
+// content union just to mutate two strings.
+//
+// It must run AFTER the app layer has verified every reference and BEFORE Sanitize builds the body
+// that is forwarded upstream — absolutizing an unverified reference would be exactly the SSRF the
+// relative-only rule exists to prevent, only performed by us instead of by the caller.
+//
+// Anything the parser does not recognise is left untouched: this function never invents a URL, so a
+// value that was going to be rejected by validation still is.
+//
+// WithAbsoluteMediaLeaseURLs 返回一份副本,其中被识别的 lease 引用改写为 `base + 相对路径`。它住在本包,
+// 因为 ContentPart 切片挂在 Content 的**未导出**字段上:在别处重写就意味着仅为改两个字符串而把内容联合
+// 的内脏导出去。
+//
+// 它必须在 app 层校验完**每一个**引用之后、在 Sanitize 构造转发体之前运行——把**未经校验**的引用绝对化,
+// 正是「只收相对形」要防的那条 SSRF,只不过改由我们自己代劳。
+//
+// 解析器不认的一律原样不动:本函数从不凭空造 URL,故本来会被校验拒掉的值仍会被拒。
+func (in InboundRequest) WithAbsoluteMediaLeaseURLs(base string) InboundRequest {
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return in
+	}
+	out := in
+	out.Messages = nil
+	changedAny := false
+	messages := make([]Message, len(in.Messages))
+	copy(messages, in.Messages)
+	for mi := range messages {
+		parts, ok := messages[mi].Content.Parts()
+		if !ok {
+			continue
+		}
+		rewritten := make([]ContentPart, len(parts))
+		copy(rewritten, parts)
+		changed := false
+		for pi := range rewritten {
+			switch {
+			case rewritten[pi].Type == PartTypeImageURL && rewritten[pi].ImageURL != nil:
+				if _, ok := parseMediaLeaseRef(rewritten[pi].ImageURL.URL); ok {
+					clone := *rewritten[pi].ImageURL
+					clone.URL = base + clone.URL
+					rewritten[pi].ImageURL = &clone
+					changed = true
+				}
+			case rewritten[pi].Type == PartTypeVideoURL && rewritten[pi].VideoURL != nil:
+				if _, ok := parseMediaLeaseRef(rewritten[pi].VideoURL.URL); ok {
+					clone := *rewritten[pi].VideoURL
+					clone.URL = base + clone.URL
+					rewritten[pi].VideoURL = &clone
+					changed = true
+				}
+			}
+		}
+		if changed {
+			messages[mi].Content = PartsContent(rewritten)
+			changedAny = true
+		}
+	}
+	if !changedAny {
+		return in
+	}
+	out.Messages = messages
+	return out
+}
