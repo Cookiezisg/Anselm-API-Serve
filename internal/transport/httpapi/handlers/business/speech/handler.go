@@ -72,7 +72,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = upConn.Close() }()
 
-	downConn, err := websocket.Upgrade(w, r, nil, maxAudioFrameBytes, maxAudioFrameBytes)
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  maxAudioFrameBytes,
+		WriteBufferSize: maxAudioFrameBytes,
+		CheckOrigin:     func(*http.Request) bool { return true },
+	}
+	downConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
