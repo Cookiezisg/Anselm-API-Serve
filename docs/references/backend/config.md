@@ -67,7 +67,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
-| `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen-asr-realtime` |
+| `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen3-asr-flash-realtime` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
 | `READ_POOL_MAX_CONNS` | 4 | >0 |
@@ -114,7 +114,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
 3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Qwen route 注入顶层 `enable_thinking=true`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
 4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；完整 1,000,000 input + bounded output 的最坏 quote 必须装入全局月预算。运行时 UTF-8 estimate 只决定较小请求的 reserve 大小，超过 1M 时 quote clamp 到模型硬上限而不拒绝。
-5. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Qwen3.7 Plus rate card；由于 inline 图片/视频无法由本地字节数证明视觉 token，reserve 使用完整 `1,000,000` input + `65,536` output 的最高分段价格，必须装入全局月预算。媒体形状/bytes 单独受限并由 Qwen 判定实际 token；权威 usage 可退款。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
+5. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Qwen3.7 Plus rate card；由于 inline 图片/视频无法由本地字节数证明视觉 token，reserve 使用完整 `1,000,000` input + `65,536` output 的最高分段价格，必须装入全局月预算。媒体形状/bytes 单独受限并由 Qwen 判定实际 token；权威 usage 可退款。chat `input_audio` 虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其作为音频理解 route 可用；麦克风 realtime ASR 是单独的 `qwen3-asr-flash-realtime` 时长费率会话，并进入同一 quota/ledger。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 8. `DASHBOARD_AUTH_MODE` 必须为 `disabled|builtin|external`；`builtin` 必须同设非空 `DASHBOARD_USER`/`DASHBOARD_PASSWORD`。`external` 的实际安全前提由 bootstrap 强制 loopback bind，加上部署者的前置 IAP 全路径 policy 共同满足。

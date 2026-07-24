@@ -102,8 +102,8 @@ audience: [human, ai]
 | `request_id` | TEXT | PRIMARY KEY |
 | `install_id` | TEXT | NOT NULL |
 | `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`,`qwen`) |
-| `model` | TEXT | NOT NULL；实际 provider model，不是 client alias |
-| `rate_card_id` | TEXT | NOT NULL；版本化价格快照 id |
+| `model` | TEXT | NOT NULL；实际 provider model，不是 client alias；ASR 使用 `qwen3-asr-flash-realtime` |
+| `rate_card_id` | TEXT | NOT NULL；版本化价格快照 id，区分 token 费率与 ASR 时长费率 |
 | `period_month` | TEXT | NOT NULL |
 | `period_day` | TEXT | NOT NULL |
 | `reserved_pusd` | INTEGER | NOT NULL CHECK >0 |
@@ -137,6 +137,8 @@ audience: [human, ai]
 4. lazy upsert + guarded add global daily spend、`requests+1`（统计，不按 day cap 拦）；
 5. lazy upsert + conditional add `global_spend_monthly`、`requests+1`，要求 `spend_pusd+reserved≤GLOBAL_MONTHLY_SPEND_MICRO_USD`；
 6. insert 与冻结 `billing.Plan` 一致的 `spend_ledger(open)`。
+
+Realtime ASR 复用同一表，不新增旁路计数：`PromptQuote` 在冻结 Plan 中表示预留秒数而非文本 token，当前按 120s 会话上限预留；settle 时按成功转发的 PCM 字节换算 billable seconds 写入 `charged_pusd`。无音频会话 rollback；已经转发音频后即使上游中断也按已转发时长结算，避免漏记 provider 可能已经产生的时长费用。
 
 任一条件未命中或 insert 失败，整个事务回滚。Settle/Rollback 先 CAS `state='open'`，CAS 胜者才调整余额；调整用 exact-one row + underflow/overflow guard，禁止 `MAX(0,…)` 隐藏守恒错误。Settle top-up 不受现有 cap 限制，因为费用已经发生；超 cap 余额会阻止后续 reserve。
 

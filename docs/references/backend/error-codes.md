@@ -48,6 +48,8 @@ audience: [human, ai]
 | `MEDIA_INTEGRITY_FAILED` | 422 | media upload failed integrity verification | staged bytes大小或 SHA-256 不匹配；客户端必须重建 upload |
 | `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | ChargePossible；不 retry，保留 full quote |
 
+Realtime speech WebSocket 建连后的帧内错误不走 HTTP envelope，仍使用稳定 `code` 字段：`SPEECH_AUDIO_FRAME_INVALID`（空帧或单帧超过 256KiB）、`SPEECH_AUDIO_TOO_LONG`（本次会话累计 PCM 超过预留 120s）、`SPEECH_CONTROL_INVALID`、`SPEECH_UPSTREAM_WRITE_FAILED`、`SPEECH_UPSTREAM_CLOSED`。这些码只结束本次 ASR 会话；已经成功转发的音频按时长结算，没有转发音频则 rollback。
+
 ### wire code 与 charge exposure 正交
 
 infra 返回 `CallFailure{APIError, Exposure}`；app 只以 `Exposure.MayHaveCharged()` 决定 full settle/rollback。`ChargePossible` 是零值，未知值同样视为可能收费；只有显式 `DefinitelyUnbilled` 可退款。APIError 负责 client 归一，**任何 code/status/message 都不是财务凭证**。

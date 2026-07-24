@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,16 +15,66 @@ import (
 
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 )
 
 type fakeSpeechSvc struct {
-	up appspeech.Upstream
-	ae *apierr.APIError
+	mu           sync.Mutex
+	finalOnce    sync.Once
+	finalCh      chan struct{}
+	up           appspeech.Upstream
+	ae           *apierr.APIError
+	reserveAE    *apierr.APIError
+	reserveIn    int64
+	reserveOut   *domquota.Reservation
+	settledBytes int64
+	rolledBack   bool
 }
 
-func (f fakeSpeechSvc) Authorize(context.Context, string) *apierr.APIError { return f.ae }
-func (f fakeSpeechSvc) Upstream() (appspeech.Upstream, *apierr.APIError)   { return f.up, f.ae }
+func newFakeSpeechSvc(up appspeech.Upstream) *fakeSpeechSvc {
+	return &fakeSpeechSvc{up: up, finalCh: make(chan struct{})}
+}
+
+func (f *fakeSpeechSvc) Authorize(_ context.Context, installID string) (string, *apierr.APIError) {
+	return installID, f.ae
+}
+func (f *fakeSpeechSvc) Upstream() (appspeech.Upstream, *apierr.APIError) { return f.up, f.ae }
+func (f *fakeSpeechSvc) Reserve(_ context.Context, _ string, maxAudioSeconds int64) (*domquota.Reservation, *apierr.APIError) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reserveIn = maxAudioSeconds
+	if f.reserveOut == nil {
+		f.reserveOut = &domquota.Reservation{RequestID: "req_speech"}
+	}
+	return f.reserveOut, f.reserveAE
+}
+func (f *fakeSpeechSvc) Settle(_ context.Context, _ *domquota.Reservation, audioBytes int64) error {
+	f.mu.Lock()
+	f.settledBytes = audioBytes
+	f.mu.Unlock()
+	f.finalOnce.Do(func() { close(f.finalCh) })
+	return nil
+}
+func (f *fakeSpeechSvc) Rollback(context.Context, *domquota.Reservation) error {
+	f.mu.Lock()
+	f.rolledBack = true
+	f.mu.Unlock()
+	f.finalOnce.Do(func() { close(f.finalCh) })
+	return nil
+}
+
+func (f *fakeSpeechSvc) waitFinal(t *testing.T) (reserveIn, settledBytes int64, rolledBack bool) {
+	t.Helper()
+	select {
+	case <-f.finalCh:
+	case <-time.After(time.Second):
+		t.Fatalf("speech reservation was not finalized")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reserveIn, f.settledBytes, f.rolledBack
+}
 
 func TestHandler_ProxiesPCMToQwenRealtimeEvents(t *testing.T) {
 	events := make(chan map[string]any, 4)
@@ -60,9 +111,10 @@ func TestHandler_ProxiesPCMToQwenRealtimeEvents(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := New(fakeSpeechSvc{up: appspeech.Upstream{
+	svc := newFakeSpeechSvc(appspeech.Upstream{
 		URL: strings.Replace(upstream.URL, "http://", "ws://", 1), APIKey: "qwen-key",
-	}})
+	})
+	h := New(svc)
 	downstream := httptest.NewServer(h)
 	defer downstream.Close()
 
@@ -110,6 +162,13 @@ func TestHandler_ProxiesPCMToQwenRealtimeEvents(t *testing.T) {
 	if finishEvt["type"] != "session.finish" {
 		t.Fatalf("bad finish event = %#v", finishEvt)
 	}
+	reserveIn, settledBytes, rolledBack := svc.waitFinal(t)
+	if reserveIn != int64(sessionMaxAge/time.Second) {
+		t.Fatalf("reserve seconds = %d", reserveIn)
+	}
+	if settledBytes != int64(len("pcm")) || rolledBack {
+		t.Fatalf("settle/rollback = (%d,%v)", settledBytes, rolledBack)
+	}
 }
 
 func TestHandler_CancelClosesWithoutForwardingControl(t *testing.T) {
@@ -139,9 +198,10 @@ func TestHandler_CancelClosesWithoutForwardingControl(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := New(fakeSpeechSvc{up: appspeech.Upstream{
+	svc := newFakeSpeechSvc(appspeech.Upstream{
 		URL: strings.Replace(upstream.URL, "http://", "ws://", 1), APIKey: "qwen-key",
-	}})
+	})
+	h := New(svc)
 	downstream := httptest.NewServer(h)
 	defer downstream.Close()
 
@@ -169,6 +229,10 @@ func TestHandler_CancelClosesWithoutForwardingControl(t *testing.T) {
 	case evt := <-events:
 		t.Fatalf("cancel leaked upstream as event %#v", evt)
 	default:
+	}
+	_, settledBytes, rolledBack := svc.waitFinal(t)
+	if !rolledBack || settledBytes != 0 {
+		t.Fatalf("cancel without audio should rollback only, settle=%d rollback=%v", settledBytes, rolledBack)
 	}
 }
 
@@ -198,9 +262,9 @@ func TestHandler_HeartbeatsBothWebSocketLegs(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	h := New(fakeSpeechSvc{up: appspeech.Upstream{
+	h := New(newFakeSpeechSvc(appspeech.Upstream{
 		URL: strings.Replace(upstream.URL, "http://", "ws://", 1), APIKey: "qwen-key",
-	}})
+	}))
 	h.pingEvery = 10 * time.Millisecond
 	h.pongWait = 200 * time.Millisecond
 	downstream := httptest.NewServer(h)

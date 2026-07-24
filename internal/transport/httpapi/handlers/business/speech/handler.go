@@ -19,6 +19,7 @@ import (
 
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
 )
@@ -29,11 +30,15 @@ const (
 	defaultPongWait    = 30 * time.Second
 	defaultPingEvery   = 10 * time.Second
 	writeWait          = 10 * time.Second
+	pcm16MonoBytesSec  = int64(32_000)
 )
 
 type Service interface {
-	Authorize(ctx context.Context, installID string) *apierr.APIError
+	Authorize(ctx context.Context, installID string) (string, *apierr.APIError)
 	Upstream() (appspeech.Upstream, *apierr.APIError)
+	Reserve(ctx context.Context, installID string, maxAudioSeconds int64) (*domquota.Reservation, *apierr.APIError)
+	Settle(ctx context.Context, r *domquota.Reservation, audioBytes int64) error
+	Rollback(ctx context.Context, r *domquota.Reservation) error
 }
 
 type Handler struct {
@@ -61,7 +66,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, apierr.ErrSpeechUnavailable)
 		return
 	}
-	if ae := h.svc.Authorize(r.Context(), r.Header.Get(proofhttp.HeaderInstallID)); ae != nil {
+	installID, ae := h.svc.Authorize(r.Context(), r.Header.Get(proofhttp.HeaderInstallID))
+	if ae != nil {
 		response.WriteError(w, ae)
 		return
 	}
@@ -70,6 +76,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.WriteError(w, ae)
 		return
 	}
+	resv, ae := h.svc.Reserve(r.Context(), installID, int64(sessionMaxAge/time.Second))
+	if ae != nil {
+		response.WriteError(w, ae)
+		return
+	}
+	var forwardedAudioBytes int64
+	finalized := false
+	finalize := func() {
+		if finalized || resv == nil {
+			return
+		}
+		finalized = true
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if forwardedAudioBytes <= 0 {
+			_ = h.svc.Rollback(ctx, resv)
+			return
+		}
+		_ = h.svc.Settle(ctx, resv, forwardedAudioBytes)
+	}
+	defer finalize()
 
 	upConn, resp, err := h.dialer.DialContext(r.Context(), up.URL, http.Header{"Authorization": []string{"Bearer " + up.APIKey}})
 	if err != nil {
@@ -157,6 +184,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = client.writeJSON(map[string]any{"type": "error", "code": "SPEECH_AUDIO_FRAME_INVALID"})
 				return
 			}
+			if forwardedAudioBytes+int64(len(payload)) > int64(sessionMaxAge/time.Second)*pcm16MonoBytesSec {
+				_ = client.writeJSON(map[string]any{"type": "error", "code": "SPEECH_AUDIO_TOO_LONG"})
+				return
+			}
 			if err := writeUpstreamJSON(upConn, map[string]any{
 				"event_id": nextEventID(),
 				"type":     "input_audio_buffer.append",
@@ -164,6 +195,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				return
 			}
+			forwardedAudioBytes += int64(len(payload))
 		case websocket.TextMessage:
 			action, err := parseControl(payload)
 			if err != nil {

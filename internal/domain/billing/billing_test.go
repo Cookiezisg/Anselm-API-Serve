@@ -79,6 +79,30 @@ func TestQwenQuoteUsesInclusiveLowTierBelow256K(t *testing.T) {
 	}
 }
 
+func TestQwenRealtimeASRPlanPricesAudioSeconds(t *testing.T) {
+	p, err := NewAudioSecondsPlan(ProviderQwen, Qwen3ASRFlashRealtime, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.InputClass != InputAudioSeconds || p.OutputQuote != 0 {
+		t.Fatalf("bad ASR plan shape: %+v", p)
+	}
+	wantReserve := int64(120 * 90_000_000)
+	if p.ReservedPUSD != wantReserve {
+		t.Fatalf("reserve=%d want %d", p.ReservedPUSD, wantReserve)
+	}
+	actual, err := p.AudioSecondsCost(2)
+	if err != nil {
+		t.Fatalf("AudioSecondsCost: %v", err)
+	}
+	if actual != 2*90_000_000 {
+		t.Fatalf("actual=%d", actual)
+	}
+	if _, _, err := p.Cost(Usage{Present: true, PromptTokens: 2, TotalTokens: 2}); err == nil {
+		t.Fatalf("ASR plan must not settle through token usage")
+	}
+}
+
 func TestMissingUsageKeepsReservation(t *testing.T) {
 	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 1, 1)
 	if err != nil {
@@ -163,7 +187,10 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 		model    string
 		class    InputClass
 	}{
-		"unknown class": {ProviderQwen, Qwen37Plus, InputClass(255)},
+		"unknown class":         {ProviderQwen, Qwen37Plus, InputClass(255)},
+		"audio seconds on chat": {ProviderQwen, Qwen37Plus, InputAudioSeconds},
+		"audio seconds on text": {ProviderDeepSeek, DeepSeekV4Flash, InputAudioSeconds},
+		"standard on ASR model": {ProviderQwen, Qwen3ASRFlashRealtime, InputStandard},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewPlan(tc.provider, tc.model, tc.class, 1, 1); !errors.Is(err, ErrUnknownRateCard) {

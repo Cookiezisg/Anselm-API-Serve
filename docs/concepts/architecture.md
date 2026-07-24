@@ -127,7 +127,7 @@ Plan = provider + actual model + rate-card version
      + input class + input/output quote + reserved pUSD
 ```
 
-内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + framing 余量）和固定输出档位；该上界只为防少预留，超过 1M 时 quote clamp 到模型 input limit，绝不当 tokenizer/context 准入判断。Qwen 视觉输入无法由本地字节数证明 token，因此 reserve 模型完整 1M/64K hard limits 的最高分档，usage 可证明后再 refund。流式 usage 逐字段取最大值而不求和；畸形证据 sticky。`INPUT_TOKEN_CAP` 仅兼容保留；body/message/media shape 管内存，选中 provider 管真实 context。
+内部金额用整数 pUSD，精确表达最小单 token 价格且无浮点误差。DeepSeek quote 使用 UTF-8 byte-fallback 上界（所有透传 message/tool 字段 + framing 余量）和固定输出档位；该上界只为防少预留，超过 1M 时 quote clamp 到模型 input limit，绝不当 tokenizer/context 准入判断。Qwen 视觉输入无法由本地字节数证明 token，因此 reserve 模型完整 1M/64K hard limits 的最高分档，usage 可证明后再 refund。Qwen realtime ASR 不走 token usage：会话开始前按 120s 时长上限预留，结束时按已成功转发 PCM16/16k/mono 字节向上取整到秒结算。流式 usage 逐字段取最大值而不求和；畸形证据 sticky。`INPUT_TOKEN_CAP` 仅兼容保留；body/message/media shape 管内存，选中 provider 管真实 context。
 
 ## 6. Unit of Work 与状态机
 

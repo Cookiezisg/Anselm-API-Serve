@@ -25,12 +25,15 @@ const (
 const (
 	DeepSeekV4Flash       = "deepseek-v4-flash"
 	Qwen37Plus            = "qwen3.7-plus"
+	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
 	DeepSeekOutputLimit   = int64(384_000)
 	Qwen37InputLimit      = int64(1_000_000)
 	Qwen37OutputLimit     = int64(65_536)
+	QwenASRInputLimit     = int64(120) // seconds; bounded by the speech WebSocket session cap.
+	QwenASROutputLimit    = int64(0)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -44,13 +47,14 @@ var (
 // dimension (output), so migrated balances can only overstate old spend.
 func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 
-// InputClass is retained in the frozen Plan wire shape. The current routes use
-// standard token pricing; audio is deliberately not an accepted gateway
-// capability and therefore has no billable input class.
+// InputClass is retained in the frozen Plan wire shape. Standard covers token
+// plans; AudioSeconds is used only by realtime ASR, where the provider bills
+// elapsed audio duration rather than chat tokens.
 type InputClass uint8
 
 const (
 	InputStandard InputClass = iota
+	InputAudioSeconds
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -135,6 +139,12 @@ var rateCards = map[Provider]map[string]RateCard{
 				{InputUpperBound: Qwen37InputLimit, InputPUSD: 4_800_000, CacheHitInputPUSD: 960_000, OutputPUSD: 4_800_000},
 			},
 		},
+		Qwen3ASRFlashRealtime: {
+			ID: "qwen3-asr-flash-realtime-sg-2026-07-24", Provider: ProviderQwen, Model: Qwen3ASRFlashRealtime,
+			InputLimit: QwenASRInputLimit, OutputLimit: QwenASROutputLimit,
+			// Singapore realtime ASR list price: $0.00009 / second.
+			tiers: []pricingTier{{InputUpperBound: QwenASRInputLimit, InputPUSD: 90_000_000, OutputPUSD: 0}},
+		},
 	},
 }
 
@@ -161,7 +171,8 @@ func (r RateCard) tierForInput(tokens int64) (pricingTier, bool) {
 	}
 	for _, tier := range r.tiers {
 		if tier.InputUpperBound <= 0 || tier.InputUpperBound > r.InputLimit ||
-			tier.InputPUSD <= 0 || tier.OutputPUSD <= 0 || tier.CacheHitInputPUSD < 0 {
+			tier.InputPUSD <= 0 || tier.OutputPUSD < 0 || tier.CacheHitInputPUSD < 0 ||
+			(r.OutputLimit > 0 && tier.OutputPUSD == 0) {
 			return pricingTier{}, false
 		}
 		if tokens <= tier.InputUpperBound {
@@ -216,6 +227,13 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	}
 	switch inputClass {
 	case InputStandard:
+		if card.OutputLimit == 0 || (outputBound == 0 && provider != ProviderQwen) {
+			return Plan{}, ErrUnknownRateCard
+		}
+	case InputAudioSeconds:
+		if provider != ProviderQwen || model != Qwen3ASRFlashRealtime || outputBound != 0 {
+			return Plan{}, ErrUnknownRateCard
+		}
 	default:
 		return Plan{}, ErrUnknownRateCard
 	}
@@ -245,10 +263,34 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	}, nil
 }
 
+// NewAudioSecondsPlan prices a realtime ASR reservation in whole seconds. The
+// gateway rounds partial audio seconds up before calling it, so cost accounting
+// stays conservative without pretending audio duration is a text token count.
+func NewAudioSecondsPlan(provider Provider, model string, seconds int64) (Plan, error) {
+	return NewPlan(provider, model, InputAudioSeconds, seconds, 0)
+}
+
+// AudioSecondsCost converts an authoritative audio duration under a frozen ASR
+// plan. It is intentionally separate from token Usage so chat and speech
+// accounting cannot be accidentally mixed.
+func (p Plan) AudioSecondsCost(seconds int64) (int64, error) {
+	if p.InputClass != InputAudioSeconds || seconds < 0 || seconds > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(seconds)
+	if !ok {
+		return 0, ErrUnknownRateCard
+	}
+	return checkedMul(seconds, tier.InputPUSD)
+}
+
 // Cost converts an authoritative cumulative usage snapshot under the frozen
 // card. ok=false means the caller must keep the full reservation. Compatibility
 // responses that omit cache details are conservatively priced as cache misses.
 func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
+	if p.InputClass != InputStandard {
+		return 0, false, ErrUnknownRateCard
+	}
 	// A syntactically present but empty usage object is not authoritative. Every
 	// accepted completion has a non-empty prompt; refunding it as a zero-cost call
 	// would turn a malformed compatibility response into systematic underbilling.

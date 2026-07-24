@@ -9,7 +9,7 @@ review-due: 2099-12-31
 audience: [human, ai]
 ---
 
-# 0017 — Qwen 视觉 route 与分档费率账本
+# 0017 — Qwen route 与分档/时长费率账本
 
 ## 背景 / Context
 
@@ -39,11 +39,15 @@ Qwen 价格会少预留；把 Omni 的 64K 窗口直接当主会话 route 又会
    `DASHSCOPE_API_KEY` 与 `DASHSCOPE_WORKSPACE_ID` 推导新加坡 compatible-mode base URL，或接受同等
    严格校验的显式 base URL。workspace id 非 secret；API key 仅 env，绝不进入 settings、dump、日志或
    客户端。
+6. Realtime ASR 是独立于 chat audio 理解的输入转写能力，固定使用
+   `qwen3-asr-flash-realtime`。它仍进入同一 quota/monthly-wallet/spend-ledger，而不是单开旁路：
+   reserve 按 120 秒会话上限与官方新加坡时长费率冻结 Plan；settle 按成功转发的 PCM16/16k/mono
+   字节向上取整为秒。无音频或上游拨号前失败 rollback；已经转发音频后按转发时长结算。
 
 ## 后果 / Consequences
 
 - 视觉主 Agent 能诚实发布 1M，而 context 上限仍由 provider 作为最终权威；
 - 旧内联媒体的大请求会临时占用较高预算，这是“绝不少扣”的必要代价；M1–M3 用可计量 proxy、lease
   和 evidence capsule 后才可缩小 quote，不能以猜测替代；
-- 账本可以处理当前两档 Qwen，也为未来 Omni 的按模态价格留下同一“冻结报价、权威 usage 结算”边界；
-- 音频产品能力不是被删除，而是被明确后置到不会降级主 Agent、不会少计费的实现阶段。
+- 账本可以处理当前两档 Qwen 视觉价格、ASR 时长价格，也为未来 Omni 的按模态价格留下同一“冻结报价、权威 usage/时长结算”边界；
+- 音频理解能力不是被删除，而是被明确后置到不会降级主 Agent、不会少计费的实现阶段；麦克风听写先作为独立 ASR 输入能力上线。

@@ -247,9 +247,12 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		BgWG:     bgWG,
 	})
 	speechSvc := appspeech.New(appspeech.Deps{
-		Auth:   installSvc,
-		RL:     rl,
-		Config: cfgP,
+		Auth:    installSvc,
+		Quota:   quotaSvc,
+		RL:      rl,
+		Config:  cfgP,
+		Clock:   systemClock{},
+		Metrics: chatMetrics{m: mx, inflight: inflight},
 	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
