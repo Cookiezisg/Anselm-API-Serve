@@ -47,10 +47,19 @@ func (c *Catalog) List() model.ListEnvelope {
 					OutputLimit: min64(cfg.MaxTokensCap, billing.DeepSeekOutputLimit),
 					Available:   len(cfg.DeepSeekAPIKeys) > 0,
 				},
+				// Multimodal availability needs BOTH halves. A Qwen key alone is not enough:
+				// with MEDIA_ENABLED=false there is no upload/lease path at all, so a client
+				// that believed this flag would fail on the very first media request — and it
+				// would fail LATE, mid-conversation, instead of the desktop simply not offering
+				// image/video. Availability must describe the whole path a caller will walk.
+				//
+				// 多模态可用性需要**两半都在**。光有 Qwen key 不够:MEDIA_ENABLED=false 时根本没有
+				// 上传/lease 通道,信了这个标志的客户端会在**第一次**发媒体时失败——而且是**晚**失败、
+				// 失败在对话中途,而不是桌面端干脆不提供图片/视频。可用性必须描述调用方将要走完的**整条**路。
 				Multimodal: model.RouteProfile{
 					InputLimit:  billing.Qwen37InputLimit,
 					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
-					Available:   len(cfg.QwenAPIKeys) > 0,
+					Available:   len(cfg.QwenAPIKeys) > 0 && cfg.MediaEnabled,
 				},
 			},
 		})

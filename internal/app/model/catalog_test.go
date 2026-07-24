@@ -77,3 +77,49 @@ func TestListEmptyIDIsEmptyNotNull(t *testing.T) {
 		t.Fatalf("empty list = %s, want data:[]", got)
 	}
 }
+
+// Availability must describe the WHOLE path a caller will walk, not just whether a key exists. A
+// Qwen key with MEDIA_ENABLED=false has no upload/lease channel at all, so a desktop that believed
+// `multimodal.available` would offer image/video and then fail on the user's FIRST media message —
+// late, mid-conversation — instead of simply not offering it.
+//
+// This is exactly the shape of bug that ships when a published capability is derived from one half
+// of its precondition.
+//
+// 可用性必须描述调用方将要走完的**整条**路,而不只是「有没有 key」。有 Qwen key 但 MEDIA_ENABLED=false 时
+// 根本没有上传/lease 通道:信了 `multimodal.available` 的桌面端会提供图片/视频,然后在用户**第一条**媒体
+// 消息上失败——晚失败、失败在对话中途,而不是干脆不提供。
+//
+// 「已发布的能力只由其前提的一半推导」正是这类 bug 的形状。
+func TestMultimodalAvailabilityRequiresBothTheKeyAndTheMediaPath(t *testing.T) {
+	cases := []struct {
+		name     string
+		qwenKeys []string
+		media    bool
+		want     bool
+	}{
+		{"key and media path", []string{"media"}, true, true},
+		{"key but no media path", []string{"media"}, false, false},
+		{"media path but no key", nil, true, false},
+		{"neither", nil, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat := New(&fakeCfg{c: &config.Config{
+				PublicModelID: "anselm-auto", MaxTokensCap: 16_384,
+				DeepSeekAPIKeys: []string{"text"},
+				QwenAPIKeys:     tc.qwenKeys,
+				MediaEnabled:    tc.media,
+			}})
+			caps := cat.List().Data[0].AnselmCapabilities
+			if caps.Multimodal.Available != tc.want {
+				t.Fatalf("multimodal.available = %v, want %v (qwenKeys=%v mediaEnabled=%v)",
+					caps.Multimodal.Available, tc.want, tc.qwenKeys, tc.media)
+			}
+			// The text route must stay independent of the media capability. 文本路由不受媒体能力牵连。
+			if !caps.Text.Available {
+				t.Fatal("the text route must not be gated on the media path")
+			}
+		})
+	}
+}
