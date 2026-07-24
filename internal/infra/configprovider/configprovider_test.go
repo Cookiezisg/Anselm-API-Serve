@@ -134,7 +134,29 @@ func TestLoadBaseDurableMediaIsExplicitAndComplete(t *testing.T) {
 	env["MEDIA_SIGNING_SECRET"] = "01234567890123456789012345678901"
 	env["MAX_BODY_BYTES"] = "4194304"
 	env["MEDIA_CHUNK_MAX_BYTES"] = "4194304"
+	// Enabling media without declaring this gateway's own public origin must fail closed: a chat
+	// request may only name a lease RELATIVELY (ADR 0011), so without this value the gateway has no
+	// safe way to absolutize the reference for an upstream fetch.
+	// 开了媒体却不声明网关自身的公开 origin 必须失败关闭:chat 只能**相对**指称 lease(ADR 0011),
+	// 少了这个值,网关没有安全的方式把引用绝对化给上游拉取。
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MEDIA_PUBLIC_BASE_URL") {
+		t.Fatalf("MEDIA_ENABLED without MEDIA_PUBLIC_BASE_URL must fail, got %v", err)
+	}
+	env["MEDIA_PUBLIC_BASE_URL"] = "https://gw.example"
 	c = mustLoad(t, env)
+	if c.MediaPublicBaseURL != "https://gw.example" {
+		t.Fatalf("MediaPublicBaseURL = %q", c.MediaPublicBaseURL)
+	}
+	// A non-bare or non-https origin is refused: a path/query would let a crafted relative reference
+	// resolve somewhere unintended, and plain http would hand a capability-bearing URL to the
+	// provider in clear text. 非裸/非 https 的 origin 一律拒。
+	for _, bad := range []string{"http://gw.example", "https://gw.example/v1", "https://gw.example?a=1", "https://u@gw.example", "gw.example", "https://"} {
+		env["MEDIA_PUBLIC_BASE_URL"] = bad
+		if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MEDIA_PUBLIC_BASE_URL") {
+			t.Errorf("MEDIA_PUBLIC_BASE_URL=%q must be rejected, got %v", bad, err)
+		}
+	}
+	env["MEDIA_PUBLIC_BASE_URL"] = "https://gw.example"
 	if !c.MediaEnabled || c.MediaSigningSecretSource != "configured" || c.MediaChunkMaxBytes != 4194304 {
 		t.Fatalf("media enabled config not assembled: %+v", c)
 	}

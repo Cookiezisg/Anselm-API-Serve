@@ -167,6 +167,17 @@ type Config struct {
 	MediaChunkMaxBytes       int64         // MEDIA_CHUNK_MAX_BYTES(<= MAX_BODY_BYTES)
 	MediaUploadTTL           time.Duration // MEDIA_UPLOAD_TTL_SEC
 	MediaLeaseTTL            time.Duration // MEDIA_LEASE_TTL_SEC
+	// MediaPublicBaseURL is THIS gateway's externally reachable origin (scheme+host, no path). It
+	// exists because a chat request may only name a lease by its RELATIVE fetch path (ADR 0011): the
+	// host must never be a client-supplied value, or a caller holding a legitimate lease of their
+	// own could point the upstream provider at any origin — an SSRF executed by the provider. The
+	// gateway therefore absolutizes the reference itself, against this.
+	//
+	// MediaPublicBaseURL 是**本网关**对外可达的 origin(scheme+host,无 path)。它存在的理由是:chat 请求
+	// 只能用**相对** fetch path 指称 lease(ADR 0011)——host 绝不可是客户端提供的值,否则持有自己合法
+	// lease 的调用方就能把上游 provider 指向任意 origin,即一条由 provider 代为执行的 SSRF。故由网关用
+	// 本配置自行绝对化。
+	MediaPublicBaseURL string // MEDIA_PUBLIC_BASE_URL
 
 	ResetTZ  string         // RESET_TZ
 	Location *time.Location // LoadLocation(ResetTZ) 结果
@@ -336,6 +347,9 @@ func (c *Config) ValidateSemantics() error {
 		}
 		if c.MediaChunkMaxBytes <= 0 || c.MediaChunkMaxBytes > c.MaxBodyBytes || c.MediaChunkMaxBytes > c.MediaUploadMaxBytes {
 			return fmt.Errorf("SEC-2 config: MEDIA_CHUNK_MAX_BYTES must be > 0 and <= both MAX_BODY_BYTES and MEDIA_UPLOAD_MAX_BYTES")
+		}
+		if err := validateMediaPublicBaseURL(c.MediaPublicBaseURL); err != nil {
+			return err
 		}
 		if c.MediaUploadTTL <= 0 || c.MediaLeaseTTL <= 0 {
 			return fmt.Errorf("SEC-2 config: media TTLs must be positive")
