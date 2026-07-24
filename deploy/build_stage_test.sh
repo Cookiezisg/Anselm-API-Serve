@@ -22,6 +22,7 @@ mkdir -m 0700 "${STAGE}"
 DEEPSEEK_API_KEY='alpha\beta"gamma$delta' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
+	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \
@@ -42,6 +43,12 @@ for pair in \
 	'MAX_MESSAGES="4096"' \
 	'MAX_MESSAGE_CHARS="4194304"' \
 	'MAX_BODY_BYTES="8388608"' \
+	'MEDIA_ENABLED="true"' \
+	'MEDIA_STAGING_ROOT="/var/lib/anselm-gateway/media-staging"' \
+	'MEDIA_UPLOAD_MAX_BYTES="104857600"' \
+	'MEDIA_CHUNK_MAX_BYTES="4194304"' \
+	'MEDIA_UPLOAD_TTL_SEC="3600"' \
+	'MEDIA_LEASE_TTL_SEC="3600"' \
 	'RATE_PER_MIN="0"' \
 	'DAILY_SUBLIMIT="0"' \
 	'INSTALL_GLOBAL_DAILY_CAP="0"' \
@@ -83,10 +90,12 @@ redactor_output="$(printf '%s\n' \
 	'Authorization: Bearer bearer-secret' \
 	'X-API-Key: header-secret' \
 	'DASHSCOPE_API_KEY=env-secret' \
+	'MEDIA_SIGNING_SECRET=media-signing-secret' \
 	'sk-ws-raw-secret-token' | \
 	bash -c "$(sed -n '/^redact_diagnostics()/,/^}/p' "${INSTALL_SCRIPT}"); redact_diagnostics")"
 [[ "${redactor_output}" != *bearer-secret* && "${redactor_output}" != *header-secret* && \
-	"${redactor_output}" != *env-secret* && "${redactor_output}" != *sk-ws-raw-secret-token* ]] ||
+	"${redactor_output}" != *env-secret* && "${redactor_output}" != *media-signing-secret* && \
+	"${redactor_output}" != *sk-ws-raw-secret-token* ]] ||
 	fail "gateway startup diagnostics do not redact credentials"
 
 BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
@@ -94,6 +103,7 @@ mkdir -m 0700 "${BUILTIN_STAGE}"
 DEEPSEEK_API_KEY='key' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
+	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	DASHBOARD_AUTH_MODE='builtin' \
 	DASHBOARD_USER='admin' \
 	DASHBOARD_PASSWORD='builtin-secret' \
@@ -111,6 +121,7 @@ mkdir -m 0700 "${EXTERNAL_STAGE}"
 DEEPSEEK_API_KEY='key' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
+	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	RESET_UNLAUNCHED_GATEWAY_DATA='1' \
 	DASHBOARD_AUTH_MODE='external' \
 	DASHBOARD_USER='stale-user' \
@@ -142,6 +153,7 @@ mkdir -m 0700 "${BAD_STAGE}"
 if DEEPSEEK_API_KEY=$'bad\nsecret' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
+	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \

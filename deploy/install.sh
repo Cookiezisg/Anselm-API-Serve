@@ -42,6 +42,7 @@ redact_diagnostics() {
 		-e 's/([Aa]uthorization:[[:space:]]*[Bb]earer)[[:space:]]+[^[:space:]]+/\1 [REDACTED]/g' \
 		-e 's/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy][[:space:]]*:[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
 		-e 's/([A-Za-z_]*[Aa][Pp][Ii]_[Kk][Ee][Yy][A-Za-z_]*[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
+		-e 's/([A-Za-z_]*[Ss][Ee][Cc][Rr][Ee][Tt][A-Za-z_]*[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
 		-e 's/(sk-[A-Za-z0-9._-]{8,})/[REDACTED]/g'
 }
 

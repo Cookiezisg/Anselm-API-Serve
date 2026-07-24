@@ -3,7 +3,7 @@
 #
 # Required GitHub Environment (`production`) secrets:
 #   SSH_PRIVATE_KEY, SERVER_HOST, SERVER_USER, SERVER_KNOWN_HOSTS
-#   DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, DASHSCOPE_WORKSPACE_ID,
+#   DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, DASHSCOPE_WORKSPACE_ID, MEDIA_SIGNING_SECRET,
 #   GATEWAY_DOMAIN, ACME_EMAIL
 # Optional secrets:
 #   DASHBOARD_AUTH_MODE (disabled|builtin|external; external for a preceding IAP)
@@ -212,6 +212,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
+          MEDIA_SIGNING_SECRET: ${{ secrets.MEDIA_SIGNING_SECRET }}
           DASHBOARD_AUTH_MODE: ${{ secrets.DASHBOARD_AUTH_MODE }}
           DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
