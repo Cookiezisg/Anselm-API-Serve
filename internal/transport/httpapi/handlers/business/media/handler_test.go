@@ -36,6 +36,12 @@ func (s *fakeService) Create(_ context.Context, in appmedia.CreateInput) (*dmedi
 	}
 	return &dmedia.Upload{ID: "mup_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ReceivedBytes: 0, ExpiresAt: time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)}, nil
 }
+func (s *fakeService) Status(_ context.Context, _ string, _ string) (*dmedia.Upload, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &dmedia.Upload{ID: "mup_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ReceivedBytes: 2, ExpiresAt: time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)}, nil
+}
 func (s *fakeService) Append(_ context.Context, _ string, _ string, offset int64, chunk []byte) (*dmedia.Upload, error) {
 	s.appendOffset, s.appendChunk = offset, append([]byte(nil), chunk...)
 	if s.err != nil {
@@ -110,6 +116,17 @@ func TestAppendRequiresExactOffsetAndChunkBound(t *testing.T) {
 	h.Append(rec, r)
 	if rec.Code != http.StatusBadRequest || code(t, rec) != "MEDIA_UPLOAD_INVALID" {
 		t.Fatalf("oversized chunk=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusReturnsOnlyOwnedOpenCursor(t *testing.T) {
+	h := newHandler(&fakeService{})
+	r := signedRequest(http.MethodGet, "/v1/media/uploads/mup_a", nil)
+	r.SetPathValue("uploadId", "mup_a")
+	rec := httptest.NewRecorder()
+	h.Status(rec, r)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"offset":2`)) {
+		t.Fatalf("status=%d %s", rec.Code, rec.Body.String())
 	}
 }
 

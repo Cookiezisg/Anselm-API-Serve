@@ -30,6 +30,7 @@ type Authenticator interface {
 
 type Service interface {
 	Create(ctx context.Context, in appmedia.CreateInput) (*dmedia.Upload, error)
+	Status(ctx context.Context, installID, uploadID string) (*dmedia.Upload, error)
 	Append(ctx context.Context, installID, uploadID string, expectedOffset int64, chunk []byte) (*dmedia.Upload, error)
 	Complete(ctx context.Context, installID, uploadID string) (*appmedia.PrivateLease, error)
 	OpenLease(ctx context.Context, leaseID, token string) (*appmedia.LeaseSource, error)
@@ -78,6 +79,23 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := h.svc.Create(r.Context(), appmedia.CreateInput{InstallID: installID, ExpectedSHA256: in.SHA256, MIMEType: in.MIMEType, TotalBytes: in.TotalBytes})
+	if err != nil {
+		h.writeAppError(w, err)
+		return
+	}
+	h.writeUpload(w, u)
+}
+
+func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.WriteErrorWith(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "method not allowed")
+		return
+	}
+	installID, ok := h.authorize(w, r)
+	if !ok || !h.available(w) {
+		return
+	}
+	u, err := h.svc.Status(r.Context(), installID, r.PathValue("uploadId"))
 	if err != nil {
 		h.writeAppError(w, err)
 		return

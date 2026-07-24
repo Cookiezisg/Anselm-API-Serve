@@ -188,6 +188,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, e
 	return &u, nil
 }
 
+// Status returns only the authoritative cursor for an open, install-owned upload. A client uses
+// it after an ambiguous transport failure before choosing the next raw chunk; it never guesses
+// whether a prior PUT reached durable storage.
+//
+// Status 只返回 open、install-owned upload 的权威 cursor。client 在传输结果不确定后先查询它，再决定
+// 下一块 raw chunk；绝不猜测先前 PUT 是否已写入持久存储。
+func (s *Service) Status(ctx context.Context, installID, uploadID string) (*dmedia.Upload, error) {
+	return s.openOwned(ctx, installID, uploadID)
+}
+
 // Append first reconciles a crash tail, then fsyncs the new bytes before moving the DB cursor. A
 // concurrent/replayed request which loses the DB CAS has its own unrecorded tail truncated again.
 func (s *Service) Append(ctx context.Context, installID, uploadID string, expectedOffset int64, chunk []byte) (*dmedia.Upload, error) {
