@@ -110,3 +110,71 @@ func TestHandler_ProxiesPCMToQwenRealtimeEvents(t *testing.T) {
 		t.Fatalf("bad finish event = %#v", finishEvt)
 	}
 }
+
+func TestHandler_CancelClosesWithoutForwardingControl(t *testing.T) {
+	events := make(chan map[string]any, 2)
+	done := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() { _ = c.Close() }()
+		defer close(done)
+		for {
+			_, payload, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			var evt map[string]any
+			if err := json.Unmarshal(payload, &evt); err != nil {
+				t.Errorf("event json: %v", err)
+				return
+			}
+			events <- evt
+		}
+	}))
+	defer upstream.Close()
+
+	h := New(fakeSpeechSvc{up: appspeech.Upstream{
+		URL: strings.Replace(upstream.URL, "http://", "ws://", 1), APIKey: "qwen-key",
+	}})
+	downstream := httptest.NewServer(h)
+	defer downstream.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(strings.Replace(downstream.URL, "http://", "ws://", 1),
+		http.Header{proofhttp.HeaderInstallID: []string{"ins_1"}})
+	if err != nil {
+		t.Fatalf("dial downstream: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := conn.WriteJSON(map[string]string{"type": "cancel"}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	_, payload, err := conn.ReadMessage()
+	if err == nil && strings.Contains(string(payload), "SPEECH_CONTROL_INVALID") {
+		t.Fatalf("cancel was rejected: %s", payload)
+	}
+
+	first := <-events
+	if first["type"] != "session.update" {
+		t.Fatalf("first upstream event = %#v", first)
+	}
+	<-done
+	select {
+	case evt := <-events:
+		t.Fatalf("cancel leaked upstream as event %#v", evt)
+	default:
+	}
+}
+
+func TestParseControlAcceptsCancel(t *testing.T) {
+	for _, raw := range []string{`{"type":"commit"}`, `{"type":"finish"}`, `{"type":"cancel"}`} {
+		if _, err := parseControl([]byte(raw)); err != nil {
+			t.Fatalf("parseControl(%s): %v", raw, err)
+		}
+	}
+}

@@ -153,6 +153,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = writeUpstreamJSON(upConn, map[string]any{"event_id": nextEventID(), "type": "session.finish"})
 				continue
 			}
+			if action == "cancel" {
+				return
+			}
 			if action == "commit" {
 				_ = writeUpstreamJSON(upConn, map[string]any{"event_id": nextEventID(), "type": "input_audio_buffer.commit"})
 			}
@@ -189,7 +192,7 @@ func parseControl(payload []byte) (string, error) {
 		return "", err
 	}
 	switch in.Type {
-	case "finish", "commit":
+	case "finish", "commit", "cancel":
 		return in.Type, nil
 	default:
 		return "", errors.New("unknown speech control")

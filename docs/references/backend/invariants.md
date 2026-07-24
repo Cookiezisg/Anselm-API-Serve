@@ -77,7 +77,7 @@ audience: [human, ai]
 | GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
 | GW-INV-46 | durable media 只接受 proof-bound install-owned opaque upload id；chunk 必须以服务端确认的精确 offset 追加并 fsync 后 CAS cursor；完成重算 size+SHA 后才原子签发一个 lease。fetch token 为 HMAC 可重建值，SQLite 仅存 hash；仅作为短期 `fetchPath` query capability 返给已证明的 completion caller，读取路由统一 404 且不暴露 install/path/SHA | 并发/replay 覆盖字节、崩溃产生未确认尾部、跨 install 枚举/复用，或 bearer capability 落库/泄漏 |
 | GW-INV-47 | media expiry 先写 DB 状态，后删私有文件，再 acknowledge；启动和每分钟恢复均截断 fsync-before-cursor crash tail、对 cursor 超过物理文件的 staging fail-closed，并重试未完成清理 | restart 后错误续传、过期媒体仍可被 provider 取用，或删除中断留下不可回收私有 bytes |
-| GW-INV-48 | realtime speech ASR 是独立于 chat `input_audio` 的 proof-gated WebSocket：proof 绑定空 GET body；gateway owns Qwen `session.update` 与 credentials；client 只能发送≤256KiB 的 binary PCM frame 或 `commit|finish` control；单会话≤2min；关闭/未配置返回 `SPEECH_UNAVAILABLE`，不得落入 chat audio route 或任意上游 JSON 透传 | 用户配置绕过 ASR 产品档、长连接烧资源、key 泄漏，或把尚未计价的音频内容理解误当转写送上游 |
+| GW-INV-48 | realtime speech ASR 是独立于 chat `input_audio` 的 proof-gated WebSocket：proof 绑定空 GET body；gateway owns Qwen `session.update` 与 credentials；client 只能发送≤256KiB 的 binary PCM frame 或 `commit|finish|cancel` control；`cancel` 只关闭本次会话、不转发为上游 JSON；单会话≤2min；关闭/未配置返回 `SPEECH_UNAVAILABLE`，不得落入 chat audio route 或任意上游 JSON 透传 | 用户配置绕过 ASR 产品档、长连接烧资源、key 泄漏，或把尚未计价的音频内容理解误当转写送上游 |
 
 ## E. 跨切配置 / 可观测
 
