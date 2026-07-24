@@ -44,9 +44,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-test-deploy:
+  admission:
     # workflow_run can expose production secrets, so accept only the repository's
-    # own successful push-to-main CI run and deploy that run's immutable SHA.
+    # own successful push-to-main CI run. This job has no production environment
+    # or secrets: a stale completed CI run is a normal race, not a failed deploy.
     if: >-
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
@@ -56,6 +57,40 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
        inputs.reset_unlaunched_gateway_data == true &&
        inputs.confirmation == 'RESET_UNLAUNCHED_GATEWAY_DATA')
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.main-tip.outputs.deploy }}
+    steps:
+      # This checkout executes no repository code; it only configures the
+      # repository-scoped token for the authenticated ls-remote below.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - name: admit only the current main SHA
+        id: main-tip
+        env:
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'workflow_run head_sha is not a full lowercase commit SHA' >&2
+            exit 1
+          }
+          main_tip="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
+          [[ "${main_tip}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'could not resolve the current main tip' >&2
+            exit 1
+          }
+          if [[ "${main_tip}" != "${DEPLOY_SHA}" ]]; then
+            echo "::notice::skipping stale CI SHA ${DEPLOY_SHA}; main is now ${main_tip}"
+            echo 'deploy=false' >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo 'deploy=true' >>"${GITHUB_OUTPUT}"
+
+  build-test-deploy:
+    needs: admission
+    if: needs.admission.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -167,23 +202,6 @@ jobs:
             exit 1
           }
           echo "sha=${DEPLOY_SHA:0:12}" >>"${GITHUB_OUTPUT}"
-
-      # A slower older CI run (or a manual rerun of one) can complete after a
-      # newer push. Never let completion order roll production back implicitly.
-      - name: verify admitted SHA is still the main tip
-        env:
-          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-        run: |
-          set -euo pipefail
-          main_tip="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
-          [[ "${main_tip}" =~ ^[0-9a-f]{40}$ ]] || {
-            echo 'could not resolve the current main tip' >&2
-            exit 1
-          }
-          [[ "${main_tip}" == "${DEPLOY_SHA}" ]] || {
-            echo "::notice::skipping stale CI SHA ${DEPLOY_SHA}; main is now ${main_tip}"
-            exit 1
-          }
 
       - name: deploy through pinned SSH (schema-aware auto-rollback)
         env:
