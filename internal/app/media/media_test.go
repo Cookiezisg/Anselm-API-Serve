@@ -190,6 +190,16 @@ func (r *memRepo) CompleteUpload(_ context.Context, install, id, sha string, _ t
 	return r.lease, true, nil
 }
 
+// GetLease makes memRepo satisfy LeaseRepository so the chat-path predicate (VerifyLease) can be
+// exercised against the same fixture that mints the lease. 让 memRepo 满足 LeaseRepository,使 chat
+// 路径的谓词能在**铸造它的同一夹具**上被检验。
+func (r *memRepo) GetLease(_ context.Context, leaseID string) (*dmedia.Lease, bool, error) {
+	if r.lease == nil || r.lease.ID != leaseID {
+		return nil, false, nil
+	}
+	return r.lease, true, nil
+}
+
 func testService(t *testing.T, repo *memRepo, files *memFiles) *Service {
 	t.Helper()
 	signer, err := NewHMACSigner([]byte("01234567890123456789012345678901"))
@@ -305,5 +315,53 @@ func TestRecoverTruncatesCrashTailAndRemovesExpiredStaging(t *testing.T) {
 	}
 	if _, ok := files.data[u.ID]; ok {
 		t.Fatal("expired staging bytes retained")
+	}
+}
+
+// VerifyLease is the chat path's authorization predicate (ADR 0011). The case that matters most is
+// the one OpenLease does NOT cover: a lease whose token verifies but which belongs to ANOTHER
+// install must be refused, and refused indistinguishably from "no such lease" so the endpoint is
+// never an existence oracle over other installs' ids.
+//
+// VerifyLease 是 chat 路径的授权谓词(ADR 0011)。最要紧的正是 OpenLease **不覆盖**的那一条:token 验得过
+// 但属于**别的 install** 的 lease 必须被拒,且拒得与「查无此 lease」不可区分——否则该端点会变成针对他人
+// lease id 的存在性预言机。
+func TestVerifyLeaseBindsToTheRequestingInstall(t *testing.T) {
+	repo := &memRepo{}
+	files := &memFiles{data: map[string][]byte{}}
+	svc := testService(t, repo, files)
+	b := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	sum := sha256.Sum256(b)
+	u, err := svc.Create(context.Background(), CreateInput{InstallID: "ins_a", ExpectedSHA256: hex.EncodeToString(sum[:]), MIMEType: "image/png", TotalBytes: int64(len(b))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Append(context.Background(), "ins_a", u.ID, 0, b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Complete(context.Background(), "ins_a", u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseID, token := got.Lease.ID, got.FetchToken
+
+	mime, err := svc.VerifyLease(context.Background(), "ins_a", leaseID, token)
+	if err != nil {
+		t.Fatalf("the owning install must be able to reference its own lease: %v", err)
+	}
+	if mime != "image/png" {
+		t.Fatalf("VerifyLease must answer the lease MIME, got %q", mime)
+	}
+
+	for name, call := range map[string]func() error{
+		"another install": func() error { _, e := svc.VerifyLease(context.Background(), "ins_b", leaseID, token); return e },
+		"tampered token":  func() error { _, e := svc.VerifyLease(context.Background(), "ins_a", leaseID, token+"x"); return e },
+		"unknown lease":   func() error { _, e := svc.VerifyLease(context.Background(), "ins_a", "mls_missing", token); return e },
+		"empty token":     func() error { _, e := svc.VerifyLease(context.Background(), "ins_a", leaseID, ""); return e },
+		"empty install":   func() error { _, e := svc.VerifyLease(context.Background(), "", leaseID, token); return e },
+	} {
+		if err := call(); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s must be refused as not-found (no existence oracle), got %v", name, err)
+		}
 	}
 }

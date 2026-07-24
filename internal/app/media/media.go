@@ -171,6 +171,50 @@ func (s *Service) OpenLease(ctx context.Context, leaseID, token string) (*LeaseS
 	return &LeaseSource{MIMEType: lease.MIMEType, SizeBytes: lease.SizeBytes, Body: body}, nil
 }
 
+// VerifyLease decides whether a lease reference carried in a CHAT request is one this gateway issued
+// to THIS install and is still usable — without opening the object (the chat path only needs the
+// verdict and the MIME, never the bytes).
+//
+// It deliberately adds a predicate OpenLease does not have: `lease.InstallID != installID`. OpenLease
+// serves the UNAUTHENTICATED provider-fetch route, where the signed token IS the whole credential;
+// the chat path, by contrast, runs under a known install, so a lease belonging to somebody else must
+// be refused even if its token verifies. Without this line any install could reference any other
+// install's media (ADR 0011).
+//
+// Every failure collapses into ErrNotFound: not found, wrong owner, expired, aborted and bad token
+// must be indistinguishable, or the endpoint becomes an existence oracle over other installs' lease
+// ids.
+//
+// VerifyLease 判定 chat 请求里携带的 lease 引用是否是本网关签发给**当前 install** 且仍可用的——不打开对象
+// (chat 路径只要结论与 MIME,从不要字节)。
+//
+// 它刻意比 OpenLease 多一条谓词:`lease.InstallID != installID`。OpenLease 服务的是**未鉴权**的 provider
+// 拉取路由,签名 token 即全部凭证;而 chat 路径运行在已知 install 之下,故**别人的 lease 即便 token 验得过
+// 也必须拒**。少了这一行,任一 install 都能引用他人的媒体(ADR 0011)。
+//
+// 一切失败归并为 ErrNotFound:不存在、非本人、已过期、已中止、token 不对必须**不可区分**,否则该端点会变成
+// 一个针对他人 lease id 的存在性预言机。
+func (s *Service) VerifyLease(ctx context.Context, installID, leaseID, token string) (mimeType string, err error) {
+	repo, ok := s.repo.(LeaseRepository)
+	if !ok {
+		return "", errors.New("mediaapp.VerifyLease: repository lacks lease lookup")
+	}
+	if strings.TrimSpace(installID) == "" || strings.TrimSpace(leaseID) == "" || token == "" {
+		return "", ErrNotFound
+	}
+	lease, found, err := repo.GetLease(ctx, leaseID)
+	if err != nil {
+		return "", fmt.Errorf("mediaapp.VerifyLease lookup: %w", err)
+	}
+	if !found || lease.InstallID != installID || lease.State != dmedia.LeaseActive ||
+		!s.clock.Now().UTC().Before(lease.ExpiresAt) ||
+		!s.signer.Verify(token, lease.ID, lease.InstallID, lease.ExpiresAt) ||
+		dmedia.HashSecret(token) != lease.FetchTokenHash {
+		return "", ErrNotFound
+	}
+	return lease.MIMEType, nil
+}
+
 func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, error) {
 	if strings.TrimSpace(in.InstallID) == "" || !dmedia.ValidSHA256(in.ExpectedSHA256) || !supportedMIME(in.MIMEType) ||
 		in.TotalBytes <= 0 || in.TotalBytes > s.limits.MaxBytes {
