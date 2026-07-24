@@ -247,3 +247,17 @@ func TestSampledInfoRedactsSecrets(t *testing.T) {
 		t.Fatalf("secret leaked through sampled INFO line: %s", buf.String())
 	}
 }
+
+func TestCapabilityBearingURLsAreAlwaysRedacted(t *testing.T) {
+	var buf bytes.Buffer
+	Init(&buf, "info")
+	const capability = "/v1/media/leases/mls_example/content?token=provider-fetch-capability"
+	From(context.Background()).Info("media_audit", "fetch_path", capability, "url", "https://gateway.example"+capability)
+	out := buf.String()
+	if strings.Contains(out, "provider-fetch-capability") || strings.Contains(out, "mls_example") {
+		t.Fatalf("media capability leaked through URL attribute: %s", out)
+	}
+	if got := strings.Count(out, redactValue); got != 2 {
+		t.Fatalf("redacted capability attribute count=%d, want 2: %s", got, out)
+	}
+}
