@@ -59,6 +59,14 @@ func (f *memFiles) SHA256(_ context.Context, id string) (string, int64, error) {
 	sum := sha256.Sum256(f.data[id])
 	return hex.EncodeToString(sum[:]), int64(len(f.data[id])), nil
 }
+func (f *memFiles) MIMEType(_ context.Context, id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if bytes.HasPrefix(f.data[id], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return "image/png", nil
+	}
+	return "", nil
+}
 func (f *memFiles) Remove(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -195,7 +203,7 @@ func TestCreateAppendCompleteReturnsOnlyOpaqueLease(t *testing.T) {
 	repo := &memRepo{}
 	files := &memFiles{data: map[string][]byte{}}
 	svc := testService(t, repo, files)
-	b := []byte("payload")
+	b := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	sum := sha256.Sum256(b)
 	u, err := svc.Create(context.Background(), CreateInput{InstallID: "ins_a", ExpectedSHA256: hex.EncodeToString(sum[:]), MIMEType: "image/png", TotalBytes: int64(len(b))})
 	if err != nil {
@@ -214,6 +222,24 @@ func TestCreateAppendCompleteReturnsOnlyOpaqueLease(t *testing.T) {
 	signer, _ := NewHMACSigner([]byte("01234567890123456789012345678901"))
 	if !signer.Verify(got.FetchToken, got.Lease.ID, got.Lease.InstallID, got.Lease.ExpiresAt) {
 		t.Fatal("completion token must be deterministic and restart-verifiable")
+	}
+}
+
+func TestCompleteRejectsDeclaredMIMENotMatchingStagedMagic(t *testing.T) {
+	repo := &memRepo{}
+	files := &memFiles{data: map[string][]byte{}}
+	svc := testService(t, repo, files)
+	b := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	sum := sha256.Sum256(b)
+	u, err := svc.Create(context.Background(), CreateInput{InstallID: "ins_a", ExpectedSHA256: hex.EncodeToString(sum[:]), MIMEType: "image/jpeg", TotalBytes: int64(len(b))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Append(context.Background(), "ins_a", u.ID, 0, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Complete(context.Background(), "ins_a", u.ID); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("complete declared jpeg / actual png = %v, want integrity failure", err)
 	}
 }
 

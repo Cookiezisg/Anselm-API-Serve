@@ -49,7 +49,7 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 | quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 双闸预留（install 月次数 + operator 月预算）与显式 ledger 状态（A 组） |
 | install | `app/install` + `app/deviceproof` | `POST /v1/install` · `GET /v1/install/challenge` · `GET /v1/proof/challenge` | GW-INV-12/16/20、逐请求 proof、防 Sybil + PoW 三态 |
 | chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
-| media | `app/media` | `POST /v1/media/uploads` · `GET/DELETE/PUT /v1/media/uploads/{id}` · `POST /complete` | install-bound resumable staging（GET 是 ambiguous PUT 后权威 cursor；DELETE 先 durable abort 后删暂存）、opaque lease、HMAC-derived private fetch credential、startup/periodic TTL recovery；字节不进 SQLite |
+| media | `app/media` | `POST /v1/media/uploads` · `GET/DELETE/PUT /v1/media/uploads/{id}` · `POST /complete` | install-bound resumable staging（GET 是 ambiguous PUT 后权威 cursor；DELETE 先 durable abort 后删暂存；complete 以 magic 重验 MIME）、opaque lease、HMAC-derived private fetch credential、startup/periodic TTL recovery；字节不进 SQLite |
 | model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |
 | health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB）；cached authenticated provider/model probe |
 | dashboard | `app/dashboard` | dashboard `/api/*` | GW-INV-19 auth-mode trust boundary |

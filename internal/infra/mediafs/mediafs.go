@@ -168,6 +168,34 @@ func (s *Store) SHA256(ctx context.Context, uploadID string) (string, int64, err
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// MIMEType identifies only the small, explicit set of binary containers accepted by the media
+// staging API. It intentionally examines bytes, not the client-declared Content-Type or filename.
+// This is a fail-closed magic check rather than a decoder: provider-side validation remains the
+// final parser, while an unknown/truncated prefix can never become a fetchable lease.
+func (s *Store) MIMEType(ctx context.Context, uploadID string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	p, err := s.path(uploadID)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// #nosec G304 -- p comes only from path(), which accepts opaque mup_<32 lowercase hex> ids.
+	f, err := os.Open(p)
+	if err != nil {
+		return "", fmt.Errorf("mediafs.MIMEType open: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	prefix := make([]byte, 64)
+	n, err := io.ReadFull(f, prefix)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", fmt.Errorf("mediafs.MIMEType read: %w", err)
+	}
+	return detectMIME(prefix[:n]), nil
+}
+
 func (s *Store) Open(ctx context.Context, uploadID string) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -217,4 +245,25 @@ func validUploadID(uploadID string) bool {
 		}
 	}
 	return true
+}
+
+func detectMIME(prefix []byte) string {
+	switch {
+	case len(prefix) >= 8 && string(prefix[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(prefix) >= 3 && prefix[0] == 0xff && prefix[1] == 0xd8 && prefix[2] == 0xff:
+		return "image/jpeg"
+	case len(prefix) >= 12 && string(prefix[:4]) == "RIFF" && string(prefix[8:12]) == "WEBP":
+		return "image/webp"
+	case len(prefix) >= 12 && string(prefix[4:8]) == "ftyp":
+		return "video/mp4"
+	case len(prefix) >= 12 && string(prefix[:4]) == "RIFF" && string(prefix[8:12]) == "WAVE":
+		return "audio/wav"
+	case len(prefix) >= 3 && string(prefix[:3]) == "ID3":
+		return "audio/mpeg"
+	case len(prefix) >= 2 && prefix[0] == 0xff && prefix[1]&0xe0 == 0xe0:
+		return "audio/mpeg"
+	default:
+		return ""
+	}
 }

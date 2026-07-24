@@ -38,6 +38,7 @@ type Files interface {
 	Size(ctx context.Context, uploadID string) (int64, error)
 	Truncate(ctx context.Context, uploadID string, size int64) error
 	SHA256(ctx context.Context, uploadID string) (sha256 string, size int64, err error)
+	MIMEType(ctx context.Context, uploadID string) (string, error)
 	Remove(ctx context.Context, uploadID string) error
 	Open(ctx context.Context, uploadID string) (io.ReadCloser, error)
 }
@@ -313,6 +314,12 @@ func (s *Service) Complete(ctx context.Context, installID, uploadID string) (*Pr
 		return nil, fmt.Errorf("mediaapp.Complete hash: %w", err)
 	}
 	if size != u.TotalBytes || sha != u.ExpectedSHA256 {
+		return nil, ErrIntegrity
+	}
+	actualMIME, err := s.files.MIMEType(ctx, uploadID)
+	if err != nil || actualMIME != u.MIMEType {
+		// MIME is a declared transport property, never evidence. The staged bytes decide whether
+		// a lease may be created; an unreadable/unknown prefix fails closed as integrity too.
 		return nil, ErrIntegrity
 	}
 	now := s.clock.Now().UTC()

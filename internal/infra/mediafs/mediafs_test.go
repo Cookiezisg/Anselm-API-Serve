@@ -55,3 +55,32 @@ func TestRejectsTraversalAndDoesNotCreateFiles(t *testing.T) {
 		t.Fatalf("traversal err=%v, want ErrBadUploadID", err)
 	}
 }
+
+func TestMIMETypeSniffsOnlySupportedContainerMagic(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"png", "\x89PNG\r\n\x1a\nbody", "image/png"},
+		{"jpeg", "\xff\xd8\xffbody", "image/jpeg"},
+		{"webp", "RIFF\x00\x00\x00\x00WEBPbody", "image/webp"},
+		{"mp4", "\x00\x00\x00\x18ftypisombody", "video/mp4"},
+		{"wav", "RIFF\x00\x00\x00\x00WAVEbody", "audio/wav"},
+		{"mp3 id3", "ID3body", "audio/mpeg"},
+		{"unknown", "not a supported media container", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(t.TempDir())
+			if err := s.Create(context.Background(), uploadID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Append(context.Background(), uploadID, 0, []byte(tc.body)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.MIMEType(context.Background(), uploadID)
+			if err != nil || got != tc.want {
+				t.Fatalf("MIMEType=(%q,%v), want %q", got, err, tc.want)
+			}
+		})
+	}
+}
