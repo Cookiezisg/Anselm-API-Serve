@@ -24,6 +24,7 @@ import (
 	appmedia "github.com/sunweilin/anselm/gateway/internal/app/media"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
@@ -245,6 +246,11 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 		BgWG:     bgWG,
 	})
+	speechSvc := appspeech.New(appspeech.Deps{
+		Auth:   installSvc,
+		RL:     rl,
+		Config: cfgP,
+	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
 	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
@@ -263,6 +269,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Chat:               chatSvc,
 		Quota:              quotaSvc,
 		Models:             modelCat,
+		Speech:             speechSvc,
 		Media:              mediaSvc,
 		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
 		Mx:                 mx,

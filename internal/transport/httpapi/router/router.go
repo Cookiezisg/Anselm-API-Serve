@@ -18,6 +18,7 @@ import (
 	appmedia "github.com/sunweilin/anselm/gateway/internal/app/media"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/challenge"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/chat"
@@ -27,6 +28,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/models"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/quota"
+	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/speech"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware"
 )
 
@@ -58,9 +60,10 @@ type PanicCounter interface {
 type Deps struct {
 	Install *appinstall.Service // POST /v1/install + GET /v1/install/challenge + auth
 	Proof   *appdeviceproof.Service
-	Chat    *appchat.Service  // POST /v1/chat/completions
-	Quota   *appquota.Service // GET /v1/quota
-	Models  *appmodel.Catalog // GET /v1/models
+	Chat    *appchat.Service   // POST /v1/chat/completions
+	Quota   *appquota.Service  // GET /v1/quota
+	Models  *appmodel.Catalog  // GET /v1/models
+	Speech  *appspeech.Service // GET /v1/speech/asr
 	// Media is nil while MEDIA_ENABLED=false; routes remain proof-gated and
 	// return MEDIA_UNAVAILABLE rather than silently accepting an unusable upload.
 	Media              *appmedia.Service
@@ -100,6 +103,7 @@ func BuildHandler(d Deps) http.Handler {
 		chat:           proof.Protect(d.Proof, chat.New(d.Chat, limit)),
 		quota:          proof.Protect(d.Proof, quota.New(d.Install, d.Quota)),
 		models:         proof.Protect(d.Proof, models.New(d.Install, d.Models)),
+		speechASR:      proof.Protect(d.Proof, speech.New(d.Speech)),
 		mediaCreate:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Create)),
 		mediaStatus:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Status)),
 		mediaCancel:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Cancel)),
@@ -121,6 +125,7 @@ type routes struct {
 	chat           http.Handler
 	quota          http.Handler
 	models         http.Handler
+	speechASR      http.Handler
 	mediaCreate    http.Handler
 	mediaStatus    http.Handler
 	mediaCancel    http.Handler
@@ -152,6 +157,7 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("POST /v1/chat/completions", wrap("chat_completions", rt.chat))
 	mux.Handle("GET /v1/quota", wrap("quota", rt.quota))
 	mux.Handle("GET /v1/models", wrap("models", rt.models))
+	mux.Handle("GET /v1/speech/asr", wrap("speech_asr", rt.speechASR))
 	mux.Handle("POST /v1/media/uploads", wrap("media_create", rt.mediaCreate))
 	mux.Handle("GET /v1/media/uploads/{uploadId}", wrap("media_status", rt.mediaStatus))
 	mux.Handle("DELETE /v1/media/uploads/{uploadId}", wrap("media_cancel", rt.mediaCancel))

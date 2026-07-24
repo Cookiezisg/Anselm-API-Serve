@@ -110,6 +110,10 @@ var (
 	// table deliberately has no audio-capable upstream. It is distinct from malformed input and from
 	// a missing visual-provider credential, so clients can preserve their attachment and retry after an upgrade.
 	ErrAudioUnavailable = NewError(statusServiceUnavailable, "AUDIO_UNAVAILABLE", "audio input is not available on this deployment")
+	// ErrSpeechUnavailable — realtime microphone transcription is unavailable on this deployment.
+	// It is distinct from AUDIO_UNAVAILABLE: speech input is an I/O helper that produces editable text,
+	// while audio content parts are raw multimodal chat input.
+	ErrSpeechUnavailable = NewError(statusServiceUnavailable, "SPEECH_UNAVAILABLE", "speech transcription is not available on this deployment")
 	// ErrMediaUnavailable means durable media ingress has not been explicitly
 	// configured on this gateway. It is not a malformed attachment and retrying
 	// the same bytes cannot repair it.

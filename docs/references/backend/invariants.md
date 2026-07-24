@@ -4,7 +4,7 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-21
+reviewed: 2026-07-24
 review-due: 2026-10-19
 audience: [human, ai]
 ---
@@ -33,7 +33,7 @@ audience: [human, ai]
 
 | id | 一句话 | 失守后果 |
 |---|---|---|
-| GW-INV-11 | DeepSeek/Qwen key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index` | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
+| GW-INV-11 | DeepSeek/Qwen key 永不离服务器：provider-local client 只在 cloned request 注入 auth；remote endpoint 强制 HTTPS（HTTP 仅 canonical loopback IP literal dev/test，拒 `localhost` 与 `127.0.0.1.` 等 DNS/NSS/proxy 绕过拼写），redirect 永不跟随；上游 header/body/error 原文绝不透传；≤4KiB 错误体只归一到闭集 reason；key 事件只记固定 provider + `key_index`；speech ASR WebSocket 同样由服务端注入 Qwen auth，client wire 不含 key | key 被明文/代理/redirect 带往错误主机，或上游账户细节与敏感错误体外泄 |
 | GW-INV-12 | 身份只由 Ed25519 possession proof 建立：DB 仅存 public key + UNIQUE thumbprint，`/install` 同 key 幂等；每个 protected request 签名绑定 install/kid、±90s iat、5min server nonce、一次性 jti、method、authority+target 与 exact body hash；replay cache 满载 fail closed；无 bearer 兼容 | 复制 install id/请求即可滥用、篡改 body/path、跨域复用或重放，或同设备重复领取额度池 |
 | GW-INV-13 | `/metrics` `/readyz` `/debug/pprof/*` `/debug/vars` 与 dashboard 均 loopback-only；`requireLoopback` 拒空 host/IP 非回环/解析到任一非回环地址；`/healthz` 不碰 DB | 管理/画像面公网暴露，远程 DoS 或凭证攻击 |
 | GW-INV-14 | `DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_*`、`INSTALL_POW_SECRET` 均 secret-env-only，不进 `Specs`/settings/Dump；Snapshot 只给安全状态/数量，日志 redaction 覆盖 auth、media data 与 provider key 字段 | secret 或 inline media 经配置/日志/导出泄露 |
@@ -77,6 +77,7 @@ audience: [human, ai]
 | GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
 | GW-INV-46 | durable media 只接受 proof-bound install-owned opaque upload id；chunk 必须以服务端确认的精确 offset 追加并 fsync 后 CAS cursor；完成重算 size+SHA 后才原子签发一个 lease。fetch token 为 HMAC 可重建值，SQLite 仅存 hash；仅作为短期 `fetchPath` query capability 返给已证明的 completion caller，读取路由统一 404 且不暴露 install/path/SHA | 并发/replay 覆盖字节、崩溃产生未确认尾部、跨 install 枚举/复用，或 bearer capability 落库/泄漏 |
 | GW-INV-47 | media expiry 先写 DB 状态，后删私有文件，再 acknowledge；启动和每分钟恢复均截断 fsync-before-cursor crash tail、对 cursor 超过物理文件的 staging fail-closed，并重试未完成清理 | restart 后错误续传、过期媒体仍可被 provider 取用，或删除中断留下不可回收私有 bytes |
+| GW-INV-48 | realtime speech ASR 是独立于 chat `input_audio` 的 proof-gated WebSocket：proof 绑定空 GET body；gateway owns Qwen `session.update` 与 credentials；client 只能发送≤256KiB 的 binary PCM frame 或 `commit|finish` control；单会话≤2min；关闭/未配置返回 `SPEECH_UNAVAILABLE`，不得落入 chat audio route 或任意上游 JSON 透传 | 用户配置绕过 ASR 产品档、长连接烧资源、key 泄漏，或把尚未计价的音频内容理解误当转写送上游 |
 
 ## E. 跨切配置 / 可观测
 

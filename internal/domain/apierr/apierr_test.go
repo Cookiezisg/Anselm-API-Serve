@@ -24,6 +24,7 @@ func TestSentinelsMatchSpecVerbatim(t *testing.T) {
 		{"UPSTREAM_TIMEOUT", ErrUpstreamTimeout, 504, "UPSTREAM_TIMEOUT", "upstream model provider timeout"},
 		{"MULTIMODAL_UNAVAILABLE", ErrMultimodalUnavailable, 503, "MULTIMODAL_UNAVAILABLE", "multimodal input is unavailable on this deployment"},
 		{"AUDIO_UNAVAILABLE", ErrAudioUnavailable, 503, "AUDIO_UNAVAILABLE", "audio input is not available on this deployment"},
+		{"SPEECH_UNAVAILABLE", ErrSpeechUnavailable, 503, "SPEECH_UNAVAILABLE", "speech transcription is not available on this deployment"},
 		{"INSTALL_RATE_LIMITED", ErrInstallRateLimited, 429, "INSTALL_RATE_LIMITED", "too many installs from this address, retry later"},
 		{"INSTALL_CAP_REACHED", ErrInstallCapReached, 429, "INSTALL_CAP_REACHED", "install issuance is temporarily at capacity, retry later"},
 		{"INSTALL_FP_LIMITED", ErrInstallFPLimited, 429, "INSTALL_FP_LIMITED", "too many installs for this client, retry later"},

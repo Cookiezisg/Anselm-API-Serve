@@ -67,7 +67,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
-| `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；调用 `/chat/completions` |
+| `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen-asr-realtime` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
 | `READ_POOL_MAX_CONNS` | 4 | >0 |
@@ -100,8 +100,8 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | key | 约束 / 缺失行为 |
 |---|---|
 | `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
-| `DASHSCOPE_API_KEY` | 必需；支持逗号分隔多 key；与 `DASHSCOPE_WORKSPACE_ID` 一起构造 Qwen backend |
-| `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 endpoint |
+| `DASHSCOPE_API_KEY` | 必需；支持逗号分隔多 key；与 `DASHSCOPE_WORKSPACE_ID` 一起构造 Qwen 视觉 backend 与 realtime ASR proxy |
+| `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 Model Studio endpoint |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 | `MEDIA_SIGNING_SECRET` | `MEDIA_ENABLED=true` 时必填、至少 32 bytes；HMAC 派生 provider-only fetch credential，重启后可重建，SQLite 仅保存 hash |

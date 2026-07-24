@@ -2,13 +2,13 @@
 
 English · [简体中文](README.zh-CN.md)
 
-A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline images/videos go to Qwen3.7 Plus. Audio has a validated public protocol but no deployed route yet. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
+A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline images/videos go to Qwen3.7 Plus. Chat audio parts have a validated public protocol but no deployed model route yet; microphone input is handled separately by a narrow Qwen realtime ASR WebSocket proxy. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
 
 It does three things:
 
 1. **Route** — OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming, with `tools`/`tool_choice` for multi-turn tool calls). The complete message history determines the provider; the client cannot choose one, and there is no cross-provider fallback.
 2. **Meter** — before each upstream call it converts the exact provider/model rate card into cost, then atomically reserves the per-install monthly request count plus the operator global monthly spend budget. Successful calls settle against reported usage; ambiguous failures retain a conservative charge.
-3. **Bind and rate-limit** — every call proves possession of an installation Ed25519 key; copied ids and captured requests are unusable. Optional Proof-of-Work and issuance gates add Sybil cost.
+3. **Bind and rate-limit** — every call proves possession of an installation Ed25519 key; copied ids and captured requests are unusable. Optional Proof-of-Work and issuance gates add Sybil cost. The realtime speech proxy is also device-proof gated and never exposes Qwen credentials to clients.
 
 The code uses clean architecture (domain / app / infra / transport, plus a bootstrap composition root), with the dependency direction enforced by golangci-lint (depguard). There are tests across all four layers plus a loopback end-to-end suite; CI runs race tests, lint, govulncheck, gofmt, and a check that the embedded dashboard build matches its source.
 
@@ -45,6 +45,7 @@ Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level
 - String content, or content arrays containing only `text` parts, routes to `deepseek-v4-flash`.
 - Any accepted image or video part anywhere in the complete history routes to `qwen3.7-plus`.
 - A valid `input_audio` part is accepted by the public protocol but returns `503 AUDIO_UNAVAILABLE` before routing or billing, until an audio-capable upstream is deployed.
+- Realtime microphone transcription is a separate `GET /v1/speech/asr` WebSocket endpoint. It accepts PCM frames and relays Qwen ASR events so the desktop app can fill editable text; it is not a chat audio-content route.
 
 Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. `DASHSCOPE_API_KEY` and `DASHSCOPE_WORKSPACE_ID` are required for the Qwen visual route; an incomplete deployment fails at startup instead of silently dropping a product capability.
 
@@ -70,6 +71,7 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 | `POST` | `/v1/install` | registration proof | Register a device public key; return `{installId, monthlyQuota, resetAt}` |
 | `GET` | `/v1/proof/challenge` | none | Issue a cacheable five-minute request nonce |
 | `POST` | `/v1/chat/completions` | device proof | OpenAI-compatible inference; SSE or JSON per `stream` |
+| `GET` | `/v1/speech/asr` | device proof | Realtime microphone transcription proxy; binary PCM in, Qwen ASR events out |
 | `GET` | `/v1/models` | device proof | OpenAI model list with one public ID plus route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
@@ -83,7 +85,7 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` and `DASHSCOPE_API_KEY` (both required; each supports comma-separated keys), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint. `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
+Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` and `DASHSCOPE_API_KEY` (both required; each supports comma-separated keys), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint for Qwen visual inference and realtime ASR. `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
 
 The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). Production accepts an 8 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying usage guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; structural body/message/media limits and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. The conservative UTF-8 prompt estimate is accounting evidence only and never a context-admission gate; the selected upstream is the hard input-limit authority.
 

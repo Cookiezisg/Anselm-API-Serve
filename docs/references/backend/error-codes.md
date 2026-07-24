@@ -38,6 +38,7 @@ audience: [human, ai]
 | `REQUEST_BODY_TOO_LARGE` | **413** | request body exceeds the configured size limit | Go MaxBytesReader 或生产 Caddy 8MiB edge cap；两层同一 JSON/status |
 | `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 防御性稳定码；正式部署会在 `DASHSCOPE_API_KEY` / endpoint 缺失时启动失败，不能静默降级；无 fallback |
 | `AUDIO_UNAVAILABLE` | **503** | audio input is not available on this deployment | 请求含合法 `input_audio`，但当前路由表无音频上游；严格校验后、reserve/Open 前拒绝；不受 Qwen 视觉配置影响；无 fallback |
+| `SPEECH_UNAVAILABLE` | **503** | speech transcription is not available on this deployment | 实时麦克风 ASR WebSocket 未配置或上游不可达；不同于 chat `input_audio` 音频理解路由 |
 | `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
 | `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
 | `MEDIA_UNAVAILABLE` | 503 | durable media upload is not enabled on this deployment | `MEDIA_ENABLED=false`；同一 attachment 重试无效，operator 必须完成 staging/secret 配置 |

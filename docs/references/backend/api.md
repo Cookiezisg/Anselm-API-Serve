@@ -23,6 +23,7 @@ audience: [human, ai]
 | `GET /v1/install/challenge` | `install_challenge` | 无 | 120s 无状态 HMAC PoW challenge |
 | `GET /v1/proof/challenge` | `proof_challenge` | 无 | 5 分钟 HMAC-authenticated request nonce，client 可缓存 |
 | `POST /v1/chat/completions` | `chat_completions` | device proof | OpenAI-compatible chat；proof 绑定 exact body；按 content capability 确定性路由 |
+| `GET /v1/speech/asr` | `speech_asr` | device proof | Realtime speech-to-text WebSocket；binary PCM 输入，Qwen ASR 事件输出；proof 绑定空 GET body |
 | `GET /v1/quota` | `quota` | device proof | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 operator 月钱包 |
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
@@ -40,6 +41,23 @@ audience: [human, ai]
 该接口只在 `MEDIA_ENABLED=true` 时可用；关闭时仍要求 device proof，返回 `503 MEDIA_UNAVAILABLE`。创建 JSON 必须严格为 `{"sha256":"<64 lowercase hex>","mimeType":"image/jpeg|image/png|image/webp|video/mp4|audio/wav|audio/mpeg","totalBytes":N}`，未知字段拒绝。`GET upload` 只返回仍 open 的 install-owned cursor，客户端在 raw `PUT` 连接中断、无法确认服务端是否写入时必须先读它，不能盲重发。每个 `PUT` 的 body 是原始 chunk，`Upload-Offset` 必须是非负十进制且等于服务端已确认 offset；chunk 长度不得超过 `MEDIA_CHUNK_MAX_BYTES` 和全局 `MAX_BODY_BYTES`。上传 id 对其他 install 不可枚举（统一 `MEDIA_UPLOAD_NOT_FOUND`）。
 
 完成必须在 `receivedBytes==totalBytes` 后从私有 staging 文件复算字节数与 SHA-256；仅这一步原子地将 upload seal 为 completed 并创建一次 lease。响应的 `fetchPath` 是唯一可交给模型 provider 的短期 HMAC capability：它含 token query，但不含 install、原始 SHA 或文件路径；客户端将它相对 gateway base URL 绝对化。读取端点不走 device proof（provider 无法携带），只校验 token、lease active 状态与 expiry，任一失败统一 404；成功 `Cache-Control: private, no-store`、`nosniff`。文件先 fsync、再 CAS 推进 cursor；崩溃后启动/定期恢复会截去未持久化 cursor 的文件尾，过期 capability 先持久化撤销、后删除文件。
+
+### 1.2 Realtime speech transcription
+
+`GET /v1/speech/asr` 是设备证明保护的 WebSocket 窄代理，用于“麦克风输入转可编辑文本”，不属于 chat `input_audio` 模型理解路由。proof 的 exact body 为空，`htu` 仍覆盖 path/query。可选 query：
+
+| query | 说明 |
+|---|---|
+| `language` | 透传给 Qwen `input_audio_transcription.language`；空值表示上游自动处理 |
+
+客户端只允许发送两类帧：
+
+| client frame | 说明 |
+|---|---|
+| binary | 16kHz PCM bytes；单帧≤256KiB；空帧拒绝 |
+| text JSON | 仅 `{"type":"commit"}` 或 `{"type":"finish"}`；其它字段/类型不构成能力 |
+
+网关 owns upstream `session.update`：`input_audio_format="pcm"`、`sample_rate=16000`、`turn_detection.type="server_vad"`、`silence_duration_ms=400`。随后 binary frame 被编码成 Qwen `input_audio_buffer.append`，`commit`/`finish` 分别转成 `input_audio_buffer.commit`/`session.finish`。服务端把 Qwen ASR realtime 事件原样作为 text WebSocket message 返给客户端；典型事件包括 partial delta、completed transcription 与 `session.finished`。单次会话有 2 分钟绝对上限。部署未配置 Qwen key/endpoint 时返回 `503 SPEECH_UNAVAILABLE`；上游 key 永不进入 client wire/log。
 
 ## 2. `POST /v1/chat/completions`
 
@@ -140,7 +158,7 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool_calls`。`GET /v1/models` 在标准 model object 上追加：
 
 ```json
-{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":262144,"output_limit":16384,"available":true}}}
+{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true}}}
 ```
 
 `output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值；`available` 取对应 key pool 是否已配置。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：DeepSeek 的 byte estimate 只参与 quote 并在模型 input limit 处 clamp；Qwen 用完整模型 input/output hard limits后按自洽 usage 退款。

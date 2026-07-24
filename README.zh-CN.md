@@ -2,13 +2,13 @@
 
 [English](README.md) · 简体中文
 
-一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline 图片/视频走 Qwen3.7 Plus。音频已有严格公共协议,但当前尚无部署路由。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
+一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline 图片/视频走 Qwen3.7 Plus。chat 音频 part 已有严格公共协议,但当前尚无模型路由；麦克风输入由独立的 Qwen realtime ASR WebSocket 窄代理转写。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
 
 它做三件事:
 
 1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用)。整段 messages 历史决定 provider;客户不能选 provider,两路之间也不 fallback。
 2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占每 install 月请求数和 operator 全局月花费预算。成功依上游 usage 结算;无法判定的失败保留保守扣费。
-3. **设备绑定与限流** —— 每次调用都证明持有本机 Ed25519 私钥；复制 install id 或抓一条请求无法继续滥用。PoW 与领号闸继续增加批量造号成本。
+3. **设备绑定与限流** —— 每次调用都证明持有本机 Ed25519 私钥；复制 install id 或抓一条请求无法继续滥用。PoW 与领号闸继续增加批量造号成本。实时语音代理同样受 device proof 保护，且不会把 Qwen 凭据暴露给客户端。
 
 代码采用 Clean Architecture(domain / app / infra / transport,加一个 bootstrap 组合根),依赖方向由 golangci-lint(depguard)强制。四层都有测试,另有一个 loopback 全栈端到端套件;CI 跑 race 测试、lint、govulncheck、gofmt,以及一项"内嵌后台的构建是否与源一致"的检查。
 
@@ -44,6 +44,7 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 - 字符串 content,或只含 `text` part 的 content 数组,走 `deepseek-v4-flash`。
 - 整段历史任意位置出现一个合法图片或视频 part,就走 `qwen3.7-plus`。
 - 合法 `input_audio` 会被公共协议接收，但在路由、记账前固定返回 `503 AUDIO_UNAVAILABLE`，直到部署音频上游。
+- 实时麦克风转写是独立的 `GET /v1/speech/asr` WebSocket。它接收 PCM 帧并转发 Qwen ASR 事件，用于桌面 app 填入可编辑文本；它不是 chat 音频内容理解路由。
 
 Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。`DASHSCOPE_API_KEY` 与 `DASHSCOPE_WORKSPACE_ID` 是 Qwen 视觉 route 的启动必需配置；配置不全时直接启动失败，不会静默失去产品能力。
 
@@ -69,6 +70,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 | `POST` | `/v1/install` | registration proof | 登记设备公钥；返回 `{installId, monthlyQuota, resetAt}` |
 | `GET` | `/v1/proof/challenge` | 无 | 发一个可缓存五分钟的 request nonce |
 | `POST` | `/v1/chat/completions` | device proof | OpenAI 兼容推理;按 `stream` 返 SSE 或 JSON |
+| `GET` | `/v1/speech/asr` | device proof | 实时麦克风转写代理；binary PCM 输入，Qwen ASR 事件输出 |
 | `GET` | `/v1/models` | device proof | 一个公开 ID，并带 route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
@@ -82,7 +84,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY` 与 `DASHSCOPE_API_KEY`（均必填，均支持逗号分隔多 key）、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHSCOPE_WORKSPACE_ID` 是用于推导新加坡 endpoint 的非机密标识。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
+机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY` 与 `DASHSCOPE_API_KEY`（均必填，均支持逗号分隔多 key）、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHSCOPE_WORKSPACE_ID` 是用于推导新加坡 Model Studio 视觉推理与实时 ASR endpoint 的非机密标识。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
 
 公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。生产 body 上限 8 MiB，最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；body/message/media 形状与 `N_GLOBAL_CONCURRENCY` 是服务安全护栏。UTF-8 保守 prompt estimate 只用于记账报价，不再做上下文准入；实际 route 的 provider 才是 input hard limit 权威。
 
