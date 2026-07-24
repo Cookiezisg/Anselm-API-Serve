@@ -515,9 +515,19 @@ func validateImage(image *ImageURL, maxDecoded int64) (int64, error) {
 	if image == nil {
 		return 0, errors.New("image_url payload is required")
 	}
+	// ADR 0011: a lease the gateway itself issued, named by its RELATIVE fetch path, is the ONE
+	// accepted non-data reference. It contributes ZERO decoded bytes — the media never traverses
+	// the chat body, which is the whole point of the one-shot upload. Ownership/expiry are verified
+	// in the app layer (this package holds no repository); shape alone is decided here.
+	// ADR 0011:网关自己签发、以**相对** fetch path 指称的 lease,是唯一被接受的非 data 引用。它计
+	// **零**解码字节——媒体从不经过 chat body,这正是一次性上传的全部目的。归属/时效在 app 层校验
+	// (本包不持仓储);此处只判形状。
+	if _, ok := parseMediaLeaseRef(image.URL); ok {
+		return 0, nil
+	}
 	const dataPrefix = "data:"
 	if !strings.HasPrefix(image.URL, dataPrefix) {
-		return 0, errors.New("image_url must be a base64 data URI")
+		return 0, errors.New("image_url must be a base64 data URI or a gateway-issued media lease path")
 	}
 	comma := strings.IndexByte(image.URL, ',')
 	if comma < 0 {
@@ -549,8 +559,11 @@ func validateVideo(video *VideoURL, maxDecoded int64) (int64, error) {
 	if video == nil {
 		return 0, errors.New("video_url payload is required")
 	}
+	if _, ok := parseMediaLeaseRef(video.URL); ok {
+		return 0, nil // ADR 0011 — see validateImage. 见 validateImage。
+	}
 	if !strings.HasPrefix(video.URL, "data:video/mp4;base64,") {
-		return 0, errors.New("video_url must use an inline video/mp4 base64 data URI")
+		return 0, errors.New("video_url must use an inline video/mp4 base64 data URI or a gateway-issued media lease path")
 	}
 	decoded, err := decodeBase64(strings.TrimPrefix(video.URL, "data:video/mp4;base64,"), maxDecoded)
 	if err != nil {
