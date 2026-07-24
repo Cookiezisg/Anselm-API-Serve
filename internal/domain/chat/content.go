@@ -126,7 +126,7 @@ type ImageURL struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// VideoURL is Kimi's OpenAI-compatible video_url payload. The gateway accepts
+// VideoURL is Qwen's OpenAI-compatible video_url payload. The gateway accepts
 // only a strict inline MP4 data URI; it never downloads a remote URL.
 type VideoURL struct {
 	URL string `json:"url"`
@@ -666,7 +666,7 @@ func (c Content) textRunes() int {
 
 // estimateBytesAndRunes optionally includes media's encoded representation.
 // Text-only routing includes everything. Multimodal context checks exclude the
-// base64 payload because Kimi tokenizes the decoded media, while retaining
+// base64 payload because Qwen tokenizes the decoded media, while retaining
 // its type/MIME/format metadata and all surrounding text.
 func (c Content) estimateBytesAndRunes(includeMediaPayload bool) (int64, int64) {
 	switch c.kind {

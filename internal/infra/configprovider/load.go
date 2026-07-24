@@ -9,7 +9,7 @@
 // 加载顺序:env 默认/机密/硬约束(LoadBase)← DB overlay 覆盖运行时可改项
 // (LoadWithOverlay)。读路径 Load() 无锁取当前 atomic 快照(每请求快照一次,热更
 // 新永不在单请求内半旧半新);写路径 ApplyOverrides 在写锁下:domain 校验 → 全或无
-// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / KIMI_API_KEY /
+// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / DASHSCOPE_API_KEY /
 // DASHBOARD_* / INSTALL_POW_SECRET)只读 env,绝不入 overlay、绝不在 Dump/Snapshot 出真值。
 package configprovider
 
@@ -45,7 +45,7 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c := config.Config{}
 
 	// DeepSeek key(s) remain required because the text route is the baseline
-	// capability. Kimi is optional: without a key only multimodal requests return
+	// capability. Qwen is optional: without a key only multimodal requests return
 	// MULTIMODAL_UNAVAILABLE; text service and readiness continue normally.
 	rawKeys := getenv("DEEPSEEK_API_KEY")
 	if strings.TrimSpace(rawKeys) == "" {
@@ -62,17 +62,16 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 
 	c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
 	validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
-	for _, k := range strings.Split(getenv("KIMI_API_KEY"), ",") {
+	for _, k := range strings.Split(getenv("DASHSCOPE_API_KEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
-			c.KimiAPIKeys = append(c.KimiAPIKeys, k)
+			c.QwenAPIKeys = append(c.QwenAPIKeys, k)
 		}
 	}
-	c.KimiBaseURL = strings.TrimRight(g.str("KIMI_BASE_URL", "https://api.moonshot.ai/v1"), "/")
-	validateHTTPBaseURL(g, "KIMI_BASE_URL", c.KimiBaseURL)
+	c.QwenBaseURL = qwenBaseURL(g, getenv)
 
 	c.PublicModelID = g.str("PUBLIC_MODEL_ID", "anselm-auto")
 	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
-	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.KimiK26)
+	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
@@ -235,6 +234,45 @@ func validateHTTPBaseURL(g *envReader, name, value string) {
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !secureurl.AllowsCredentialTransport(u) {
 		g.fail(name + " must be an absolute HTTPS base URL without userinfo, query, or fragment (HTTP is allowed only for a literal loopback IP)")
 	}
+}
+
+// qwenBaseURL resolves the Singapore workspace-compatible endpoint without
+// making callers hand-concatenate a hostname. An explicit base remains useful
+// for local tests and controlled regional changes, but a configured Qwen key
+// may never start without one of the two safe endpoint sources.
+func qwenBaseURL(g *envReader, getenv func(string) string) string {
+	if raw := strings.TrimSpace(getenv("DASHSCOPE_BASE_URL")); raw != "" {
+		base := strings.TrimRight(raw, "/")
+		validateHTTPBaseURL(g, "DASHSCOPE_BASE_URL", base)
+		return base
+	}
+	workspace := strings.TrimSpace(getenv("DASHSCOPE_WORKSPACE_ID"))
+	if workspace == "" {
+		if strings.TrimSpace(getenv("DASHSCOPE_API_KEY")) != "" {
+			g.fail("DASHSCOPE_API_KEY requires DASHSCOPE_WORKSPACE_ID or DASHSCOPE_BASE_URL")
+		}
+		return ""
+	}
+	if !validWorkspaceID(workspace) {
+		g.fail("DASHSCOPE_WORKSPACE_ID must be 1..128 ASCII letters, digits, '_' or '-'")
+		return ""
+	}
+	return "https://" + workspace + ".ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+}
+
+func validWorkspaceID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i := range len(id) {
+		b := id[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9') || b == '_' || b == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // loadPowSecret resolves the env-only INSTALL_POW_SECRET into the in-memory key +

@@ -27,25 +27,6 @@ func TestDeepSeekPlanAndCacheAwareCost(t *testing.T) {
 	}
 }
 
-func TestKimiImageAndThinkingConservativeCost(t *testing.T) {
-	p, err := NewPlan(ProviderKimi, KimiK26, InputStandard, 100, KimiOutputLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cost, ok, err := p.Cost(Usage{
-		Present: true, PromptTokens: 100, CompletionTokens: 5, TotalTokens: 120,
-	})
-	if err != nil || !ok {
-		t.Fatalf("Cost err=%v ok=%v", err, ok)
-	}
-	// total-prompt=20 is greater than completion_tokens=5, so it protects
-	// compatibility responses whose thinking tokens appear only in total.
-	want := int64(100*950_000 + 20*4_000_000)
-	if cost != want {
-		t.Fatalf("cost=%d want %d", cost, want)
-	}
-}
-
 func TestQwenTieredPlanReservesWorstTierAndSettlesActualTier(t *testing.T) {
 	// Inline image/video input cannot prove its visual-token count from bytes.
 	// The caller therefore freezes the full 1M/64K worst case before Open.
@@ -145,7 +126,7 @@ func TestContradictoryUsageKeepsReservation(t *testing.T) {
 		})
 	}
 
-	p, err := NewPlan(ProviderKimi, KimiK26, InputStandard, 10, 10)
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,16 +142,16 @@ func TestContradictoryUsageKeepsReservation(t *testing.T) {
 			Present: true, PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, ReasoningTokens: 3,
 		},
 	} {
-		t.Run("kimi/"+name, func(t *testing.T) {
+		t.Run("qwen/"+name, func(t *testing.T) {
 			if _, ok, err := p.Cost(usage); err != nil || ok {
-				t.Fatalf("ambiguous Kimi usage refunded: ok=%v err=%v usage=%+v", ok, err, usage)
+				t.Fatalf("ambiguous Qwen usage refunded: ok=%v err=%v usage=%+v", ok, err, usage)
 			}
 		})
 	}
 }
 
 func TestUnknownModelFailsClosed(t *testing.T) {
-	_, err := NewPlan(ProviderKimi, "kimi-latest", InputStandard, 1, 1)
+	_, err := NewPlan(ProviderQwen, "qwen-latest", InputStandard, 1, 1)
 	if !errors.Is(err, ErrUnknownRateCard) {
 		t.Fatalf("err=%v", err)
 	}
@@ -182,7 +163,7 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 		model    string
 		class    InputClass
 	}{
-		"unknown class": {ProviderKimi, KimiK26, InputClass(255)},
+		"unknown class": {ProviderQwen, Qwen37Plus, InputClass(255)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewPlan(tc.provider, tc.model, tc.class, 1, 1); !errors.Is(err, ErrUnknownRateCard) {

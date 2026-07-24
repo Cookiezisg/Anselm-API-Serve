@@ -102,11 +102,11 @@ var (
 	ErrUpstreamTimeout = NewError(statusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream model provider timeout")
 	// ErrMultimodalUnavailable — this deployment has no configured multimodal
 	// provider credential. It is deliberately distinct from UPSTREAM_BUSY: retrying
-	// cannot help until the operator enables Kimi, and text remains available.
+	// cannot help until the operator enables the visual provider, and text remains available.
 	ErrMultimodalUnavailable = NewError(statusServiceUnavailable, "MULTIMODAL_UNAVAILABLE", "multimodal input is unavailable on this deployment")
 	// ErrAudioUnavailable — audio is a valid public content part, but the current fixed routing
 	// table deliberately has no audio-capable upstream. It is distinct from malformed input and from
-	// a missing Kimi credential, so clients can preserve their attachment and retry after an upgrade.
+	// a missing visual-provider credential, so clients can preserve their attachment and retry after an upgrade.
 	ErrAudioUnavailable = NewError(statusServiceUnavailable, "AUDIO_UNAVAILABLE", "audio input is not available on this deployment")
 
 	// /install reject paths use DISTINCT codes for audit separation (GW-INV-20):

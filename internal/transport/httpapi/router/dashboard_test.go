@@ -128,13 +128,13 @@ func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
 		t.Fatalf("decode overview: %v", err)
 	}
 	if len(wire.Providers) != 2 {
-		t.Fatalf("providers = %v, want exactly deepseek/kimi", wire.Providers)
+		t.Fatalf("providers = %v, want exactly deepseek/qwen", wire.Providers)
 	}
 	if got := wire.Providers["deepseek"]; !got.Configured || !got.BreakerOpen {
 		t.Fatalf("deepseek = %+v, want configured/open", got)
 	}
-	if got := wire.Providers["kimi"]; got.Configured || got.BreakerOpen {
-		t.Fatalf("kimi = %+v, want unconfigured/closed", got)
+	if got := wire.Providers["qwen"]; got.Configured || got.BreakerOpen {
+		t.Fatalf("qwen = %+v, want unconfigured/closed", got)
 	}
 	if !wire.Aggregate {
 		t.Fatal("compatibility aggregate must remain true when one provider breaker is open")

@@ -15,15 +15,15 @@ import (
 )
 
 // Registry has no fallback path by design. Each provider owns an independent
-// endpoint/key pool/breaker; a Kimi failure can never consume a DeepSeek key or
+// endpoint/key pool/breaker; a Qwen failure can never consume a DeepSeek key or
 // silently change the model/account after billing has been reserved.
 type Registry struct {
 	deepSeek upstream.BackendClient
-	kimi     upstream.BackendClient
+	qwen     upstream.BackendClient
 }
 
-func New(deepSeek, kimi upstream.BackendClient) *Registry {
-	return &Registry{deepSeek: deepSeek, kimi: kimi}
+func New(deepSeek, qwen upstream.BackendClient) *Registry {
+	return &Registry{deepSeek: deepSeek, qwen: qwen}
 }
 
 func (r *Registry) client(provider billing.Provider) upstream.BackendClient {
@@ -33,8 +33,8 @@ func (r *Registry) client(provider billing.Provider) upstream.BackendClient {
 	switch provider {
 	case billing.ProviderDeepSeek:
 		return r.deepSeek
-	case billing.ProviderKimi:
-		return r.kimi
+	case billing.ProviderQwen:
+		return r.qwen
 	default:
 		return nil
 	}
@@ -78,20 +78,22 @@ func encode(provider billing.Provider, model string, req domchat.CompletionReque
 			Thinking:        thinkingParam{Type: "enabled"},
 			ReasoningEffort: "high",
 		})
-	case billing.ProviderKimi:
+	case billing.ProviderQwen:
 		// DeepSeek reasoning_content is an account-specific continuation token. If
-		// an earlier image keeps the whole history on Kimi, that extension must
-		// not leak into Kimi's request. Tool-call JSON remains opaque/preserved.
+		// an earlier image keeps the whole history on Qwen, that extension must
+		// not leak into Qwen's request. Qwen's historical thinking is deliberately
+		// not preserved either: it is provider-private, billed when preserved, and
+		// the durable conversation summary/tool turns remain the product context.
 		req.Messages = append([]domchat.Message(nil), req.Messages...)
 		for i := range req.Messages {
 			req.Messages[i].ReasoningContent = nil
 		}
 		return json.Marshal(struct {
 			domchat.UpstreamRequest
-			Thinking thinkingParam `json:"thinking"`
+			EnableThinking bool `json:"enable_thinking"`
 		}{
 			UpstreamRequest: req.WithModel(model),
-			Thinking:        thinkingParam{Type: "enabled"},
+			EnableThinking:  true,
 		})
 	default:
 		return nil, apierr.Internal()

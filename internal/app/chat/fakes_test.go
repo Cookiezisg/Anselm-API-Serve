@@ -261,7 +261,7 @@ func testCfg() *config.Config {
 	return &config.Config{
 		PublicModelID:           "anselm-auto",
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
-		MultimodalUpstreamModel: billing.KimiK26,
+		MultimodalUpstreamModel: billing.Qwen37Plus,
 		MonthlyQuota:            1000,
 		GlobalMonthlySpendPUSD:  100 * billing.PicoUSDPerUSD,
 		MaxTokensCap:            1000,

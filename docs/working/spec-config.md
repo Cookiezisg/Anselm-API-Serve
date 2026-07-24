@@ -14,4 +14,4 @@ landed-into: ../references/backend/config.md
 
 本抽取稿已由 [canonical config 契约](../references/backend/config.md) 取代；此处不再复制 env/default/bounds。
 
-当前公开模型键是 `PUBLIC_MODEL_ID`；真实 provider 模型为 startup-hard `TEXT_UPSTREAM_MODEL` / `MULTIMODAL_UPSTREAM_MODEL`。raw-token budget/allowlist 已退出配置面，钱包使用 integer microUSD 配置并以 pUSD 入账。`DEEPSEEK_API_KEY` 必填，`KIMI_API_KEY` 可选且 secret-env-only。
+当前公开模型键是 `PUBLIC_MODEL_ID`；真实 provider 模型为 startup-hard `TEXT_UPSTREAM_MODEL` / `MULTIMODAL_UPSTREAM_MODEL`。raw-token budget/allowlist 已退出配置面，钱包使用 integer microUSD 配置并以 pUSD 入账。`DEEPSEEK_API_KEY` 与 `DASHSCOPE_API_KEY` 均必填且 secret-env-only；`DASHSCOPE_WORKSPACE_ID` 用于推导 Qwen 新加坡 endpoint。

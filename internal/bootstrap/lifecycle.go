@@ -177,7 +177,7 @@ func (app *App) metricsRefresh(ctx context.Context) {
 				BudgetLimit:      budgetLimit,
 				ReservationsOpen: open,
 				BreakerOpen: app.providers.BreakerOpen(billing.ProviderDeepSeek) ||
-					app.providers.BreakerOpen(billing.ProviderKimi),
+					app.providers.BreakerOpen(billing.ProviderQwen),
 				DiskDegraded:    app.disk.Degraded(),
 				TokensThrottled: int64(throttledNow),
 			})

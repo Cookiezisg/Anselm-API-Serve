@@ -19,20 +19,16 @@ type Provider string
 
 const (
 	ProviderDeepSeek Provider = "deepseek"
-	ProviderKimi     Provider = "kimi"
 	ProviderQwen     Provider = "qwen"
 )
 
 const (
 	DeepSeekV4Flash       = "deepseek-v4-flash"
-	KimiK26               = "kimi-k2.6"
 	Qwen37Plus            = "qwen3.7-plus"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
 	DeepSeekOutputLimit   = int64(384_000)
-	KimiInputLimit        = int64(262_144)
-	KimiOutputLimit       = int64(32_768)
 	Qwen37InputLimit      = int64(1_000_000)
 	Qwen37OutputLimit     = int64(65_536)
 	legacyMaxPUSDPerToken = int64(280_000)
@@ -48,8 +44,8 @@ var (
 // dimension (output), so migrated balances can only overstate old spend.
 func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 
-// InputClass is retained in the frozen Plan wire shape. Kimi K2.6 image input
-// uses its standard token rate; audio is deliberately not an accepted gateway
+// InputClass is retained in the frozen Plan wire shape. The current routes use
+// standard token pricing; audio is deliberately not an accepted gateway
 // capability and therefore has no billable input class.
 type InputClass uint8
 
@@ -124,19 +120,6 @@ var rateCards = map[Provider]map[string]RateCard{
 			tiers: []pricingTier{{
 				InputUpperBound: DeepSeekInputLimit,
 				InputPUSD:       140_000, CacheHitInputPUSD: 2_800, OutputPUSD: 280_000,
-			}},
-		},
-	},
-	ProviderKimi: {
-		KimiK26: {
-			ID: "kimi-k2.6-2026-07-20", Provider: ProviderKimi, Model: KimiK26,
-			InputLimit: KimiInputLimit, OutputLimit: KimiOutputLimit,
-			// Official Kimi K2.6 pricing per 1M tokens: cache hit $0.16,
-			// cache miss $0.95, output $4.00. This gateway routes K2.6's
-			// supported image and video inputs; audio is deliberately excluded.
-			tiers: []pricingTier{{
-				InputUpperBound: KimiInputLimit,
-				InputPUSD:       950_000, CacheHitInputPUSD: 160_000, OutputPUSD: 4_000_000,
 			}},
 		},
 	},
@@ -276,7 +259,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 	completion := nonNegative(u.CompletionTokens)
 	// A refundable usage vector must be internally self-consistent. In
 	// particular, total_tokens is the only compatibility field that bounds
-	// Kimi's hidden thinking output; a visible completion count alone cannot
+	// Qwen's hidden thinking output; a visible completion count alone cannot
 	// prove the provider's bill. Treat absence, overflow, or a total smaller than
 	// prompt+completion as malformed evidence and retain the full quote.
 	if u.TotalTokens <= 0 {
@@ -299,7 +282,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		return 0, false, nil
 	}
 	if derivedOutput > completion {
-		// Kimi compatibility does not formally specify how thinking tokens map
+		// Qwen compatibility does not formally specify how thinking tokens map
 		// onto completion_tokens. total-prompt is the conservative output view.
 		completion = derivedOutput
 	}
@@ -332,7 +315,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		if e != nil {
 			return 0, false, e
 		}
-	case ProviderKimi, ProviderQwen:
+	case ProviderQwen:
 		// The compatibility response may omit cache details. Treat such prompt
 		// tokens as cache misses; when it reports cached tokens, charge the exact
 		// provider cache-hit rate without ever undercharging unknown tokens.

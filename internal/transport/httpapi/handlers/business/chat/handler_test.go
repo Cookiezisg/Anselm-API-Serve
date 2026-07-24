@@ -110,7 +110,7 @@ func newService(t *testing.T, up appchat.Upstream) *appchat.Service {
 	cfg := &config.Config{
 		PublicModelID:           "anselm-auto",
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
-		MultimodalUpstreamModel: billing.KimiK26,
+		MultimodalUpstreamModel: billing.Qwen37Plus,
 		MonthlyQuota:            100,
 		MaxTokensCap:            100,
 		InputTokenCap:           1_000_000,

@@ -15,11 +15,11 @@ func validBase() Config {
 	return Config{
 		DeepSeekAPIKeys:         []string{"sk-test"},
 		DeepSeekBaseURL:         "https://api.deepseek.com",
-		KimiAPIKeys:             []string{"gem-test"},
-		KimiBaseURL:             "https://generativelanguage.googleapis.com/v1beta/openai",
+		QwenAPIKeys:             []string{"qwen-test"},
+		QwenBaseURL:             "https://ws_test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
 		PublicModelID:           "anselm-auto",
 		TextUpstreamModel:       billing.DeepSeekV4Flash,
-		MultimodalUpstreamModel: billing.KimiK26,
+		MultimodalUpstreamModel: billing.Qwen37Plus,
 
 		MonthlyQuota:           5000,
 		GlobalMonthlySpendPUSD: 420 * billing.PicoUSDPerUSD,
@@ -100,7 +100,7 @@ func TestSemanticsMonthlySpendMustBePositive(t *testing.T) {
 
 func TestSemanticsMultimodalQuoteVsMonthlyBudget(t *testing.T) {
 	c := validBase()
-	c.GlobalMonthlySpendPUSD = 200_000_000_000 // $0.20: above full text quote, below Kimi hard quote.
+	c.GlobalMonthlySpendPUSD = 200_000_000_000 // $0.20: above full text quote, below Qwen hard quote.
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
 		t.Fatalf("want quote>monthly-budget error, got %v", err)
@@ -109,8 +109,8 @@ func TestSemanticsMultimodalQuoteVsMonthlyBudget(t *testing.T) {
 
 func TestSemanticsMultimodalQuoteAtMonthlyBudgetBoundPasses(t *testing.T) {
 	c := validBase()
-	p, err := billing.NewPlan(billing.ProviderKimi, billing.KimiK26,
-		billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
+	p, err := billing.NewPlan(billing.ProviderQwen, billing.Qwen37Plus,
+		billing.InputStandard, billing.Qwen37InputLimit, billing.Qwen37OutputLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +120,16 @@ func TestSemanticsMultimodalQuoteAtMonthlyBudgetBoundPasses(t *testing.T) {
 	}
 }
 
-func TestSemanticsKimiDisabledDoesNotConstrainTextStartup(t *testing.T) {
+func TestSemanticsQwenDisabledDoesNotConstrainTextStartup(t *testing.T) {
 	c := validBase()
-	c.KimiAPIKeys = nil
+	c.QwenAPIKeys = nil
 	c.MultimodalUpstreamModel = "inactive-unknown-model"
 	// $0.20 is safely above the complete text-model quote, but below the
-	// conservative Kimi full-model quote. With no Kimi credential, only the
+	// conservative Qwen full-model quote. With no Qwen credential, only the
 	// text route is active and startup must remain healthy.
 	c.GlobalMonthlySpendPUSD = 200_000 * billing.PicoUSDPerMicroUSD
 	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("inactive Kimi constrained text-only startup: %v", err)
+		t.Fatalf("inactive Qwen constrained text-only startup: %v", err)
 	}
 }
 
@@ -143,7 +143,7 @@ func TestSemanticsInputCapZeroAccepted(t *testing.T) {
 
 func TestSemanticsUnknownPricedModelFailsClosed(t *testing.T) {
 	c := validBase()
-	c.MultimodalUpstreamModel = "kimi-latest"
+	c.MultimodalUpstreamModel = "qwen-latest"
 	err := c.ValidateSemantics()
 	if err == nil || !strings.Contains(err.Error(), "no exact rate card") {
 		t.Fatalf("unknown model must fail closed, got %v", err)
@@ -356,7 +356,7 @@ func TestApplyOverrideRejectsStartupHardByName(t *testing.T) {
 }
 
 func TestApplyOverrideRejectsSecretByName(t *testing.T) {
-	for _, key := range []string{"DEEPSEEK_API_KEY", "KIMI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
+	for _, key := range []string{"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
 		_, err := ApplyOverrides(validBase(), map[string]string{key: "x"})
 		if err == nil || !strings.Contains(err.Error(), "unknown or secret") || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s: want named secret/unknown rejection, got %v", key, err)

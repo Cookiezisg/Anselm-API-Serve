@@ -263,7 +263,7 @@ func TestPromptEstimateChargesMediaBase64(t *testing.T) {
 	}
 	textContextEstimate := in.TextPromptEstimate()
 	if textContextEstimate >= mediaEstimate/2 {
-		t.Fatalf("Kimi text-context estimate must not treat transport base64 as text tokens: full=%d text=%d", mediaEstimate, textContextEstimate)
+		t.Fatalf("Qwen text-context estimate must not treat transport base64 as text tokens: full=%d text=%d", mediaEstimate, textContextEstimate)
 	}
 }
 

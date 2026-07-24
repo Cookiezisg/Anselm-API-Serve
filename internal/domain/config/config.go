@@ -91,15 +91,15 @@ const (
 type Config struct {
 	DeepSeekAPIKeys []string // DEEPSEEK_API_KEY(逗号分隔多 key,第一个为主)
 	DeepSeekBaseURL string   // DEEPSEEK_BASE_URL
-	KimiAPIKeys     []string // KIMI_API_KEY(可选;未配置则多模态能力明确不可用)
-	KimiBaseURL     string   // KIMI_BASE_URL(OpenAI compatibility base)
+	QwenAPIKeys     []string // DASHSCOPE_API_KEY(可选;未配置则多模态能力明确不可用)
+	QwenBaseURL     string   // DASHSCOPE_BASE_URL 或 workspace 推导的 compatible-mode base
 
 	// PublicModelID is the single client-facing logical model. Actual upstream
 	// models are construction/config facts selected solely by content capability;
 	// a client model string never selects a provider or a price tier.
 	PublicModelID           string // PUBLIC_MODEL_ID(default anselm-auto)
 	TextUpstreamModel       string // TEXT_UPSTREAM_MODEL(exact priced DeepSeek id)
-	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Kimi id)
+	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Qwen id)
 
 	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
 	GlobalMonthlySpendPUSD int64 // GLOBAL_MONTHLY_SPEND_MICRO_USD converted to pUSD
@@ -266,7 +266,7 @@ func validatePowSecretPresent(mode string, secret []byte) error {
 // Cross-field rules: the operator monthly budget is positive; every active
 // upstream model has a compiled immutable rate card; one request's provable
 // worst-case quote fits the monthly operator budget; media cannot exceed the
-// body memory envelope; effective PoW modes have a secret. Kimi-dependent checks
+// body memory envelope; effective PoW modes have a secret. Qwen-dependent checks
 // are conditional on its optional credential: an intentionally text-only
 // deployment must not fail startup because of an inactive media model.
 func (c *Config) ValidateSemantics() error {
@@ -289,12 +289,12 @@ func (c *Config) ValidateSemantics() error {
 	if textPlan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
 		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
 	}
-	if len(c.KimiAPIKeys) > 0 {
-		// Kimi compatibility does not promise a smaller thinking-token sub-cap.
-		// Reserve K2.6's full input/output hard limits, then refund only from
-		// authoritative usage.
-		mediaPlan, err := billing.NewPlan(billing.ProviderKimi, c.MultimodalUpstreamModel,
-			billing.InputStandard, billing.KimiInputLimit, billing.KimiOutputLimit)
+	if len(c.QwenAPIKeys) > 0 {
+		// Inline image/video bytes cannot prove Qwen visual tokenization. Reserve
+		// the full 1M/64K highest-tier quote, then settle only from authoritative
+		// usage. This is a billing guard, never local context admission.
+		mediaPlan, err := billing.NewPlan(billing.ProviderQwen, c.MultimodalUpstreamModel,
+			billing.InputStandard, billing.Qwen37InputLimit, billing.Qwen37OutputLimit)
 		if err != nil {
 			return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}

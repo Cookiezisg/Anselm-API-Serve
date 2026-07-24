@@ -19,7 +19,7 @@ func (f *fakeCfg) Load() *config.Config { return f.c }
 func TestListExposesOneLogicalModel(t *testing.T) {
 	cat := New(&fakeCfg{c: &config.Config{
 		PublicModelID: "anselm-auto", MaxTokensCap: 16_384,
-		DeepSeekAPIKeys: []string{"text"}, KimiAPIKeys: []string{"media"},
+		DeepSeekAPIKeys: []string{"text"}, QwenAPIKeys: []string{"media"},
 	}})
 	env := cat.List()
 	if env.Object != dmodel.ObjectList {
@@ -34,7 +34,7 @@ func TestListExposesOneLogicalModel(t *testing.T) {
 	}
 	if m.AnselmCapabilities == nil ||
 		m.AnselmCapabilities.Text.InputLimit != billing.DeepSeekInputLimit ||
-		m.AnselmCapabilities.Multimodal.InputLimit != billing.KimiInputLimit ||
+		m.AnselmCapabilities.Multimodal.InputLimit != billing.Qwen37InputLimit ||
 		m.AnselmCapabilities.Text.OutputLimit != 16_384 {
 		t.Fatalf("route capabilities = %+v", m.AnselmCapabilities)
 	}

@@ -180,9 +180,9 @@ func EstimatePromptTokens(msgs []Message) int64 {
 }
 
 // EstimateTextPromptTokens estimates only text/tool context. It deliberately
-// excludes inline media's base64 payload: Kimi tokenizes decoded media by
+// excludes inline media's base64 payload: Qwen tokenizes decoded media by
 // image tiles or audio duration, not as base64 text. Media has separate strict
-// part/decoded-byte limits and the Kimi billing plan reserves the complete
+// part/decoded-byte limits and the Qwen billing plan reserves the complete
 // model input hard limit, so treating encoded bytes as text would only create
 // false rejections for ordinary screenshots and audio clips.
 func EstimateTextPromptTokens(msgs []Message) int64 {
@@ -293,14 +293,14 @@ func (in InboundRequest) PromptEstimate() int64 {
 }
 
 // TextPromptEstimate is the text/tool portion of a multimodal request's
-// accounting evidence. Binary media is governed by MediaLimits, Kimi's full
+// accounting evidence. Binary media is governed by MediaLimits, Qwen's full
 // hard-limit reservation, and provider tokenization.
 func (in InboundRequest) TextPromptEstimate() int64 {
 	return EstimateTextPromptTokens(in.Messages) + EstimateRawTokens(in.Tools) + EstimateRawTokens(in.ToolChoice)
 }
 
 // HasAudio reports whether the validated request contains any input_audio part.
-// It is used only to select the conservative Kimi input price class; routing
+// It is used only to select the conservative Qwen input price class; routing
 // itself remains the complete-history Modality returned by ValidateAndClassify.
 func (in InboundRequest) HasAudio() bool {
 	for _, message := range in.Messages {

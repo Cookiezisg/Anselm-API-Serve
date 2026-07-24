@@ -80,7 +80,7 @@ func TestEmbeddedDashboardShowsBothProviderStates(t *testing.T) {
 		t.Fatal("no embedded JS bundle")
 	}
 	bundleText := bundle.String()
-	for _, label := range []string{"DeepSeek", "Kimi", "已配置", "未配置", "BREAKER N/A", "BREAKER OPEN", "BREAKER CLOSED"} {
+	for _, label := range []string{"DeepSeek", "Qwen3.7", "已配置", "未配置", "BREAKER N/A", "BREAKER OPEN", "BREAKER CLOSED"} {
 		if !strings.Contains(bundleText, label) {
 			t.Fatalf("embedded dashboard bundle is missing provider-state label %q", label)
 		}

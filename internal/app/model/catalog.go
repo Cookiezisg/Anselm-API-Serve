@@ -48,9 +48,9 @@ func (c *Catalog) List() model.ListEnvelope {
 					Available:   len(cfg.DeepSeekAPIKeys) > 0,
 				},
 				Multimodal: model.RouteProfile{
-					InputLimit:  billing.KimiInputLimit,
-					OutputLimit: min64(cfg.MaxTokensCap, billing.KimiOutputLimit),
-					Available:   len(cfg.KimiAPIKeys) > 0,
+					InputLimit:  billing.Qwen37InputLimit,
+					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
+					Available:   len(cfg.QwenAPIKeys) > 0,
 				},
 			},
 		})

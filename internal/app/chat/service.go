@@ -179,7 +179,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 
 	// 4) Validate the strict content union and deterministically route from the
 	// COMPLETE history. A client model string is never consulted: any accepted
-	// media selects Kimi; string/text-only content selects DeepSeek.
+	// image/video selects Qwen; string/text-only content selects DeepSeek.
 	modality, contentErr := req.ValidateAndClassify(domchat.MediaLimits{
 		MaxParts:        cfg.MaxMediaParts,
 		MaxDecodedBytes: cfg.MaxMediaDecodedBytes,
@@ -189,15 +189,15 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		return
 	}
 	// Audio belongs to the common public content contract already, but the current two fixed
-	// upstreams are text DeepSeek and image/video Kimi. Reject it as an unavailable capability before
-	// any plan/reservation rather than lying by routing it to Kimi or treating raw bytes as text.
+	// upstreams are text DeepSeek and image/video Qwen. Reject it as an unavailable capability before
+	// any plan/reservation rather than lying by routing it to Qwen or treating raw bytes as text.
 	if modality == domchat.ModalityAudio {
 		writeErr(sink, apierr.ErrAudioUnavailable)
 		return
 	}
 	provider, model, modelOutputLimit := routeFor(modality, cfg)
 	if !s.upstream.Available(provider) {
-		if provider == billing.ProviderKimi {
+		if provider == billing.ProviderQwen {
 			writeErr(sink, apierr.ErrMultimodalUnavailable)
 		} else {
 			writeErr(sink, apierr.ErrUpstreamBusy)
@@ -211,8 +211,8 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	// above protect gateway resources; the upstream model is the sole context
 	// authority and normalizes a real rejection to UPSTREAM_REJECTED.
 	//
-	// Multimodal quotes exclude base64 transport bytes: Kimi tokenizes decoded
-	// media rather than its wire encoding, and Kimi's plan reserves the complete
+	// Multimodal quotes exclude base64 transport bytes: Qwen tokenizes decoded
+	// media rather than its wire encoding, and Qwen's plan reserves the complete
 	// model input hard limit below.
 	promptEst := req.PromptEstimate()
 	if modality == domchat.ModalityMultimodal {
@@ -220,7 +220,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 6) Bound caller-owned max_tokens for this exact model, then freeze a
-	// provider-aware pUSD plan. Kimi's compatibility usage cannot prove a
+	// provider-aware pUSD plan. Qwen's compatibility usage cannot prove a
 	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
 	// input/output hard limits. DeepSeek can use the request prompt estimate and
 	// conservative output quote.
@@ -277,7 +277,7 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 // deterministic two-way mapping and never accepts the client's model field.
 func routeFor(modality domchat.Modality, cfg *config.Config) (billing.Provider, string, int64) {
 	if modality == domchat.ModalityMultimodal {
-		return billing.ProviderKimi, cfg.MultimodalUpstreamModel, billing.KimiOutputLimit
+		return billing.ProviderQwen, cfg.MultimodalUpstreamModel, billing.Qwen37OutputLimit
 	}
 	return billing.ProviderDeepSeek, cfg.TextUpstreamModel, billing.DeepSeekOutputLimit
 }
@@ -289,7 +289,7 @@ func billingPlan(provider billing.Provider, model string, req domchat.InboundReq
 		// fault, never something a client's model string can repair.
 		return billing.Plan{}, apierr.Internal()
 	}
-	if provider == billing.ProviderKimi {
+	if provider == billing.ProviderQwen {
 		plan, err := billing.NewPlan(provider, model, billing.InputStandard, card.InputLimit, card.OutputLimit)
 		if err != nil {
 			return billing.Plan{}, apierr.Internal()

@@ -43,7 +43,7 @@ func TestRegistrationSmoke(t *testing.T) {
 	m.BudgetLimit.Set(1000)
 	m.ReservationsOpen.Set(1)
 	m.BreakerState.WithLabelValues("deepseek").Set(0)
-	m.BillingDrifts.WithLabelValues("kimi").Inc()
+	m.BillingDrifts.WithLabelValues("qwen").Inc()
 	m.KeyCooldowns.WithLabelValues("deepseek").Inc()
 	m.RateLimiterEvictions.Inc()
 	m.Panics.Inc()

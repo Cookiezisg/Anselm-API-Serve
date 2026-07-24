@@ -157,7 +157,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	mx := metrics.New()
 	mx.BudgetLimit.Set(float64(effective.GlobalMonthlySpendPUSD) / float64(billing.PicoUSDPerUSD))
 	mx.BreakerState.WithLabelValues(string(billing.ProviderDeepSeek)).Set(0)
-	mx.BreakerState.WithLabelValues(string(billing.ProviderKimi)).Set(0)
+	mx.BreakerState.WithLabelValues(string(billing.ProviderQwen)).Set(0)
 	inflight := &atomic.Int64{} // shared mirror: chat writes, dashboard reads.
 
 	// 7) App services over their PORTS (adapters in adapters.go).
@@ -170,7 +170,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 
 	// 8) Two provider-local upstream clients. Endpoint, key pool, transport and
 	// breaker are frozen together so auth material can never cross providers.
-	// Kimi is an optional capability: omitting its key leaves the DeepSeek text
+	// Qwen is an optional capability: omitting its key leaves the DeepSeek text
 	// path fully operational while multimodal requests fail explicitly in app/chat.
 	deepSeekClient := upstream.NewBackend(upstream.Options{
 		Backend:            upstream.BackendDeepSeek,
@@ -180,20 +180,20 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Logger:             log,
 		Hook:               upstreamHook{m: mx, provider: billing.ProviderDeepSeek},
 	})
-	var kimiClient upstream.BackendClient
-	if len(effective.KimiAPIKeys) > 0 {
-		kimiClient = upstream.NewBackend(upstream.Options{
-			Backend:            upstream.BackendKimi,
-			ChatCompletionsURL: effective.KimiBaseURL + "/chat/completions",
-			APIKeys:            effective.KimiAPIKeys,
+	var qwenClient upstream.BackendClient
+	if len(effective.QwenAPIKeys) > 0 {
+		qwenClient = upstream.NewBackend(upstream.Options{
+			Backend:            upstream.BackendQwen,
+			ChatCompletionsURL: effective.QwenBaseURL + "/chat/completions",
+			APIKeys:            effective.QwenAPIKeys,
 			HeaderTimeout:      effective.UpstreamHeaderTimeout,
 			Logger:             log,
-			Hook:               upstreamHook{m: mx, provider: billing.ProviderKimi},
+			Hook:               upstreamHook{m: mx, provider: billing.ProviderQwen},
 		})
 	} else {
-		log.Info("multimodal_upstream_disabled", "reason", "KIMI_API_KEY not configured")
+		log.Info("multimodal_upstream_disabled", "reason", "DASHSCOPE_API_KEY not configured")
 	}
-	providers := chatprovider.New(deepSeekClient, kimiClient)
+	providers := chatprovider.New(deepSeekClient, qwenClient)
 
 	// 9) Shared rate limiter: the SAME bucket the chat RL gate AND the M2 throttle
 	// reach through, so SetKeyLimit tightens the bucket Allow meters (B1). An LRU
@@ -228,7 +228,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
-	// + disk). DeepSeek is required; Kimi joins the aggregate only when its
+	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
 	// optional key is configured. freshFor defaults to 90s (3× the 30s prober).
 	prober := newUpstreamProber(effective)
 	health := apphealth.New(dbChecker{w: db.Writer}, prober, dg, 0)

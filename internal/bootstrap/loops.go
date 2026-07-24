@@ -131,7 +131,7 @@ var _ appchat.Throttle = (*tokenThrottle)(nil)
 // upstreamProber holds the last time EVERY configured provider authenticated and
 // advertised its pinned model. /readyz reads this cached aggregate — never a live
 // provider call per request (which could stall behind a struggling upstream).
-// Kimi is deliberately absent from targets when its optional key is not
+// Qwen is deliberately absent from targets when its optional key is not
 // configured, so a text-only deployment remains ready while media fails with the
 // explicit MULTIMODAL_UNAVAILABLE contract.
 type upstreamProber struct {
@@ -152,11 +152,11 @@ func newUpstreamProber(cfg config.Config) *upstreamProber {
 		modelID:   cfg.TextUpstreamModel,
 		apiKeys:   append([]string(nil), cfg.DeepSeekAPIKeys...),
 	}}
-	if len(cfg.KimiAPIKeys) > 0 {
+	if len(cfg.QwenAPIKeys) > 0 {
 		targets = append(targets, upstreamProbeTarget{
-			modelsURL: strings.TrimRight(cfg.KimiBaseURL, "/") + "/models",
+			modelsURL: strings.TrimRight(cfg.QwenBaseURL, "/") + "/models",
 			modelID:   cfg.MultimodalUpstreamModel,
-			apiKeys:   append([]string(nil), cfg.KimiAPIKeys...),
+			apiKeys:   append([]string(nil), cfg.QwenAPIKeys...),
 		})
 	}
 	return &upstreamProber{

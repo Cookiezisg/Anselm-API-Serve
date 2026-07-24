@@ -72,18 +72,21 @@ REPO_ROOT="$3"
 [[ -d "${REPO_ROOT}" && ! -L "${REPO_ROOT}" ]] || die "repo root is invalid"
 
 : "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}"
+: "${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is required}"
+: "${DASHSCOPE_WORKSPACE_ID:?DASHSCOPE_WORKSPACE_ID is required}"
 : "${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}"
 : "${ACME_EMAIL:?ACME_EMAIL is required}"
 : "${SHA:?SHA is required}"
-KIMI_API_KEY="${KIMI_API_KEY:-}"
 DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-disabled}"
 DASHBOARD_USER="${DASHBOARD_USER:-}"
 DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
 
-for secret_name in DEEPSEEK_API_KEY KIMI_API_KEY; do
+for secret_name in DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_WORKSPACE_ID; do
 	require_single_line "${secret_name}" "${!secret_name}"
 done
+[[ "${DASHSCOPE_WORKSPACE_ID}" =~ ^[A-Za-z0-9_-]{1,128}$ ]] ||
+	die "DASHSCOPE_WORKSPACE_ID must contain only letters, digits, underscore, or hyphen"
 require_single_line DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
 case "${DASHBOARD_AUTH_MODE}" in
 	disabled|external)
@@ -135,7 +138,8 @@ ENV_FILE="${STAGE}/gateway.env"
 : >"${ENV_FILE}"
 chmod 0600 "${ENV_FILE}"
 write_env DEEPSEEK_API_KEY "${DEEPSEEK_API_KEY}"
-write_env KIMI_API_KEY "${KIMI_API_KEY}"
+write_env DASHSCOPE_API_KEY "${DASHSCOPE_API_KEY}"
+write_env DASHSCOPE_WORKSPACE_ID "${DASHSCOPE_WORKSPACE_ID}"
 write_env DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
 if [[ "${DASHBOARD_AUTH_MODE}" == "builtin" ]]; then
 	write_env DASHBOARD_USER "${DASHBOARD_USER}"
@@ -146,10 +150,9 @@ fi
 # from SQLite, but a fresh install is safe to expose without a later hardening
 # pass.
 write_env DEEPSEEK_BASE_URL "https://api.deepseek.com"
-write_env KIMI_BASE_URL "https://api.moonshot.ai/v1"
 write_env PUBLIC_MODEL_ID "anselm-auto"
 write_env TEXT_UPSTREAM_MODEL "deepseek-v4-flash"
-write_env MULTIMODAL_UPSTREAM_MODEL "kimi-k2.6"
+write_env MULTIMODAL_UPSTREAM_MODEL "qwen3.7-plus"
 write_env GLOBAL_MONTHLY_SPEND_MICRO_USD "420000000"
 write_env INPUT_TOKEN_CAP "0"
 write_env MAX_TOKENS_CAP "16384"

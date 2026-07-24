@@ -48,7 +48,7 @@ audience: [human, ai]
 
 ## 2. v2 provider-aware accounting（0002）
 
-余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集 `deepseek|kimi`。
+余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集 `deepseek|gemini|qwen`；Gemini 仅为 v1 数据迁移身份，运行时仅 DeepSeek/Qwen。
 
 ### `quota_monthly` — 月请求额度
 
@@ -73,7 +73,7 @@ audience: [human, ai]
 
 | 列 | 类型 | 约束 |
 |---|---|---|
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`kimi`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`,`qwen`) |
 | `period_day` | TEXT | NOT NULL |
 | `spend_pusd` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
@@ -101,7 +101,7 @@ audience: [human, ai]
 |---|---|---|
 | `request_id` | TEXT | PRIMARY KEY |
 | `install_id` | TEXT | NOT NULL |
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`kimi`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`,`qwen`) |
 | `model` | TEXT | NOT NULL；实际 provider model，不是 client alias |
 | `rate_card_id` | TEXT | NOT NULL；版本化价格快照 id |
 | `period_month` | TEXT | NOT NULL |
@@ -172,7 +172,7 @@ v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同
 - `GLOBAL_DAILY_BUDGET_TOKENS` → `GLOBAL_DAILY_SPEND_MICRO_USD`；
 - `INSTALL_DAILY_TOKEN_CAP` → `INSTALL_DAILY_SPEND_MICRO_USD`。
 
-随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。0004 再把 `global_spend_daily` 按 `period_month` 聚合进 `global_spend_monthly`，并删除 retired `GLOBAL_DAILY_SPEND_MICRO_USD` / `INSTALL_DAILY_SPEND_MICRO_USD` / `DEEPSEEK_DAILY_SPEND_MICRO_USD` / `KIMI_DAILY_SPEND_MICRO_USD` settings。
+随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。0004 再把 `global_spend_daily` 按 `period_month` 聚合进 `global_spend_monthly`，并删除 retired `GLOBAL_DAILY_SPEND_MICRO_USD` / `INSTALL_DAILY_SPEND_MICRO_USD` / `DEEPSEEK_DAILY_SPEND_MICRO_USD` / `QWEN_DAILY_SPEND_MICRO_USD` settings。
 
 ## 5. 迁移框架与连接纪律
 

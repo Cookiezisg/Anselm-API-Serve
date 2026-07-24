@@ -25,10 +25,10 @@ func TestRewriteClientModelJSONHandlesEscapedTopLevelKey(t *testing.T) {
 
 func TestRewriteClientModelJSONRejectsDuplicateOrCaseFoldModelKeys(t *testing.T) {
 	inputs := [][]byte{
-		[]byte(`{"model":"deepseek-v4-flash","model":"kimi-k2.6"}`),
-		[]byte(`{"model":"deepseek-v4-flash","Model":"kimi-k2.6"}`),
-		[]byte(`{"Model":"kimi-k2.6","model":"deepseek-v4-flash"}`),
-		[]byte(`{"MODEL":"kimi-k2.6"}`),
+		[]byte(`{"model":"deepseek-v4-flash","model":"qwen3.7-plus"}`),
+		[]byte(`{"model":"deepseek-v4-flash","Model":"qwen3.7-plus"}`),
+		[]byte(`{"Model":"qwen3.7-plus","model":"deepseek-v4-flash"}`),
+		[]byte(`{"MODEL":"qwen3.7-plus"}`),
 	}
 	for _, in := range inputs {
 		got, ok := rewriteClientModelJSON(in, "public")
@@ -79,7 +79,7 @@ func TestRewriteClientModelSSELinePreservesSentinelAndBlankLines(t *testing.T) {
 	}
 	for _, in := range [][]byte{
 		[]byte(`: keep-alive model=deepseek-v4-flash`),
-		[]byte(`  : provider=kimi-k2.6`),
+		[]byte(`  : provider=qwen3.7-plus`),
 	} {
 		got, ok := rewriteClientModelSSELine(in, "anselm-auto")
 		if !ok || !bytes.Equal(got, []byte(":")) {
@@ -87,7 +87,7 @@ func TestRewriteClientModelSSELinePreservesSentinelAndBlankLines(t *testing.T) {
 		}
 	}
 
-	in := []byte(`  data:  {"model":"kimi-k2.6","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}  `)
+	in := []byte(`  data:  {"model":"qwen3.7-plus","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}  `)
 	want := []byte(`  data:  {"model":"anselm-auto","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}  `)
 	got, ok := rewriteClientModelSSELine(in, "anselm-auto")
 	if !ok || !bytes.Equal(got, want) {
@@ -112,7 +112,7 @@ func TestRewriteClientModelSSELineRejectsMalformedAndNonObjectData(t *testing.T)
 		[]byte(" data\r"),
 		[]byte(`data:`),
 		[]byte(`data: null`),
-		[]byte(`data: ["kimi-k2.6"]`),
+		[]byte(`data: ["qwen3.7-plus"]`),
 		[]byte(`data: "deepseek-v4-flash"`),
 		[]byte(`data: {"model":"deepseek-v4-flash"`),
 		[]byte(`data: {"model":"deepseek-v4-flash"} garbage`),

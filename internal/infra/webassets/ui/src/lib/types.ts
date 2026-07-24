@@ -49,7 +49,7 @@ export interface ProviderStatus {
 
 export interface ProviderStatuses {
   deepseek: ProviderStatus
-  kimi: ProviderStatus
+  qwen: ProviderStatus
 }
 
 // overviewResponse (api.go) — the live operational snapshot.

@@ -23,19 +23,19 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 	Init(&buf, "info")
 
 	secrets := map[string]string{
-		"authorization":  "Bearer sk-super-secret-deepseek-key",
-		"api_key":        "sk-another-key",
-		"kimi_api_key":   "AIza-secret",
-		"x-goog-api-key": "AIza-header-secret",
-		"token":          "device-proof-compact-value",
-		"prompt":         "the user's private prompt text",
-		"completion":     "the model's private completion",
-		"content":        "message content that is private",
-		"image_url":      "data:image/png;base64,private",
-		"input_audio":    "private audio payload",
-		"messages":       "[{role:user}]",
-		"body":           "raw upstream body json",
-		"upstream_body":  "raw deepseek error body",
+		"authorization":     "Bearer sk-super-secret-deepseek-key",
+		"api_key":           "sk-another-key",
+		"dashscope_api_key": "AIza-secret",
+		"x-goog-api-key":    "AIza-header-secret",
+		"token":             "device-proof-compact-value",
+		"prompt":            "the user's private prompt text",
+		"completion":        "the model's private completion",
+		"content":           "message content that is private",
+		"image_url":         "data:image/png;base64,private",
+		"input_audio":       "private audio payload",
+		"messages":          "[{role:user}]",
+		"body":              "raw upstream body json",
+		"upstream_body":     "raw deepseek error body",
 	}
 	args := make([]any, 0, len(secrets)*2)
 	for k, v := range secrets {
@@ -62,10 +62,10 @@ func TestRedactionNormalizesProviderAPIKeyCase(t *testing.T) {
 	Init(&buf, "info")
 
 	secrets := map[string]string{
-		"DEEPSEEK_API_KEY": "sk-deepseek-uppercase-secret",
-		"dEePsEeK_aPi_KeY": "sk-deepseek-mixed-case-secret",
-		"KIMI_API_KEY":     "AIza-kimi-uppercase-secret",
-		"gEmInI_aPi_KeY":   "AIza-kimi-mixed-case-secret",
+		"DEEPSEEK_API_KEY":  "sk-deepseek-uppercase-secret",
+		"dEePsEeK_aPi_KeY":  "sk-deepseek-mixed-case-secret",
+		"DASHSCOPE_API_KEY": "AIza-dashscope-uppercase-secret",
+		"gEmInI_aPi_KeY":    "AIza-gemini-mixed-case-secret",
 	}
 	args := make([]any, 0, len(secrets)*2)
 	for key, secret := range secrets {

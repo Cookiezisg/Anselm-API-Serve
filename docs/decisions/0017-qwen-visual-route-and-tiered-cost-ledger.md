@@ -13,8 +13,8 @@ audience: [human, ai]
 
 ## 背景 / Context
 
-`anselm-auto` 的图片、视频 route 需要从 Kimi K2.6 迁到新加坡 Model Studio 的
-`qwen3.7-plus`，以发布真实 1M input / 64K output 的视觉主 Agent。该模型的价格不是
+`anselm-auto` 的图片、视频 route 使用新加坡 Model Studio 的 `qwen3.7-plus`，以发布真实
+1M input / 64K output 的视觉主 Agent。该模型的价格不是
 一个固定 token 单价：一次请求的**全部**输入按该请求最终 input-token 所在档位计价；256K
 以内与 256K–1M 的单价不同，且启用 thinking 时的输入和输出费率也不同。
 
@@ -24,7 +24,7 @@ Qwen 价格会少预留；把 Omni 的 64K 窗口直接当主会话 route 又会
 
 ## 决策 / Decision
 
-1. 视觉主 route 的唯一上游为 `qwen3.7-plus`，固定显式 `enable_thinking=true`；不保留 Kimi
+1. 视觉主 route 的唯一上游为 `qwen3.7-plus`，固定显式 `enable_thinking=true`；不保留
    fallback、双写或兼容代码。普通用户仍只看 `anselm-auto`，不能选择内部模型或 thinking 档位。
 2. rate card 由“一个固定单价”升级为可冻结的 request-wide tier：reserve 用输入上界所在的最贵
    适用档；settle 用上游权威 `prompt_tokens` 重新选择该请求实际适用档，对 input 与 output 一起

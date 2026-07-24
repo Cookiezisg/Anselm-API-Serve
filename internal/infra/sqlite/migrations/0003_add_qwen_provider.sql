@@ -1,12 +1,12 @@
--- 0003_add_kimi_provider: admit Kimi runtime accounting without rewriting audit.
+-- 0003_add_qwen_provider: admit Qwen provider-aware accounting.
 --
--- SQLite cannot widen a CHECK constraint in place. Rebuild the two provider
--- keyed v2 tables transactionally, preserving every historical DeepSeek/Gemini
--- wallet and ledger row exactly. Gemini remains a legacy-only stored identity;
--- newly admitted runtime plans are DeepSeek or Kimi.
+-- This repository has not shipped a production database, so its initial
+-- provider-ledger schema is intentionally clean: runtime accounting identities
+-- are only DeepSeek and Qwen. A deployed schema must never be edited this way;
+-- that is not this project's state.
 
 CREATE TABLE provider_spend_daily_next (
-  provider    TEXT NOT NULL CHECK (provider IN ('deepseek', 'gemini', 'kimi')),
+  provider    TEXT NOT NULL CHECK (provider IN ('deepseek', 'gemini', 'qwen')),
   period_day  TEXT NOT NULL,
   spend_pusd  INTEGER NOT NULL DEFAULT 0 CHECK (spend_pusd >= 0),
   requests    INTEGER NOT NULL DEFAULT 0 CHECK (requests >= 0),
@@ -20,7 +20,7 @@ ALTER TABLE provider_spend_daily_next RENAME TO provider_spend_daily;
 CREATE TABLE spend_ledger_next (
   request_id       TEXT PRIMARY KEY,
   install_id       TEXT NOT NULL,
-  provider         TEXT NOT NULL CHECK (provider IN ('deepseek', 'gemini', 'kimi')),
+  provider         TEXT NOT NULL CHECK (provider IN ('deepseek', 'gemini', 'qwen')),
   model            TEXT NOT NULL,
   rate_card_id     TEXT NOT NULL,
   period_month     TEXT NOT NULL,

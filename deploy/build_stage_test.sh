@@ -20,7 +20,8 @@ fail() {
 STAGE="${TEST_ROOT}/stage"
 mkdir -m 0700 "${STAGE}"
 DEEPSEEK_API_KEY='alpha\beta"gamma$delta' \
-	KIMI_API_KEY='' \
+	DASHSCOPE_API_KEY='dashscope-test-key' \
+	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \
@@ -77,7 +78,8 @@ grep -Fq 'sudo "${BUNDLE}/recovery/rollback.sh" --automatic --bundle "${BUNDLE}"
 BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
 mkdir -m 0700 "${BUILTIN_STAGE}"
 DEEPSEEK_API_KEY='key' \
-	KIMI_API_KEY='' \
+	DASHSCOPE_API_KEY='dashscope-test-key' \
+	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	DASHBOARD_AUTH_MODE='builtin' \
 	DASHBOARD_USER='admin' \
 	DASHBOARD_PASSWORD='builtin-secret' \
@@ -93,7 +95,8 @@ grep -Fqx 'DASHBOARD_PASSWORD="builtin-secret"' "${BUILTIN_STAGE}/gateway.env" |
 EXTERNAL_STAGE="${TEST_ROOT}/external-stage"
 mkdir -m 0700 "${EXTERNAL_STAGE}"
 DEEPSEEK_API_KEY='key' \
-	KIMI_API_KEY='' \
+	DASHSCOPE_API_KEY='dashscope-test-key' \
+	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	DASHBOARD_AUTH_MODE='external' \
 	DASHBOARD_USER='stale-user' \
 	DASHBOARD_PASSWORD='stale-password' \
@@ -121,7 +124,8 @@ fi
 BAD_STAGE="${TEST_ROOT}/bad-stage"
 mkdir -m 0700 "${BAD_STAGE}"
 if DEEPSEEK_API_KEY=$'bad\nsecret' \
-	KIMI_API_KEY='' \
+	DASHSCOPE_API_KEY='dashscope-test-key' \
+	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	DASHBOARD_USER='' \
 	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \

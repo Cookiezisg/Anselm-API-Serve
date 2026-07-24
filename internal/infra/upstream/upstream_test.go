@@ -295,9 +295,9 @@ func TestNonStreamHeadersWithoutBodyStillHitFirstByteTimeout(t *testing.T) {
 	defer close(hold)
 
 	c := NewBackend(Options{
-		Backend:            BackendKimi,
+		Backend:            BackendQwen,
 		ChatCompletionsURL: srv.URL + "/chat/completions",
-		APIKeys:            []string{"kimi-key"},
+		APIKeys:            []string{"qwen-key"},
 		HeaderTimeout:      30 * time.Millisecond,
 	}).(*client)
 	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
@@ -408,7 +408,7 @@ func TestAuthCooldownIsHardGateAndNeverReusesCooledKey(t *testing.T) {
 	defer srv.Close()
 
 	c := NewBackend(Options{
-		Backend:            BackendKimi,
+		Backend:            BackendQwen,
 		ChatCompletionsURL: srv.URL + "/v1beta/openai/chat/completions",
 		APIKeys:            []string{"bad-key"},
 		HeaderTimeout:      time.Second,

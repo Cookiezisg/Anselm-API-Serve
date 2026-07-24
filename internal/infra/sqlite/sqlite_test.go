@@ -76,6 +76,42 @@ func TestOpenCreatesSchema(t *testing.T) {
 	}
 }
 
+// TestQwenMigrationCreatesCleanProviderAccounting proves the unshipped initial
+// schema admits Qwen directly and does not retain a retired runtime provider.
+func TestQwenMigrationCreatesCleanProviderAccounting(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+	raw, err := sql.Open("sqlite", dsn(cfg, true))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	w := orm.Open(raw)
+	if err := ensureMigrationsTable(ctx, w); err != nil {
+		t.Fatalf("ensure migrations: %v", err)
+	}
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if len(migs) != 4 {
+		t.Fatalf("migration count=%d want 4", len(migs))
+	}
+	for _, migration := range migs {
+		if err := applyOne(ctx, w, migration); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.version, err)
+		}
+	}
+	if _, err := w.Exec(ctx, `INSERT INTO provider_spend_daily(provider,period_day,spend_pusd,requests) VALUES ('qwen','2026-07-24',11,1)`); err != nil {
+		t.Fatalf("insert qwen provider spend: %v", err)
+	}
+	if _, err := w.Exec(ctx, `INSERT INTO provider_spend_daily(provider,period_day,spend_pusd,requests) VALUES ('retired','2026-07-24',7,1)`); err == nil {
+		t.Fatal("retired provider unexpectedly accepted by clean schema")
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+}
+
 // TestPragmasWALAndForeignKeys: every connection on BOTH pools reports WAL +
 // foreign_keys ON (DSN injects per-connection; a regressed DSN silently drops
 // durability/integrity).
@@ -372,7 +408,7 @@ func TestProviderSpendMigrationBackfillsV1AndSettings(t *testing.T) {
 		"GLOBAL_DAILY_SPEND_MICRO_USD",
 		"INSTALL_DAILY_SPEND_MICRO_USD",
 		"DEEPSEEK_DAILY_SPEND_MICRO_USD",
-		"KIMI_DAILY_SPEND_MICRO_USD",
+		"QWEN_DAILY_SPEND_MICRO_USD",
 	} {
 		if _, ok := settings[removed]; ok {
 			t.Fatalf("legacy setting %s was not removed", removed)

@@ -119,11 +119,11 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 		body string
 	}{
 		{name: "truncated object", body: `{"model":"deepseek-v4-flash"`},
-		{name: "array", body: `["kimi-k2.6"]`},
+		{name: "array", body: `["qwen3.7-plus"]`},
 		{name: "scalar", body: `"deepseek-v4-flash"`},
 		{name: "null", body: `null`},
 		{name: "trailing garbage", body: `{"model":"deepseek-v4-flash"} provider-debug`},
-		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"kimi-k2.6"}`},
+		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"qwen3.7-plus"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +141,7 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 			if sink.header("Content-Type") != "application/json" || !strings.Contains(sink.bodyString(), `"code":"UPSTREAM_ERROR"`) {
 				t.Fatalf("want normalized JSON 502 envelope, headers/body=%q/%q", sink.header("Content-Type"), sink.bodyString())
 			}
-			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.KimiK26, "provider-debug"} {
+			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.Qwen37Plus, "provider-debug"} {
 				if strings.Contains(sink.bodyString(), providerModel) {
 					t.Fatalf("provider payload leaked through normalized failure: %q", sink.bodyString())
 				}
@@ -645,9 +645,9 @@ func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
 		wantProvider billing.Provider
 		wantModel    string
 	}{
-		{"text", `{"model":"kimi-k2.6","messages":[{"role":"user","content":"hello"}]}`,
+		{"text", `{"model":"qwen3.7-plus","messages":[{"role":"user","content":"hello"}]}`,
 			billing.ProviderDeepSeek, billing.DeepSeekV4Flash},
-		{"media anywhere in history", mediaBody, billing.ProviderKimi, billing.KimiK26},
+		{"media anywhere in history", mediaBody, billing.ProviderQwen, billing.Qwen37Plus},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -699,8 +699,8 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 	}{
 		{name: "DeepSeek non-stream", provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
 		{name: "DeepSeek stream", stream: true, provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
-		{name: "Kimi non-stream", media: true, provider: billing.ProviderKimi, upstreamModel: billing.KimiK26},
-		{name: "Kimi stream", media: true, stream: true, provider: billing.ProviderKimi, upstreamModel: billing.KimiK26},
+		{name: "Qwen non-stream", media: true, provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
+		{name: "Qwen stream", media: true, stream: true, provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -743,13 +743,13 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 	}
 }
 
-func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
+func TestQwenUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
 	up := &fakeUpstream{available: map[billing.Provider]bool{
 		billing.ProviderDeepSeek: true,
-		billing.ProviderKimi:     false,
+		billing.ProviderQwen:     false,
 	}, body: `{}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
@@ -763,7 +763,7 @@ func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 		t.Fatalf("unavailable route must reject before reserve/open: reserved=%d calls=%+v", q.reservedPUSD, up.callSnapshot())
 	}
 
-	// The absent Kimi credential is isolated: text remains on DeepSeek.
+	// The absent Qwen credential is isolated: text remains on DeepSeek.
 	textQ := &fakeQuota{}
 	textSvc, textWG := build(Deps{Auth: okAuth(), Quota: textQ, Upstream: up, RL: &fakeRL{allow: true}})
 	textSink := newFakeSink()
@@ -780,7 +780,7 @@ func TestKimiUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 
 func TestAudioIsExplicitlyUnavailableBeforeReserveOrRouting(t *testing.T) {
 	// Audio is intentionally a valid protocol part, but the current deterministic table has no
-	// audio upstream. This must never silently become a Kimi request or consume a wallet slot.
+	// audio upstream. This must never silently become a Qwen request or consume a wallet slot.
 	wav := base64.StdEncoding.EncodeToString([]byte("RIFF\x04\x00\x00\x00WAVEfmt "))
 	body := `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + wav + `","format":"wav"}}]}]}`
 	q := &fakeQuota{}
@@ -807,8 +807,8 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 		openBreaker billing.Provider
 		wantRoute   billing.Provider
 	}{
-		{"DeepSeek open does not block Kimi", mediaBody, billing.ProviderDeepSeek, billing.ProviderKimi},
-		{"Kimi open does not block DeepSeek", goodBody, billing.ProviderKimi, billing.ProviderDeepSeek},
+		{"DeepSeek open does not block Qwen", mediaBody, billing.ProviderDeepSeek, billing.ProviderQwen},
+		{"Qwen open does not block DeepSeek", goodBody, billing.ProviderQwen, billing.ProviderDeepSeek},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -832,7 +832,7 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 	}
 }
 
-func TestKimiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
+func TestQwenFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	for _, tc := range []struct {
@@ -841,7 +841,7 @@ func TestKimiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 		wantRollback bool
 	}{
 		{"open failure", &fakeUpstream{aerr: apierr.ErrUpstreamError}, false},
-		{"breaker open", &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderKimi: true}}, true},
+		{"breaker open", &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderQwen: true}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := &fakeQuota{}
@@ -850,7 +850,7 @@ func TestKimiFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 			wg.Wait()
 			for _, call := range tc.up.callSnapshot() {
-				if call.Provider != billing.ProviderKimi {
+				if call.Provider != billing.ProviderQwen {
 					t.Fatalf("multimodal request fell back: calls=%+v", tc.up.callSnapshot())
 				}
 			}
@@ -910,7 +910,7 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 	})
 }
 
-func TestKimiHardQuoteForImages(t *testing.T) {
+func TestQwenHardQuoteForImages(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	tests := []struct {
 		name      string
@@ -918,7 +918,7 @@ func TestKimiHardQuoteForImages(t *testing.T) {
 		wantClass billing.InputClass
 		inputRate int64
 	}{
-		{"image standard", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`, billing.InputStandard, 950_000},
+		{"image standard", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`, billing.InputStandard, 1_600_000},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -928,10 +928,10 @@ func TestKimiHardQuoteForImages(t *testing.T) {
 			sink := newFakeSink()
 			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
-			if q.plan.Provider != billing.ProviderKimi || q.plan.PromptQuote != billing.KimiInputLimit || q.plan.OutputQuote != billing.KimiOutputLimit || q.plan.InputClass != tc.wantClass {
-				t.Fatalf("Kimi hard plan=%+v", q.plan)
+			if q.plan.Provider != billing.ProviderQwen || q.plan.PromptQuote != billing.Qwen37InputLimit || q.plan.OutputQuote != billing.Qwen37OutputLimit || q.plan.InputClass != tc.wantClass {
+				t.Fatalf("Qwen hard plan=%+v", q.plan)
 			}
-			wantCost := 10*tc.inputRate + 2*int64(4_000_000)
+			wantCost := 10*tc.inputRate + 2*int64(1_600_000)
 			if got := q.settles(); len(got) != 1 || got[0] != wantCost {
 				t.Fatalf("settles=%v want=%d", got, wantCost)
 			}
@@ -971,7 +971,7 @@ func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 		{"DeepSeek absent max_tokens explicitly capped on wire and quote", `{"messages":[{"role":"user","content":"hi"}]}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
 		{"DeepSeek high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
 		{"DeepSeek lower client max_tokens respected", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, ptrInt64(1), 1},
-		{"Kimi high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.KimiOutputLimit), billing.KimiOutputLimit},
+		{"Qwen high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1014,12 +1014,12 @@ func TestResponseHeadersReuseEntryConfigSnapshot(t *testing.T) {
 	}
 }
 
-func TestKimiPromptEstimateBeyondModelLimitStillReachesUpstream(t *testing.T) {
+func TestQwenPromptEstimateBeyondModelLimitStillReachesUpstream(t *testing.T) {
 	cfg := testCfg()
 	cfg.InputTokenCap = 1 // compatibility-only; must have no execution effect.
 	cfg.MaxMessageChars = 2_000_000
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
-	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.KimiInputLimit)) +
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("a", int(billing.Qwen37InputLimit)) +
 		`"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
 	up := &fakeUpstream{body: `{"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}`}

@@ -7,7 +7,7 @@ created: 2026-06-20
 reviewed: 2026-07-20
 review-due: 2099-12-31
 audience: [human, ai]
-superseded-by: DOC-028 (0012-deterministic-capability-routing-and-cost-ledger.md)
+superseded-by: DOC-034 (0017-qwen-visual-route-and-tiered-cost-ledger.md)
 ---
 
 # 0001 — 悲观三闸预占记账（一事务预占、按实结算、崩溃永远多扣）

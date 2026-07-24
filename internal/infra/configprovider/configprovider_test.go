@@ -148,16 +148,20 @@ func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	}
 }
 
-func TestLoadBaseKimiKeyIsOptionalAndTrimmed(t *testing.T) {
+func TestLoadBaseQwenKeyIsOptionalAndWorkspaceDerived(t *testing.T) {
 	env := minimalEnv()
 	c := mustLoad(t, env)
-	if len(c.KimiAPIKeys) != 0 {
-		t.Fatalf("unset Kimi key must keep multimodal disabled, got %d keys", len(c.KimiAPIKeys))
+	if len(c.QwenAPIKeys) != 0 {
+		t.Fatalf("unset Qwen key must keep multimodal disabled, got %d keys", len(c.QwenAPIKeys))
 	}
-	env["KIMI_API_KEY"] = " gem-a, ,gem-b "
+	env["DASHSCOPE_API_KEY"] = " qwen-a, ,qwen-b "
+	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test-1"
 	c = mustLoad(t, env)
-	if len(c.KimiAPIKeys) != 2 || c.KimiAPIKeys[1] != "gem-b" {
-		t.Fatalf("Kimi keys=%v", c.KimiAPIKeys)
+	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[1] != "qwen-b" {
+		t.Fatalf("Qwen keys=%v", c.QwenAPIKeys)
+	}
+	if c.QwenBaseURL != "https://ws_test-1.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("workspace base URL=%q", c.QwenBaseURL)
 	}
 }
 
@@ -170,7 +174,9 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}{
 		{"missing key", func(m map[string]string) { delete(m, "DEEPSEEK_API_KEY") }, ErrDeepSeekKeyRequired, ""},
 		{"blank key", func(m map[string]string) { m["DEEPSEEK_API_KEY"] = "  , " }, ErrDeepSeekKeyRequired, ""},
-		{"base URL userinfo", func(m map[string]string) { m["KIMI_BASE_URL"] = "https://secret@example.com/v1beta/openai" }, nil, "absolute HTTPS base URL"},
+		{"DashScope base URL userinfo", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "https://secret@example.com/compatible-mode/v1" }, nil, "absolute HTTPS base URL"},
+		{"Qwen key needs endpoint", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "qwen-key" }, nil, "DASHSCOPE_API_KEY requires"},
+		{"invalid workspace id", func(m map[string]string) { m["DASHSCOPE_WORKSPACE_ID"] = "bad.example" }, nil, "DASHSCOPE_WORKSPACE_ID"},
 		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
 		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
 		{"unknown priced model", func(m map[string]string) { m["TEXT_UPSTREAM_MODEL"] = "deepseek-latest" }, nil, "no exact rate card"},
@@ -182,7 +188,8 @@ func TestLoadBaseFailFast(t *testing.T) {
 		{"pow mode typo", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enabled" }, nil, "INSTALL_POW_MODE"},
 		{"pow secret required", func(m map[string]string) { m["INSTALL_POW_MODE"] = "enforce" }, nil, "CONFIG_POW_SECRET_REQUIRED"},
 		{"per-req exceeds monthly budget", func(m map[string]string) {
-			m["KIMI_API_KEY"] = "gem-key"
+			m["DASHSCOPE_API_KEY"] = "qwen-key"
+			m["DASHSCOPE_WORKSPACE_ID"] = "ws_test"
 			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
 		}, nil, "multimodal hard-limit quote"},
 		{"dashboard builtin missing password", func(m map[string]string) {
@@ -214,17 +221,18 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}
 }
 
-func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveKimi(t *testing.T) {
+func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveQwen(t *testing.T) {
 	env := minimalEnv()
 	env["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
 	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
 	if _, err := LoadBase(envMap(env)); err != nil {
-		t.Fatalf("Kimi-disabled deployment should validate only active text cost: %v", err)
+		t.Fatalf("Qwen-disabled deployment should validate only active text cost: %v", err)
 	}
 
-	env["KIMI_API_KEY"] = "gem-key"
+	env["DASHSCOPE_API_KEY"] = "qwen-key"
+	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test"
 	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MULTIMODAL_UPSTREAM_MODEL") {
-		t.Fatalf("enabling Kimi must activate its model checks, got %v", err)
+		t.Fatalf("enabling Qwen must activate its model checks, got %v", err)
 	}
 }
 
@@ -464,7 +472,7 @@ func TestDumpMasksSecretsAndCarriesBounds(t *testing.T) {
 		byKey[it.Key] = it
 		// No secret key may ever surface in Dump.
 		switch it.Key {
-		case "DEEPSEEK_API_KEY", "KIMI_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
+		case "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
 			t.Fatalf("secret %q leaked into Dump", it.Key)
 		}
 	}
@@ -498,7 +506,8 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	env["INSTALL_POW_SECRET"] = "supersecretvalue"
 	env["DASHBOARD_USER"] = "admin"
 	env["DASHBOARD_PASSWORD"] = "hunter2pw"
-	env["KIMI_API_KEY"] = "kimi-supersecret"
+	env["DASHSCOPE_API_KEY"] = "qwen-supersecret"
+	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test"
 	p := New(mustLoad(t, env))
 
 	attrs := p.Snapshot()
@@ -514,7 +523,7 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 		kv[k] = attrs[i+1]
 		vals += valStr(attrs[i+1]) + ";"
 	}
-	for _, leak := range []string{"sk-a", "sk-b", "kimi-supersecret", "supersecretvalue", "hunter2pw"} {
+	for _, leak := range []string{"sk-a", "sk-b", "qwen-supersecret", "supersecretvalue", "hunter2pw"} {
 		if strings.Contains(vals, leak) {
 			t.Fatalf("secret %q leaked into Snapshot values: %s", leak, vals)
 		}
@@ -522,8 +531,8 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 	if kv["deepseek_keys"] != "sk-*** (2 configured)" {
 		t.Fatalf("deepseek_keys mask = %v", kv["deepseek_keys"])
 	}
-	if kv["kimi_keys"] != "*** (1 configured)" {
-		t.Fatalf("kimi_keys mask = %v", kv["kimi_keys"])
+	if kv["qwen_keys"] != "*** (1 configured)" {
+		t.Fatalf("qwen_keys mask = %v", kv["qwen_keys"])
 	}
 	if kv["install_pow_secret"] != "configured" {
 		t.Fatalf("pow secret mask = %v", kv["install_pow_secret"])

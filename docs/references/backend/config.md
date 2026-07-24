@@ -11,7 +11,7 @@ audience: [human, ai]
 
 # 配置全面（config）
 
-> `internal/domain/config/spec.go` 是 dashboard/apply registry，`config.go` 是边界与跨字段语义事实源，`internal/infra/configprovider/load.go` 是 env/default 事实源。金额在 env/dashboard 使用整数 microUSD，进入账本后精确换算为 pUSD：`1 microUSD=10^6 pUSD`、`1 USD=10^12 pUSD`。路由/计价决策见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
+> `internal/domain/config/spec.go` 是 dashboard/apply registry，`config.go` 是边界与跨字段语义事实源，`internal/infra/configprovider/load.go` 是 env/default 事实源。金额在 env/dashboard 使用整数 microUSD，进入账本后精确换算为 pUSD：`1 microUSD=10^6 pUSD`、`1 USD=10^12 pUSD`。路由/计价决策见 [ADR-0017](../../decisions/0017-qwen-visual-route-and-tiered-cost-ledger.md)。
 
 ## 1. 三层级与 secret 边界
 
@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 信任边界，不可从 dashboard 修改。
+Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -65,9 +65,9 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | key | 默认 | 约束 / 语义 |
 |---|---|---|
 | `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
-| `MULTIMODAL_UPSTREAM_MODEL` | `kimi-k2.6` | Kimi 启用时必须是精确已编译 rate card；媒体路由 |
+| `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
-| `KIMI_BASE_URL` | `https://api.moonshot.ai/v1` | 同一 credential-safe URL policy；去尾 `/`；调用 `/chat/completions` |
+| `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；调用 `/chat/completions` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
 | `READ_POOL_MAX_CONNS` | 4 | >0 |
@@ -94,24 +94,25 @@ Secrets：`DEEPSEEK_API_KEY`、`KIMI_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASS
 | key | 约束 / 缺失行为 |
 |---|---|
 | `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
-| `KIMI_API_KEY` | 可选；同样支持逗号分隔多 key；为空则不构造 Kimi backend，文本/readiness 正常，合法多模态返回 `503 MULTIMODAL_UNAVAILABLE` |
+| `DASHSCOPE_API_KEY` | 必需；支持逗号分隔多 key；与 `DASHSCOPE_WORKSPACE_ID` 一起构造 Qwen backend |
+| `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 endpoint |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 
-每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Kimi 缺 key 不是“坏 key”或 readiness fault，而是该 deployment 没有多模态 capability。
+每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Qwen 是产品 route 的部署必需能力；缺 key/base/workspace 是启动配置错误，不允许以“只有文本”降级。
 
 ## 5. 跨字段语义（每次 env-load / overlay / hot batch 都跑）
 
 1. `GLOBAL_MONTHLY_SPEND_MICRO_USD>0`，并且任一已启用 route 的单请求最坏 quote 必须能装入该月预算；否则配置 fail-fast/热改拒绝。
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
-3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Kimi route 注入 `thinking.enabled` 且不传 `reasoning_effort`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
+3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Qwen route 注入顶层 `enable_thinking=true`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
 4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；完整 1,000,000 input + bounded output 的最坏 quote 必须装入全局月预算。运行时 UTF-8 estimate 只决定较小请求的 reserve 大小，超过 1M 时 quote clamp 到模型硬上限而不拒绝。
-5. **仅当 `KIMI_API_KEY` 已配置**，`MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Kimi rate card，且完整 `262,144` input + `32,768` output quote（`380,108.8 microUSD`）必须装入全局月预算。未配 key 时 inactive-Kimi 关系不阻断纯文本启动；媒体形状/bytes 单独受限并交 Kimi 判定实际 token。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
+5. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Qwen3.7 Plus rate card；由于 inline 图片/视频无法由本地字节数证明视觉 token，reserve 使用完整 `1,000,000` input + `65,536` output 的最高分段价格，必须装入全局月预算。媒体形状/bytes 单独受限并由 Qwen 判定实际 token；权威 usage 可退款。音频虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其可路由。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 8. `DASHBOARD_AUTH_MODE` 必须为 `disabled|builtin|external`；`builtin` 必须同设非空 `DASHBOARD_USER`/`DASHBOARD_PASSWORD`。`external` 的实际安全前提由 bootstrap 强制 loopback bind，加上部署者的前置 IAP 全路径 policy 共同满足。
 
-违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0012](../../decisions/0012-deterministic-capability-routing-and-cost-ledger.md)。
+违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0017](../../decisions/0017-qwen-visual-route-and-tiered-cost-ledger.md)。
 
 ## 6. PERF-2 与热改原子性
 

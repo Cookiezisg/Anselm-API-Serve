@@ -42,21 +42,21 @@ func TestDeepSeekEncodingPreservesReasoningAndForcesModel(t *testing.T) {
 	}
 }
 
-func TestKimiEncodingDropsDeepSeekTraceAndForcesThinking(t *testing.T) {
+func TestQwenEncodingDropsDeepSeekTraceAndEnablesThinking(t *testing.T) {
 	req := canonicalRequest(t)
-	raw, err := encode(billing.ProviderKimi, billing.KimiK26, req)
+	raw, err := encode(billing.ProviderQwen, billing.Qwen37Plus, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(raw)
 	if strings.Contains(s, "private-ds-trace") || strings.Contains(s, "reasoning_content") {
-		t.Fatalf("DeepSeek extension leaked to Kimi: %s", s)
+		t.Fatalf("DeepSeek extension leaked to Qwen: %s", s)
 	}
-	if !strings.Contains(s, `"model":"kimi-k2.6"`) {
-		t.Fatalf("Kimi wire=%s", s)
+	if !strings.Contains(s, `"model":"qwen3.7-plus"`) {
+		t.Fatalf("Qwen wire=%s", s)
 	}
-	if !strings.Contains(s, `"thinking":{"type":"enabled"}`) || strings.Contains(s, "reasoning_effort") {
-		t.Fatalf("Kimi product knobs wrong: %s", s)
+	if !strings.Contains(s, `"enable_thinking":true`) || strings.Contains(s, "reasoning_effort") || strings.Contains(s, `"thinking":`) {
+		t.Fatalf("Qwen product knobs wrong: %s", s)
 	}
 	// The caller-owned canonical value was cloned, not mutated.
 	original, _ := json.Marshal(req)
@@ -65,7 +65,7 @@ func TestKimiEncodingDropsDeepSeekTraceAndForcesThinking(t *testing.T) {
 	}
 }
 
-func TestKimiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
+func TestQwenEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
 	in, ae := domchat.DecodeInbound([]byte(`{
       "messages":[
         {"role":"user","content":"inspect"},
@@ -80,7 +80,7 @@ func TestKimiEncodingPreservesThoughtSignatureInsideToolCall(t *testing.T) {
 	if ae != nil {
 		t.Fatal(ae)
 	}
-	raw, err := encode(billing.ProviderKimi, billing.KimiK26, domchat.Sanitize(in, ptrInt64(64)))
+	raw, err := encode(billing.ProviderQwen, billing.Qwen37Plus, domchat.Sanitize(in, ptrInt64(64)))
 	if err != nil {
 		t.Fatal(err)
 	}

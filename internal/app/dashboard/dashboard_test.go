@@ -149,9 +149,9 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 		Providers: fakeProviders{
 			configured: map[billing.Provider]bool{
 				billing.ProviderDeepSeek: true,
-				billing.ProviderKimi:     true,
+				billing.ProviderQwen:     true,
 			},
-			open: map[billing.Provider]bool{billing.ProviderKimi: true},
+			open: map[billing.Provider]bool{billing.ProviderQwen: true},
 		},
 		Rate:     fakeRate{s: ratesample.Snapshot{QPS: 1.5}},
 		Installs: fakeInstallsToday{n: 42},
@@ -173,8 +173,8 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 	if !o.Providers.DeepSeek.Configured || o.Providers.DeepSeek.BreakerOpen {
 		t.Fatalf("deepseek state = %+v, want configured/closed", o.Providers.DeepSeek)
 	}
-	if !o.Providers.Kimi.Configured || !o.Providers.Kimi.BreakerOpen {
-		t.Fatalf("kimi state = %+v, want configured/open", o.Providers.Kimi)
+	if !o.Providers.Qwen.Configured || !o.Providers.Qwen.BreakerOpen {
+		t.Fatalf("qwen state = %+v, want configured/open", o.Providers.Qwen)
 	}
 	if o.Recent.QPS != 1.5 || o.InstallGlobalCap != 200 {
 		t.Fatalf("rate/cap: %+v", o)
@@ -226,7 +226,7 @@ func TestOverviewProviderWireIsClosedAndAlwaysPresent(t *testing.T) {
 		configured: map[billing.Provider]bool{billing.ProviderDeepSeek: true},
 		// A source reporting an impossible open breaker for an unavailable
 		// provider is normalized to unavailable/closed at the dashboard boundary.
-		open: map[billing.Provider]bool{billing.ProviderKimi: true},
+		open: map[billing.Provider]bool{billing.ProviderQwen: true},
 	}})
 	raw, err := json.Marshal(svc.Overview(context.Background(), false))
 	if err != nil {
@@ -243,18 +243,18 @@ func TestOverviewProviderWireIsClosedAndAlwaysPresent(t *testing.T) {
 		t.Fatalf("unmarshal overview: %v", err)
 	}
 	if len(wire.Providers) != 2 {
-		t.Fatalf("provider keys = %v, want exactly deepseek/kimi", wire.Providers)
+		t.Fatalf("provider keys = %v, want exactly deepseek/qwen", wire.Providers)
 	}
 	deepseek, deepseekOK := wire.Providers["deepseek"]
-	kimi, kimiOK := wire.Providers["kimi"]
-	if !deepseekOK || !kimiOK {
-		t.Fatalf("provider keys = %v, want stable deepseek/kimi", wire.Providers)
+	qwen, qwenOK := wire.Providers["qwen"]
+	if !deepseekOK || !qwenOK {
+		t.Fatalf("provider keys = %v, want stable deepseek/qwen", wire.Providers)
 	}
 	if !deepseek.Configured || deepseek.BreakerOpen {
 		t.Fatalf("deepseek = %+v, want configured/closed", deepseek)
 	}
-	if kimi.Configured || kimi.BreakerOpen {
-		t.Fatalf("kimi = %+v, want unconfigured/closed", kimi)
+	if qwen.Configured || qwen.BreakerOpen {
+		t.Fatalf("qwen = %+v, want unconfigured/closed", qwen)
 	}
 	if wire.Aggregate {
 		t.Fatal("compatibility aggregate must derive only from configured provider breakers")

@@ -2,7 +2,7 @@
 
 [English](README.md) · 简体中文
 
-一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline 图片/视频走 Kimi K2.6。音频已有严格公共协议,但当前尚无部署路由。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
+一个纯 Go + SQLite 的单二进制网关,对客户暴露一个 OpenAI 兼容模型,内部确定性地走两个固定上游:纯文本走 DeepSeek V4 Flash,受支持的 inline 图片/视频走 Qwen3.7 Plus。音频已有严格公共协议,但当前尚无部署路由。provider key 只留在服务端;悲观成本记账保证 operator 的美元预算不被超卖。它是为 Anselm 桌面 app 写的,但本身自包含。
 
 它做三件事:
 
@@ -42,12 +42,12 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 客户只看到一个逻辑模型 `anselm-auto`;`GET /v1/models` 以及流式/非流式 completion 的顶层 `model` 都只返回这个 ID。客户传入的 `model` 绝不用来选 provider:
 
 - 字符串 content,或只含 `text` part 的 content 数组,走 `deepseek-v4-flash`。
-- 整段历史任意位置出现一个合法图片或视频 part,就走 `kimi-k2.6`。
+- 整段历史任意位置出现一个合法图片或视频 part,就走 `qwen3.7-plus`。
 - 合法 `input_audio` 会被公共协议接收，但在路由、记账前固定返回 `503 AUDIO_UNAVAILABLE`，直到部署音频上游。
 
-Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。未配 `KIMI_API_KEY` 时纯文本仍可用，合法图片/视频请求返回 `503 MULTIMODAL_UNAVAILABLE`。
+Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。`DASHSCOPE_API_KEY` 与 `DASHSCOPE_WORKSPACE_ID` 是 Qwen 视觉 route 的启动必需配置；配置不全时直接启动失败，不会静默失去产品能力。
 
-网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Kimi `thinking.enabled`，不传 `reasoning_effort`。客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。正数 `max_tokens` 在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp；未传或非正值也归一成同一个显式产品 cap，使 wire、账务与客户端预留的上下文 headroom 一致。纯文本是 DeepSeek 1M input，媒体是 Kimi 262,144 input；`GET /v1/models` 通过 namespaced `anselm_capabilities` 同时发布两条 route profile，桌面 Agent 按实际请求动态选预算，不再用单一 256K 假装代表两路。
+网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远开启：纯文本请求使用 DeepSeek `thinking.enabled` + `reasoning_effort=high`；媒体请求使用 Qwen 顶层 `enable_thinking=true`。客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。正数 `max_tokens` 在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp；未传或非正值也归一成同一个显式产品 cap，使 wire、账务与客户端预留的上下文 headroom 一致。文本与图片/视频 route 都是 1M input，Qwen3.7 Plus 的 output 上限为 64K；`GET /v1/models` 通过 namespaced `anselm_capabilities` 同时发布两条 route profile，桌面 Agent 按实际请求动态选预算，不再用单一 256K 假装代表两路。
 
 ## 管理后台
 
@@ -82,9 +82,9 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY`(必填,逗号分隔多 key)、`KIMI_API_KEY`(可选,不配只禁用图片/视频)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
+机密 env-only,不入库、不 Dump、不进日志:`DEEPSEEK_API_KEY` 与 `DASHSCOPE_API_KEY`（均必填，均支持逗号分隔多 key）、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHSCOPE_WORKSPACE_ID` 是用于推导新加坡 endpoint 的非机密标识。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
 
-公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=kimi-k2.6`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。生产 body 上限 8 MiB，最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；body/message/media 形状与 `N_GLOBAL_CONCURRENCY` 是服务安全护栏。UTF-8 保守 prompt estimate 只用于记账报价，不再做上下文准入；实际 route 的 provider 才是 input hard limit 权威。
+公开/provider 模型 ID 分别是 `PUBLIC_MODEL_ID=anselm-auto`、`TEXT_UPSTREAM_MODEL=deepseek-v4-flash`、`MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus`。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。生产 body 上限 8 MiB，最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；body/message/media 形状与 `N_GLOBAL_CONCURRENCY` 是服务安全护栏。UTF-8 保守 prompt estimate 只用于记账报价，不再做上下文准入；实际 route 的 provider 才是 input hard limit 权威。
 
 ## 部署
 

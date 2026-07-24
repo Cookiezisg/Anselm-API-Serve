@@ -97,7 +97,7 @@ landed-into:          # 仅 working：结论提取进哪篇 concepts/references 
 
 ## 5. 目录地图（canonical）
 
-网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持媒体路由 Kimi，两 provider 以 pUSD 成本账本统一护栏；共 6 个业务关注点（quota / install / chat / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
+网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持图片/视频路由 Qwen3.7 Plus，两 provider 以 pUSD 成本账本统一护栏；共 6 个业务关注点（quota / install / chat / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
 
 ```
 docs/
@@ -142,7 +142,7 @@ draft → active → superseded → archived
 | `deprecated` | 主动淘汰中 | 标记后移 `archive/` |
 | `archived` | 只读，住 `archive/` | **不可再改**；历史 / 参考用 |
 
-`decision` 不走「superseded→改正文」——ADR 的决策内容不可变，被推翻时**新建**一篇 ADR，旧篇只更新 `status: superseded` 与 `superseded-by`。当前 ADR-0001..0012 均已写定；ADR-0012 整体取代 ADR-0001 的 raw-token 账本，并定向取代 ADR-0005/0006 的过时表数/`MODEL_ALLOWLIST` 结论，未被取代的其余决策继续有效。
+`decision` 不走「superseded→改正文」——ADR 的决策内容不可变，被推翻时**新建**一篇 ADR，旧篇只更新 `status: superseded` 与 `superseded-by`。当前运行时的 capability/provider/pUSD 决策以 ADR-0017 为准；更早的 raw-token 账本与过时表数/`MODEL_ALLOWLIST` 结论均不再约束当前实现。
 
 ---
 

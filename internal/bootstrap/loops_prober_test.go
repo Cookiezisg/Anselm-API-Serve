@@ -45,15 +45,13 @@ func probeConfig(deepSeekURL string) config.Config {
 func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T) {
 	deepSeek := modelServer(t, "ds-key", billing.DeepSeekV4Flash)
 	t.Cleanup(deepSeek.Close)
-	// Google returns OpenAI-compatible model discovery IDs with a "models/"
-	// prefix even though chat/completions accepts the unprefixed model name.
-	kimi := modelServer(t, "gem-key", "models/"+billing.KimiK26)
-	t.Cleanup(kimi.Close)
+	qwen := modelServer(t, "qwen-key", billing.Qwen37Plus)
+	t.Cleanup(qwen.Close)
 
 	cfg := probeConfig(deepSeek.URL)
-	cfg.KimiBaseURL = kimi.URL
-	cfg.KimiAPIKeys = []string{"gem-key"}
-	cfg.MultimodalUpstreamModel = billing.KimiK26
+	cfg.QwenBaseURL = qwen.URL
+	cfg.QwenAPIKeys = []string{"qwen-key"}
+	cfg.MultimodalUpstreamModel = billing.Qwen37Plus
 	p := newUpstreamProber(cfg)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
@@ -61,11 +59,11 @@ func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T
 	}
 
 	bad := cfg
-	bad.KimiAPIKeys = []string{"wrong-key"}
+	bad.QwenAPIKeys = []string{"wrong-key"}
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured Kimi auth failure must keep aggregate readiness cold")
+		t.Fatal("a configured Qwen auth failure must keep aggregate readiness cold")
 	}
 
 	bad = cfg
@@ -73,7 +71,7 @@ func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured but unavailable Kimi model must fail readiness")
+		t.Fatal("a configured but unavailable Qwen model must fail readiness")
 	}
 }
 
@@ -86,7 +84,7 @@ func TestUpstreamProberAllowsTextOnlyDeploymentAndSiblingKey(t *testing.T) {
 	p := newUpstreamProber(cfg)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
-		t.Fatal("one working DeepSeek key should make a Kimi-disabled deployment ready")
+		t.Fatal("one working DeepSeek key should make a Qwen-disabled deployment ready")
 	}
 }
 
