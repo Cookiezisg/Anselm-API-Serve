@@ -63,6 +63,33 @@ func TestUploadCursorIsOwnedMonotonicAndBounded(t *testing.T) {
 	}
 }
 
+func TestAbortIsOwnedIdempotentTombstoneAndEligibleForCleanup(t *testing.T) {
+	s := openT(t)
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	if err := s.CreateUpload(context.Background(), upload(now)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.AbortOpen(context.Background(), "ins_b", "mup_a", now); err != nil || ok {
+		t.Fatalf("cross-install abort=(%v,%v), want false,nil", ok, err)
+	}
+	if ok, err := s.AbortOpen(context.Background(), "ins_a", "mup_a", now); err != nil || !ok {
+		t.Fatalf("abort=(%v,%v)", ok, err)
+	}
+	if ok, err := s.AbortOpen(context.Background(), "ins_a", "mup_a", now); err != nil || ok {
+		t.Fatalf("repeated abort=(%v,%v), want false,nil", ok, err)
+	}
+	ids, err := s.ExpiredFileIDs(context.Background())
+	if err != nil || len(ids) != 1 || ids[0] != "mup_a" {
+		t.Fatalf("aborted cleanup candidates=(%v,%v)", ids, err)
+	}
+	if err := s.AcknowledgeRemoved(context.Background(), "mup_a", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.GetUploadForInstall(context.Background(), "ins_a", "mup_a"); err != nil || ok {
+		t.Fatalf("aborted tombstone after cleanup=(%v,%v)", ok, err)
+	}
+}
+
 func TestCompleteIsOneAtomicUploadToLeaseTransition(t *testing.T) {
 	s := openT(t)
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)

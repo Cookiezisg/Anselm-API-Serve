@@ -27,6 +27,7 @@ var (
 type Repository interface {
 	CreateUpload(ctx context.Context, upload dmedia.Upload) error
 	GetUploadForInstall(ctx context.Context, installID, uploadID string) (*dmedia.Upload, bool, error)
+	AbortOpen(ctx context.Context, installID, uploadID string, now time.Time) (bool, error)
 	AdvanceReceived(ctx context.Context, installID, uploadID string, expectedReceived, nextReceived int64, now time.Time) (bool, error)
 	CompleteUpload(ctx context.Context, installID, uploadID, actualSHA256 string, now time.Time, lease dmedia.Lease) (*dmedia.Lease, bool, error)
 }
@@ -196,6 +197,58 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, e
 // 下一块 raw chunk；绝不猜测先前 PUT 是否已写入持久存储。
 func (s *Service) Status(ctx context.Context, installID, uploadID string) (*dmedia.Upload, error) {
 	return s.openOwned(ctx, installID, uploadID)
+}
+
+// Cancel makes an incomplete upload permanently unusable before removing its private staged
+// bytes. The durable state transition comes first: a racing Append/Complete may still touch the
+// filesystem, but its later state CAS loses and it must not make the upload addressable. Aborted
+// rows are deliberately retained until normal recovery acknowledges file removal, which makes a
+// retried DELETE safe after an interrupted cleanup without turning opaque ids into an oracle.
+func (s *Service) Cancel(ctx context.Context, installID, uploadID string) error {
+	if strings.TrimSpace(installID) == "" || strings.TrimSpace(uploadID) == "" {
+		return ErrInvalidInput
+	}
+	u, found, err := s.repo.GetUploadForInstall(ctx, installID, uploadID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	now := s.clock.Now().UTC()
+	switch {
+	case u.State == dmedia.UploadAborted:
+		// A previous request committed the security boundary but its response or cleanup may have
+		// been interrupted. Remove is idempotent and recovery remains the final safety net.
+		if err := s.files.Remove(ctx, uploadID); err != nil {
+			return fmt.Errorf("mediaapp.Cancel remove aborted: %w", err)
+		}
+		return nil
+	case u.State != dmedia.UploadOpen || !now.Before(u.ExpiresAt):
+		return ErrConflict
+	}
+	aborted, err := s.repo.AbortOpen(ctx, installID, uploadID, now)
+	if err != nil {
+		return fmt.Errorf("mediaapp.Cancel transition: %w", err)
+	}
+	if !aborted {
+		// Resolve only the race outcome for this same install. A concurrent cancel is success;
+		// append/complete/expiry wins remain a normal lifecycle conflict.
+		u, found, err = s.repo.GetUploadForInstall(ctx, installID, uploadID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrNotFound
+		}
+		if u.State != dmedia.UploadAborted {
+			return ErrConflict
+		}
+	}
+	if err := s.files.Remove(ctx, uploadID); err != nil {
+		return fmt.Errorf("mediaapp.Cancel remove: %w", err)
+	}
+	return nil
 }
 
 // Append first reconciles a crash tail, then fsyncs the new bytes before moving the DB cursor. A

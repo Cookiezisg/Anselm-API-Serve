@@ -27,6 +27,7 @@ audience: [human, ai]
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
 | `GET /v1/media/uploads/{uploadId}` | `media_status` | device proof | 返回 install-owned、仍 open 的权威 `offset`；仅用于 ambiguous chunk result 后安全续传 |
+| `DELETE /v1/media/uploads/{uploadId}` | `media_cancel` | device proof | 先持久化为 `aborted` 再删除私有暂存字节；同 install 的重试安全，周期 recovery 会确认清理 |
 | `PUT /v1/media/uploads/{uploadId}` | `media_append` | device proof | raw bytes；必须带精确 `Upload-Offset`，成功返回新的 offset；不接受 multipart |
 | `POST /v1/media/uploads/{uploadId}/complete` | `media_complete` | device proof | 空 body；重算 staged file 的 SHA-256 后返回 opaque `leaseId` 与短期 `fetchPath` |
 | `GET /v1/media/leases/{leaseId}/content?token=…` | `media_fetch` | HMAC capability | 仅模型侧短期拉取；不要求/不接受 device proof，失败统一 404 |

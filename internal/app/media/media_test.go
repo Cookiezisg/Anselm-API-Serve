@@ -130,12 +130,48 @@ func (r *memRepo) GetUploadForInstall(_ context.Context, install, id string) (*d
 	cp := *r.u
 	return &cp, true, nil
 }
+func (r *memRepo) AbortOpen(_ context.Context, install, id string, now time.Time) (bool, error) {
+	if r.u == nil || r.u.InstallID != install || r.u.ID != id || r.u.State != dmedia.UploadOpen || !r.u.ExpiresAt.After(now) {
+		return false, nil
+	}
+	r.u.State = dmedia.UploadAborted
+	return true, nil
+}
 func (r *memRepo) AdvanceReceived(_ context.Context, install, id string, expected, next int64, _ time.Time) (bool, error) {
 	if r.rejectAdvance || r.u == nil || r.u.InstallID != install || r.u.ID != id || r.u.ReceivedBytes != expected {
 		return false, nil
 	}
 	r.u.ReceivedBytes = next
 	return true, nil
+}
+
+func TestCancelAbortsBeforeDeletingAndIsRetrySafe(t *testing.T) {
+	repo := &memRepo{}
+	files := &memFiles{data: map[string][]byte{}}
+	svc := testService(t, repo, files)
+	sum := sha256.Sum256([]byte("abc"))
+	u, err := svc.Create(context.Background(), CreateInput{InstallID: "ins_a", ExpectedSHA256: hex.EncodeToString(sum[:]), MIMEType: "image/png", TotalBytes: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Append(context.Background(), "ins_a", u.ID, 0, []byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Cancel(context.Background(), "ins_a", u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.u.State != dmedia.UploadAborted {
+		t.Fatalf("state=%q, want aborted", repo.u.State)
+	}
+	if _, ok := files.data[u.ID]; ok {
+		t.Fatal("cancel must delete staged bytes")
+	}
+	if err := svc.Cancel(context.Background(), "ins_a", u.ID); err != nil {
+		t.Fatalf("retry cancel=%v", err)
+	}
+	if _, err := svc.Append(context.Background(), "ins_a", u.ID, 3, []byte("x")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("append after cancel=%v, want conflict", err)
+	}
 }
 func (r *memRepo) CompleteUpload(_ context.Context, install, id, sha string, _ time.Time, l dmedia.Lease) (*dmedia.Lease, bool, error) {
 	if r.u == nil || r.lease != nil || r.u.InstallID != install || r.u.ID != id || r.u.ReceivedBytes != r.u.TotalBytes || r.u.ExpectedSHA256 != sha {

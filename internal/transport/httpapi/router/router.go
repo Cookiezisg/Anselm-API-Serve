@@ -102,6 +102,7 @@ func BuildHandler(d Deps) http.Handler {
 		models:         proof.Protect(d.Proof, models.New(d.Install, d.Models)),
 		mediaCreate:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Create)),
 		mediaStatus:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Status)),
+		mediaCancel:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Cancel)),
 		mediaAppend:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Append)),
 		mediaComplete:  proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Complete)),
 		mediaFetch:     http.HandlerFunc(mediaHandler.Fetch),
@@ -122,6 +123,7 @@ type routes struct {
 	models         http.Handler
 	mediaCreate    http.Handler
 	mediaStatus    http.Handler
+	mediaCancel    http.Handler
 	mediaAppend    http.Handler
 	mediaComplete  http.Handler
 	mediaFetch     http.Handler
@@ -152,6 +154,7 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("GET /v1/models", wrap("models", rt.models))
 	mux.Handle("POST /v1/media/uploads", wrap("media_create", rt.mediaCreate))
 	mux.Handle("GET /v1/media/uploads/{uploadId}", wrap("media_status", rt.mediaStatus))
+	mux.Handle("DELETE /v1/media/uploads/{uploadId}", wrap("media_cancel", rt.mediaCancel))
 	mux.Handle("PUT /v1/media/uploads/{uploadId}", wrap("media_append", rt.mediaAppend))
 	mux.Handle("POST /v1/media/uploads/{uploadId}/complete", wrap("media_complete", rt.mediaComplete))
 	mux.Handle("GET /v1/media/leases/{leaseId}/content", wrap("media_fetch", rt.mediaFetch))

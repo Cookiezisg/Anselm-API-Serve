@@ -24,6 +24,7 @@ func (a fakeAuth) LookupInstall(context.Context, string) (string, dominstall.Sta
 
 type fakeService struct {
 	created      appmedia.CreateInput
+	cancelledID  string
 	appendOffset int64
 	appendChunk  []byte
 	err          error
@@ -41,6 +42,10 @@ func (s *fakeService) Status(_ context.Context, _ string, _ string) (*dmedia.Upl
 		return nil, s.err
 	}
 	return &dmedia.Upload{ID: "mup_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ReceivedBytes: 2, ExpiresAt: time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)}, nil
+}
+func (s *fakeService) Cancel(_ context.Context, _ string, uploadID string) error {
+	s.cancelledID = uploadID
+	return s.err
 }
 func (s *fakeService) Append(_ context.Context, _ string, _ string, offset int64, chunk []byte) (*dmedia.Upload, error) {
 	s.appendOffset, s.appendChunk = offset, append([]byte(nil), chunk...)
@@ -127,6 +132,18 @@ func TestStatusReturnsOnlyOwnedOpenCursor(t *testing.T) {
 	h.Status(rec, r)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"offset":2`)) {
 		t.Fatalf("status=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCancelIsProofGatedAndReturnsNoContent(t *testing.T) {
+	s := &fakeService{}
+	h := newHandler(s)
+	r := signedRequest(http.MethodDelete, "/v1/media/uploads/mup_a", nil)
+	r.SetPathValue("uploadId", "mup_a")
+	rec := httptest.NewRecorder()
+	h.Cancel(rec, r)
+	if rec.Code != http.StatusNoContent || s.cancelledID != "mup_a" || rec.Body.Len() != 0 {
+		t.Fatalf("cancel=%d id=%q body=%q", rec.Code, s.cancelledID, rec.Body.String())
 	}
 }
 

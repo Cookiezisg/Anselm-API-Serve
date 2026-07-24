@@ -43,6 +43,22 @@ func (s *Store) GetUploadForInstall(ctx context.Context, installID, uploadID str
 	return scanUpload(row)
 }
 
+// AbortOpen is the durable first half of an explicit client cancellation. Keeping the tombstone
+// until filesystem cleanup is acknowledged lets DELETE be safely retried after a lost response.
+func (s *Store) AbortOpen(ctx context.Context, installID, uploadID string, now time.Time) (bool, error) {
+	res, err := s.w.Exec(ctx, `UPDATE media_uploads SET state=?,updated_at=?
+		WHERE id=? AND install_id=? AND state=? AND expires_at>?`,
+		dmedia.UploadAborted, now.UTC(), uploadID, installID, dmedia.UploadOpen, now.UTC())
+	if err != nil {
+		return false, fmt.Errorf("mediastore.AbortOpen: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mediastore.AbortOpen rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // AdvanceReceived CASes the resumable byte cursor. expectedReceived is the file writer's verified
 // offset, so a replayed/out-of-order chunk cannot move the DB progress or overwrite a later chunk.
 // It never changes an expired/non-open upload and never permits received_bytes > total_bytes.
@@ -161,7 +177,7 @@ func (s *Store) OpenUploads(ctx context.Context) ([]dmedia.Upload, error) {
 func (s *Store) ExpiredFileIDs(ctx context.Context) ([]string, error) {
 	rows, err := s.r.Query(ctx, `SELECT DISTINCT u.id FROM media_uploads u
 		LEFT JOIN media_leases l ON l.upload_id=u.id
-		WHERE u.state=? OR l.state=?`, dmedia.UploadExpired, dmedia.LeaseExpired)
+		WHERE u.state IN (?,?) OR l.state=?`, dmedia.UploadAborted, dmedia.UploadExpired, dmedia.LeaseExpired)
 	if err != nil {
 		return nil, fmt.Errorf("mediastore.ExpiredFileIDs: %w", err)
 	}
@@ -191,11 +207,11 @@ func (s *Store) ExpireOpen(ctx context.Context, uploadID string, now time.Time) 
 }
 
 // AcknowledgeRemoved finalizes only after the file remove has succeeded (or was
-// already absent). Expired incomplete rows are deleted; completed metadata stays
-// auditable while its lease becomes deleted.
+// already absent). Aborted/expired incomplete rows are deleted; completed metadata
+// stays auditable while its lease becomes deleted.
 func (s *Store) AcknowledgeRemoved(ctx context.Context, uploadID string, now time.Time) error {
 	return s.w.Transaction(ctx, func(tx *orm.DB) error {
-		res, err := tx.Exec(ctx, `DELETE FROM media_uploads WHERE id=? AND state=?`, uploadID, dmedia.UploadExpired)
+		res, err := tx.Exec(ctx, `DELETE FROM media_uploads WHERE id=? AND state IN (?,?)`, uploadID, dmedia.UploadAborted, dmedia.UploadExpired)
 		if err != nil {
 			return err
 		}

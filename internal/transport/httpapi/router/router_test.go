@@ -34,6 +34,7 @@ func testRoutes() routes {
 		models:         echoHandler("models"),
 		mediaCreate:    echoHandler("media_create"),
 		mediaStatus:    echoHandler("media_status"),
+		mediaCancel:    echoHandler("media_cancel"),
 		mediaAppend:    echoHandler("media_append"),
 		mediaComplete:  echoHandler("media_complete"),
 		mediaFetch:     echoHandler("media_fetch"),
@@ -56,6 +57,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 		{"GET", "/v1/models", "models"},
 		{"POST", "/v1/media/uploads", "media_create"},
 		{"GET", "/v1/media/uploads/mup_test", "media_status"},
+		{"DELETE", "/v1/media/uploads/mup_test", "media_cancel"},
 		{"PUT", "/v1/media/uploads/mup_test", "media_append"},
 		{"POST", "/v1/media/uploads/mup_test/complete", "media_complete"},
 		{"GET", "/v1/media/leases/mls_test/content", "media_fetch"},
@@ -71,7 +73,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 	}
 
 	// Exactly the five business routes are RED-labeled; /healthz is NOT.
-	want := []string{"install", "install_challenge", "proof_challenge", "chat_completions", "quota", "models", "media_create", "media_status", "media_append", "media_complete", "media_fetch"}
+	want := []string{"install", "install_challenge", "proof_challenge", "chat_completions", "quota", "models", "media_create", "media_status", "media_cancel", "media_append", "media_complete", "media_fetch"}
 	if strings.Join(mx.labels, ",") != strings.Join(want, ",") {
 		t.Fatalf("RED labels = %v, want %v", mx.labels, want)
 	}
