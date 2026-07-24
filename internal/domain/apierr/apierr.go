@@ -118,6 +118,7 @@ var (
 	// mistakes from a verified object whose bytes/digest do not match.
 	ErrMediaUploadInvalid   = NewError(statusBadRequest, "MEDIA_UPLOAD_INVALID", "invalid media upload request")
 	ErrMediaUploadNotFound  = NewError(statusNotFound, "MEDIA_UPLOAD_NOT_FOUND", "media upload was not found")
+	ErrMediaLeaseNotFound   = NewError(statusNotFound, "MEDIA_LEASE_NOT_FOUND", "media lease was not found")
 	ErrMediaUploadConflict  = NewError(statusConflict, "MEDIA_UPLOAD_CONFLICT", "media upload is not writable in its current state")
 	ErrMediaIntegrityFailed = NewError(statusUnprocessableEntity, "MEDIA_INTEGRITY_FAILED", "media upload failed integrity verification")
 

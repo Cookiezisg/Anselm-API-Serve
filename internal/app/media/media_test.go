@@ -1,10 +1,13 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +64,15 @@ func (f *memFiles) Remove(_ context.Context, id string) error {
 	defer f.mu.Unlock()
 	delete(f.data, id)
 	return nil
+}
+func (f *memFiles) Open(_ context.Context, id string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.data[id]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return io.NopCloser(bytes.NewReader(append([]byte(nil), b...))), nil
 }
 
 type memRepo struct {

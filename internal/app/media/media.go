@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type Files interface {
 	Truncate(ctx context.Context, uploadID string, size int64) error
 	SHA256(ctx context.Context, uploadID string) (sha256 string, size int64, err error)
 	Remove(ctx context.Context, uploadID string) error
+	Open(ctx context.Context, uploadID string) (io.ReadCloser, error)
 }
 
 type Clock interface{ Now() time.Time }
@@ -54,8 +56,9 @@ type CreateInput struct {
 	TotalBytes     int64
 }
 
-// PrivateLease must never cross the public HTTP boundary. FetchToken is retained only until the
-// provider URL signer is wired; its hash alone is persisted.
+// PrivateLease is application-internal. Its token is emitted only as the query
+// component of a short-lived fetchPath after proof-protected completion; SQLite
+// retains only the hash and no API field exposes a standalone bearer token.
 type PrivateLease struct {
 	Lease      *dmedia.Lease
 	FetchToken string
@@ -78,6 +81,16 @@ type RecoveryRepository interface {
 	ExpiredFileIDs(ctx context.Context) ([]string, error)
 	ExpireOpen(ctx context.Context, uploadID string, now time.Time) error
 	AcknowledgeRemoved(ctx context.Context, uploadID string, now time.Time) error
+}
+
+type LeaseRepository interface {
+	GetLease(ctx context.Context, leaseID string) (*dmedia.Lease, bool, error)
+}
+
+type LeaseSource struct {
+	MIMEType  string
+	SizeBytes int64
+	Body      io.ReadCloser
 }
 
 func New(repo Repository, files Files, clock Clock, limits Limits, signer FetchSigner) *Service {
@@ -135,6 +148,25 @@ func (s *Service) Recover(ctx context.Context) (int, error) {
 		}
 	}
 	return len(ids), nil
+}
+
+func (s *Service) OpenLease(ctx context.Context, leaseID, token string) (*LeaseSource, error) {
+	repo, ok := s.repo.(LeaseRepository)
+	if !ok {
+		return nil, errors.New("mediaapp.OpenLease: repository lacks lease lookup")
+	}
+	lease, found, err := repo.GetLease(ctx, leaseID)
+	if err != nil {
+		return nil, fmt.Errorf("mediaapp.OpenLease lookup: %w", err)
+	}
+	if !found || lease.State != dmedia.LeaseActive || !s.clock.Now().UTC().Before(lease.ExpiresAt) || !s.signer.Verify(token, lease.ID, lease.InstallID, lease.ExpiresAt) || dmedia.HashSecret(token) != lease.FetchTokenHash {
+		return nil, ErrNotFound
+	}
+	body, err := s.files.Open(ctx, lease.UploadID)
+	if err != nil {
+		return nil, fmt.Errorf("mediaapp.OpenLease file: %w", err)
+	}
+	return &LeaseSource{MIMEType: lease.MIMEType, SizeBytes: lease.SizeBytes, Body: body}, nil
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, error) {
@@ -203,8 +235,8 @@ func (s *Service) Append(ctx context.Context, installID, uploadID string, expect
 }
 
 // Complete verifies exact byte count and digest from disk, then atomically seals the upload and
-// creates one lease. The public caller receives only Lease; FetchToken stays private for provider
-// fetch URL construction and is represented durably only by its hash.
+// creates one lease. The token is represented durably only by its hash and is
+// later embedded exclusively in the short-lived fetch path for model retrieval.
 func (s *Service) Complete(ctx context.Context, installID, uploadID string) (*PrivateLease, error) {
 	u, err := s.openOwned(ctx, installID, uploadID)
 	if err != nil {

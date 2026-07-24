@@ -168,6 +168,22 @@ func (s *Store) SHA256(ctx context.Context, uploadID string) (string, int64, err
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+func (s *Store) Open(ctx context.Context, uploadID string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p, err := s.path(uploadID)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G304 -- p comes only from path(), which accepts opaque mup_<32 lowercase hex> ids.
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, fmt.Errorf("mediafs.Open: %w", err)
+	}
+	return f, nil
+}
+
 func (s *Store) Remove(ctx context.Context, uploadID string) error {
 	if err := ctx.Err(); err != nil {
 		return err

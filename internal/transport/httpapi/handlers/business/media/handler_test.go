@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,6 +48,12 @@ func (s *fakeService) Complete(context.Context, string, string) (*appmedia.Priva
 		return nil, s.err
 	}
 	return &appmedia.PrivateLease{Lease: &dmedia.Lease{ID: "mls_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", MIMEType: "image/png", SizeBytes: 3, ExpiresAt: time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)}, FetchToken: "private-must-not-leak"}, nil
+}
+func (s *fakeService) OpenLease(context.Context, string, string) (*appmedia.LeaseSource, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &appmedia.LeaseSource{MIMEType: "image/png", SizeBytes: 3, Body: io.NopCloser(bytes.NewReader([]byte("abc")))}, nil
 }
 
 func newHandler(s Service) *Handler { return New(fakeAuth{found: true}, s, 4) }
@@ -106,14 +113,14 @@ func TestAppendRequiresExactOffsetAndChunkBound(t *testing.T) {
 	}
 }
 
-func TestCompleteNeverReturnsPrivateFetchToken(t *testing.T) {
+func TestCompleteReturnsOnlyShortLivedFetchCapability(t *testing.T) {
 	h := newHandler(&fakeService{})
 	r := signedRequest(http.MethodPost, "/v1/media/uploads/mup_a/complete", nil)
 	r.SetPathValue("uploadId", "mup_a")
 	rec := httptest.NewRecorder()
 	h.Complete(rec, r)
-	if rec.Code != http.StatusCreated || bytes.Contains(rec.Body.Bytes(), []byte("private-must-not-leak")) {
-		t.Fatalf("completion leaked private data: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated || !bytes.Contains(rec.Body.Bytes(), []byte("fetchPath")) || bytes.Contains(rec.Body.Bytes(), []byte("fetchToken")) {
+		t.Fatalf("completion capability shape: %d %s", rec.Code, rec.Body.String())
 	}
 	r = signedRequest(http.MethodPost, "/v1/media/uploads/mup_a/complete", []byte("not-empty"))
 	r.SetPathValue("uploadId", "mup_a")
@@ -137,5 +144,22 @@ func TestUnavailableAndAppErrorsAreStable(t *testing.T) {
 	h.Create(rec, signedRequest(http.MethodPost, "/v1/media/uploads", []byte(`{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mimeType":"image/png","totalBytes":3}`)))
 	if rec.Code != http.StatusUnprocessableEntity || code(t, rec) != "MEDIA_INTEGRITY_FAILED" {
 		t.Fatalf("mapped error=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFetchStreamsOnlyCapabilityAuthorizedBytes(t *testing.T) {
+	h := newHandler(&fakeService{})
+	r := httptest.NewRequest(http.MethodGet, "/v1/media/leases/mls_a/content?token=cap", nil)
+	r.SetPathValue("leaseId", "mls_a")
+	rec := httptest.NewRecorder()
+	h.Fetch(rec, r)
+	if rec.Code != http.StatusOK || rec.Body.String() != "abc" || rec.Header().Get("Cache-Control") != "private, no-store" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("fetch=%d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	h = newHandler(&fakeService{err: appmedia.ErrNotFound})
+	rec = httptest.NewRecorder()
+	h.Fetch(rec, r)
+	if rec.Code != http.StatusNotFound || code(t, rec) != "MEDIA_LEASE_NOT_FOUND" {
+		t.Fatalf("invalid capability=%d %s", rec.Code, rec.Body.String())
 	}
 }

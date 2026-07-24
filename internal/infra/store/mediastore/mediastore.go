@@ -113,6 +113,12 @@ func (s *Store) GetLeaseForInstall(ctx context.Context, installID, leaseID strin
 	return scanLease(row)
 }
 
+func (s *Store) GetLease(ctx context.Context, leaseID string) (*dmedia.Lease, bool, error) {
+	row := s.r.QueryRow(ctx, `SELECT id,install_id,upload_id,sha256,mime_type,size_bytes,fetch_token_hash,state,expires_at,created_at,deleted_at
+		FROM media_leases WHERE id=?`, leaseID)
+	return scanLease(row)
+}
+
 // Expire advances only lifecycle metadata; physical deletion happens afterwards
 // in app/media, because deleting a file before its durable state says expired
 // would create a retryable request whose cursor points at missing bytes.

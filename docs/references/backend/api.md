@@ -27,7 +27,8 @@ audience: [human, ai]
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
 | `PUT /v1/media/uploads/{uploadId}` | `media_append` | device proof | raw bytes；必须带精确 `Upload-Offset`，成功返回新的 offset；不接受 multipart |
-| `POST /v1/media/uploads/{uploadId}/complete` | `media_complete` | device proof | 空 body；重算 staged file 的 SHA-256 后返回 opaque `leaseId`，不返回路径/SHA/fetch token |
+| `POST /v1/media/uploads/{uploadId}/complete` | `media_complete` | device proof | 空 body；重算 staged file 的 SHA-256 后返回 opaque `leaseId` 与短期 `fetchPath` |
+| `GET /v1/media/leases/{leaseId}/content?token=…` | `media_fetch` | HMAC capability | 仅模型侧短期拉取；不要求/不接受 device proof，失败统一 404 |
 | `GET /healthz` | 不包 RED | 无 | liveness；不碰 DB/provider |
 
 设备证明头：protected call 带 `X-Anselm-Install-ID` + `X-Anselm-Proof`；registration 改带 `X-Anselm-Public-Key` + `X-Anselm-Proof`。proof payload 固定 `{v,kid,iat,jti,nonce,htm,htu,bh}`，Ed25519 签名覆盖 base64url payload；`htu` 是 lowercase authority + path/query，`bh` 是 exact body SHA-256。空/未知 install→401，坏签名/过期→401，重复 jti→409，banned→403。带 `Origin` 的 `OPTIONS` 一律 403，且不发任何 `Access-Control-*`。
@@ -36,7 +37,7 @@ audience: [human, ai]
 
 该接口只在 `MEDIA_ENABLED=true` 时可用；关闭时仍要求 device proof，返回 `503 MEDIA_UNAVAILABLE`。创建 JSON 必须严格为 `{"sha256":"<64 lowercase hex>","mimeType":"image/jpeg|image/png|image/webp|video/mp4|audio/wav|audio/mpeg","totalBytes":N}`，未知字段拒绝。每个 `PUT` 的 body 是原始 chunk，`Upload-Offset` 必须是非负十进制且等于服务端已确认 offset；chunk 长度不得超过 `MEDIA_CHUNK_MAX_BYTES` 和全局 `MAX_BODY_BYTES`。上传 id 对其他 install 不可枚举（统一 `MEDIA_UPLOAD_NOT_FOUND`）。
 
-完成必须在 `receivedBytes==totalBytes` 后从私有 staging 文件复算字节数与 SHA-256；仅这一步原子地将 upload seal 为 completed 并创建一次 lease。文件先 fsync、再 CAS 推进 cursor；崩溃后启动/定期恢复会截去未持久化 cursor 的文件尾，过期 capability 先持久化撤销、后删除文件。客户端永远不会收到 staging path、完整源 SHA、fetch bearer 或 provider URL。
+完成必须在 `receivedBytes==totalBytes` 后从私有 staging 文件复算字节数与 SHA-256；仅这一步原子地将 upload seal 为 completed 并创建一次 lease。响应的 `fetchPath` 是唯一可交给模型 provider 的短期 HMAC capability：它含 token query，但不含 install、原始 SHA 或文件路径；客户端将它相对 gateway base URL 绝对化。读取端点不走 device proof（provider 无法携带），只校验 token、lease active 状态与 expiry，任一失败统一 404；成功 `Cache-Control: private, no-store`、`nosniff`。文件先 fsync、再 CAS 推进 cursor；崩溃后启动/定期恢复会截去未持久化 cursor 的文件尾，过期 capability 先持久化撤销、后删除文件。
 
 ## 2. `POST /v1/chat/completions`
 

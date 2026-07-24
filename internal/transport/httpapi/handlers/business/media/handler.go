@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Service interface {
 	Create(ctx context.Context, in appmedia.CreateInput) (*dmedia.Upload, error)
 	Append(ctx context.Context, installID, uploadID string, expectedOffset int64, chunk []byte) (*dmedia.Upload, error)
 	Complete(ctx context.Context, installID, uploadID string) (*appmedia.PrivateLease, error)
+	OpenLease(ctx context.Context, leaseID, token string) (*appmedia.LeaseSource, error)
 }
 
 type Handler struct {
@@ -129,14 +131,49 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 		h.writeAppError(w, err)
 		return
 	}
-	// FetchToken remains intentionally absent. The next provider adapter derives
-	// its short-lived URL server-side from the durable lease and HMAC signer.
+	// fetchPath is a short-lived provider capability, not an attachment URL: it
+	// carries no install/path/hash and is useless without its HMAC query token.
 	response.WriteJSON(w, http.StatusCreated, struct {
 		LeaseID   string `json:"leaseId"`
+		FetchPath string `json:"fetchPath"`
 		MIMEType  string `json:"mimeType"`
 		SizeBytes int64  `json:"sizeBytes"`
 		ExpiresAt string `json:"expiresAt"`
-	}{LeaseID: lease.Lease.ID, MIMEType: lease.Lease.MIMEType, SizeBytes: lease.Lease.SizeBytes, ExpiresAt: lease.Lease.ExpiresAt.Format(time.RFC3339)})
+	}{LeaseID: lease.Lease.ID, FetchPath: fetchPath(lease.Lease.ID, lease.FetchToken), MIMEType: lease.Lease.MIMEType, SizeBytes: lease.Lease.SizeBytes, ExpiresAt: lease.Lease.ExpiresAt.Format(time.RFC3339)})
+}
+
+// Fetch is intentionally not proof-wrapped: the upstream model fetcher cannot
+// carry a desktop's Ed25519 proof. The expiring HMAC capability is the complete
+// authorization boundary; every failure deliberately renders the same 404.
+func (h *Handler) Fetch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !h.availableFetch(w) {
+		return
+	}
+	source, err := h.svc.OpenLease(r.Context(), r.PathValue("leaseId"), r.URL.Query().Get("token"))
+	if err != nil {
+		response.WriteError(w, apierr.ErrMediaLeaseNotFound)
+		return
+	}
+	defer func() { _ = source.Body.Close() }()
+	w.Header().Set("Content-Type", source.MIMEType)
+	w.Header().Set("Content-Length", strconv.FormatInt(source.SizeBytes, 10))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, source.Body)
+}
+
+func (h *Handler) availableFetch(w http.ResponseWriter) bool {
+	if h.svc == nil {
+		response.WriteError(w, apierr.ErrMediaLeaseNotFound)
+		return false
+	}
+	return true
+}
+
+func fetchPath(leaseID, token string) string {
+	return "/v1/media/leases/" + leaseID + "/content?token=" + url.QueryEscape(token)
 }
 
 func (h *Handler) available(w http.ResponseWriter) bool {
