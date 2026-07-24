@@ -4,8 +4,8 @@ type: concept
 status: active
 owner: @weilin
 created: 2026-06-20
-reviewed: 2026-07-21
-review-due: 2026-10-19
+reviewed: 2026-07-24
+review-due: 2026-10-22
 audience: [human, ai]
 ---
 
@@ -158,11 +158,12 @@ open ── usage / conservative full quote ──▶ settled
 - dashboard 金额在展示边界从 pUSD 转成整数 microUSD；DB 仍保留精确 pUSD。
 - low disk 在 reserve 前 shed；所有 detached accounting goroutine 由 bgWG 跟踪，DB 在 shutdown 最后关闭。
 
-## 8. 六个业务关注点
+## 8. 七个业务关注点
 
 | 域 | app | 核心职责 |
 |---|---|---|
 | chat | `app/chat` | capability route + provider open/relay + accounting saga |
+| media | `domain/media`（M1 基础） | install-bound staged upload、opaque lease、短期 provider fetch capability 与回收 |
 | quota | `app/quota` | Plan reserve/settle/rollback/reconcile + client quota view |
 | install | `app/install` | public-key identity、Sybil/PoW issuance |
 | model | `app/model` | 恰一个 provider-neutral public model |

@@ -40,6 +40,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"install_ip_rate", "install_global_rate", "install_fp_rate", "settings",
 		"quota_monthly", "install_spend_daily", "provider_spend_daily",
 		"global_spend_daily", "global_spend_monthly", "spend_ledger",
+		"media_uploads", "media_leases",
 	}
 	for _, table := range tables {
 		var name string
@@ -93,8 +94,8 @@ func TestQwenMigrationCreatesCleanProviderAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(migs) != 4 {
-		t.Fatalf("migration count=%d want 4", len(migs))
+	if len(migs) != 5 {
+		t.Fatalf("migration count=%d want 5", len(migs))
 	}
 	for _, migration := range migs {
 		if err := applyOne(ctx, w, migration); err != nil {
@@ -106,6 +107,18 @@ func TestQwenMigrationCreatesCleanProviderAccounting(t *testing.T) {
 	}
 	if _, err := w.Exec(ctx, `INSERT INTO provider_spend_daily(provider,period_day,spend_pusd,requests) VALUES ('retired','2026-07-24',7,1)`); err == nil {
 		t.Fatal("retired provider unexpectedly accepted by clean schema")
+	}
+	if _, err := w.Exec(ctx, `INSERT INTO media_uploads(id,install_id,expected_sha256,mime_type,total_bytes,received_bytes,state,expires_at,created_at,updated_at)
+		VALUES ('mup_1','ins_1','0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef','image/png',1,0,'open','2026-07-25','2026-07-24','2026-07-24')`); err != nil {
+		t.Fatalf("insert media upload: %v", err)
+	}
+	if _, err := w.Exec(ctx, `INSERT INTO media_leases(id,install_id,upload_id,sha256,mime_type,size_bytes,fetch_token_hash,state,expires_at,created_at)
+		VALUES ('mls_1','ins_1','mup_1','0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef','image/png',1,'secret-hash','active','2026-07-25','2026-07-24')`); err != nil {
+		t.Fatalf("insert media lease: %v", err)
+	}
+	if _, err := w.Exec(ctx, `INSERT INTO media_leases(id,install_id,upload_id,sha256,mime_type,size_bytes,fetch_token_hash,state,expires_at,created_at)
+		VALUES ('mls_2','ins_2','mup_1','0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef','image/png',1,'other-hash','active','2026-07-25','2026-07-24')`); err == nil {
+		t.Fatal("same upload unexpectedly received a second lease")
 	}
 	if err := raw.Close(); err != nil {
 		t.Fatalf("close raw: %v", err)

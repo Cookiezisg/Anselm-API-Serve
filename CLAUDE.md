@@ -50,5 +50,5 @@ make lint     # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/.
 - 仓库:`<repo>` · 分支 `main`(线上 lineage)
 - 入口:`cmd/gateway`(瘦壳)→ `internal/bootstrap`(组合根) · 三监听器:业务 8080(公网/socket-activated)· admin 9090(loopback)· dashboard 8081(loopback)
 - 路由:`PUBLIC_MODEL_ID`(默认 `anselm-auto`)· text=`deepseek-v4-flash`· image/video=`qwen3.7-plus`（1M input / 64K output、thinking-on）· audio=协议已知但当前 `AUDIO_UNAVAILABLE`· no fallback
-- SQLite:当前 13 张应用表(0001 的 8 表 + 0002 的 5 张 pUSD 账本表)+`schema_migrations`；v1 accounting 三表仅读保留供审计/迁移。
+- SQLite:当前 15 张应用表(0001 的 8 表 + 0002 的 5 张 pUSD 账本表 + 0005 的 2 张媒体 staging/lease 表)+`schema_migrations`；v1 accounting 三表仅读保留供审计/迁移。
 - Go:`mise which go`(1.25) · 文档体系:[`docs/INDEX.md`](docs/INDEX.md)(会话入口)

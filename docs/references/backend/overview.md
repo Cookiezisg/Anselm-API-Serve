@@ -4,14 +4,14 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-24
+review-due: 2026-10-22
 audience: [human, ai]
 ---
 
 # 后端总览（backend overview）
 
-> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持图片/视频→Qwen3.7 Plus；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、六域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
+> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持图片/视频→Qwen3.7 Plus；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、七域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
 
 ## 1. 三个物理隔离监听器（ADR-004 / GW-INV-13/18）
 
@@ -42,13 +42,14 @@ bootstrap 在最外层装配全部
 
 transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口注入。例：`router.Wrapper`（RED 度量）由 `*infra/metrics.Metrics` 结构化满足；admin mux 的 `Metrics http.Handler` 由 bootstrap 传入。
 
-## 3. 六域关注点
+## 3. 七域关注点
 
 | 域 | app 包 | 入口端点 | 权威契约 |
 |---|---|---|---|
 | quota | `app/quota` | `GET /v1/quota` | provider-aware pUSD 双闸预留（install 月次数 + operator 月预算）与显式 ledger 状态（A 组） |
 | install | `app/install` + `app/deviceproof` | `POST /v1/install` · `GET /v1/install/challenge` · `GET /v1/proof/challenge` | GW-INV-12/16/20、逐请求 proof、防 Sybil + PoW 三态 |
 | chat | `app/chat` | `POST /v1/chat/completions` | GW-INV-31..44 输入/capability/provider，GW-INV-01..10 记账 |
+| media | `domain/media`（M1 基础） | upload/lease API 尚未接入 | install-bound staging、opaque lease、TTL/GC；字节不进 SQLite |
 | model | `app/model` | `GET /v1/models` | 恰一个 `PUBLIC_MODEL_ID`；client model 不选 provider |
 | health | — | `GET /healthz`（三监听器各一）· admin `/readyz` | GW-INV-13（liveness 不碰 DB）；cached authenticated provider/model probe |
 | dashboard | `app/dashboard` | dashboard `/api/*` | GW-INV-19 auth-mode trust boundary |

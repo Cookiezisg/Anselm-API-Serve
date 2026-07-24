@@ -97,7 +97,7 @@ landed-into:          # 仅 working：结论提取进哪篇 concepts/references 
 
 ## 5. 目录地图（canonical）
 
-网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持图片/视频路由 Qwen3.7 Plus，两 provider 以 pUSD 成本账本统一护栏；共 6 个业务关注点（quota / install / chat / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
+网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持图片/视频路由 Qwen3.7 Plus，两 provider 以 pUSD 成本账本统一护栏；共 7 个业务关注点（quota / install / chat / media / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
 
 ```
 docs/
@@ -110,7 +110,7 @@ docs/
 │   │   ├── overview.md     ← 后端总览与契约导航
 │   │   ├── api.md          ← 三 mux HTTP + chat content/route
 │   │   ├── config.md       ← 全配置层级与边界
-│   │   ├── database.md     ← 13 张应用表（0001 的 8 表 + 0002 的 5 表）+ schema_migrations
+│   │   ├── database.md     ← 15 张应用表（0001 的 8 表 + 0002 的 5 表 + 0005 的 2 表）+ schema_migrations
 │   │   ├── error-codes.md  ← 全 wire code → status/message
 │   │   └── invariants.md   ← GW-INV-NN 验收准绳
 │   └── domains/             ← 保留的 reference 扩展位（当前仅 .gitkeep）
@@ -123,7 +123,7 @@ docs/
 
 - 每个文件夹放且仅放其声明类型的文档；空文件夹用 `.gitkeep`（内含一行职责说明）占位。
 - 新增类别 = 先在本 §5 + §2 登记，再建目录。
-- `references/backend/` 的 6 篇现行硬契约（overview / api / config / database / error-codes / invariants）是 doc-code parity 的承重墙，§7 触发表逐条钉住它们。`database.md` 所述 13 张应用表中，v1 accounting 三表只读保留供审计/迁移，v2 五表是当前 provider-aware pUSD 账本。
+- `references/backend/` 的 6 篇现行硬契约（overview / api / config / database / error-codes / invariants）是 doc-code parity 的承重墙，§7 触发表逐条钉住它们。`database.md` 所述 15 张应用表中，v1 accounting 三表只读保留供审计/迁移，v2 五表是当前 provider-aware pUSD 账本，另有两张 install-bound 媒体 staging/lease 表。
 
 ---
 

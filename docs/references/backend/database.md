@@ -4,14 +4,14 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-20
-review-due: 2026-10-18
+reviewed: 2026-07-24
+review-due: 2026-10-22
 audience: [human, ai]
 ---
 
 # SQLite schema（database）
 
-> 与 `internal/infra/sqlite/migrations/{0001_init,0002_provider_spend_ledger}.sql` 对齐。schema forward-only；`schema_migrations` 记录 `version`、`applied_at`、`checksum`。v2 以后 quota store 只写 provider-aware pUSD 表；v1 accounting 表保留为只读审计/迁移来源，不再参与当前记账。
+> 与 `internal/infra/sqlite/migrations/*.sql` 对齐。schema forward-only；`schema_migrations` 记录 `version`、`applied_at`、`checksum`。v2 以后 quota store 只写 provider-aware pUSD 表；v1 accounting 表保留为只读审计/迁移来源，不再参与当前记账。
 
 ## 1. 当前仍活跃的 identity / abuse / config 表（0001）
 
@@ -174,7 +174,23 @@ v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同
 
 随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。0004 再把 `global_spend_daily` 按 `period_month` 聚合进 `global_spend_monthly`，并删除 retired `GLOBAL_DAILY_SPEND_MICRO_USD` / `INSTALL_DAILY_SPEND_MICRO_USD` / `DEEPSEEK_DAILY_SPEND_MICRO_USD` / `QWEN_DAILY_SPEND_MICRO_USD` settings。
 
-## 5. 迁移框架与连接纪律
+## 5. 媒体 staging 与 lease（0005）
+
+媒体原件/代理字节不进入 SQLite。`media_uploads` 只记录 install 绑定的分块上传状态、预声明 SHA-256、
+MIME、总/已收字节和到期时间；`media_leases` 是完成后的唯一 completion capability，拥有独立高熵 id 与
+只存哈希的 provider-fetch token。二者均以状态/到期索引支持启动和定期回收；`upload_id UNIQUE` 禁止一个
+staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能互相推导。
+
+| 表 | 状态闭集 | 关键唯一性 / 索引 |
+|---|---|---|
+| `media_uploads` | `open`,`completed`,`aborted`,`expired` | `idx_media_uploads_expiry(state,expires_at)`；`idx_media_uploads_install(install_id,created_at)` |
+| `media_leases` | `active`,`expired`,`deleted` | `upload_id UNIQUE`、`fetch_token_hash UNIQUE`；expiry/install 索引 |
+
+`received_bytes` 是进度，不是完成证明；完成时必须从暂存文件重算 SHA-256 后才能转 `completed` 并创建 lease。
+过期/删除必须先撤销 DB capability，再删除文件；崩溃恢复按状态+期限回收，绝不因无法证明成功而把媒体跨 install
+复用。
+
+## 6. 迁移框架与连接纪律
 
 `schema_migrations`：`version INTEGER PRIMARY KEY`、`applied_at DATETIME NOT NULL`、`checksum TEXT NOT NULL`。runner 拒绝未知未来 version 与已应用 checksum drift；每份 SQL 和记录行在同一个 tx。
 
