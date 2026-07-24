@@ -163,7 +163,7 @@ open ── usage / conservative full quote ──▶ settled
 | 域 | app | 核心职责 |
 |---|---|---|
 | chat | `app/chat` | capability route + provider open/relay + accounting saga |
-| media | `domain/media`（M1 基础） | install-bound staged upload、opaque lease、短期 provider fetch capability 与回收 |
+| media | `app/media` | install-bound staged upload、opaque lease、短期 provider fetch capability 与回收 |
 | quota | `app/quota` | Plan reserve/settle/rollback/reconcile + client quota view |
 | install | `app/install` | public-key identity、Sybil/PoW issuance |
 | model | `app/model` | 恰一个 provider-neutral public model |

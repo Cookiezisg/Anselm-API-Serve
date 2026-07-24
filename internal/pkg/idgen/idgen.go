@@ -15,6 +15,7 @@ const (
 	// that can observe a UNIQUE violation. idgen just mints wide ids.
 	installEntropyBytes = 16
 	requestEntropyBytes = 8 // request_id is a per-request trace handle, not a secret.
+	mediaEntropyBytes   = 16
 )
 
 // InstallID returns a fresh installation id: "ins_" + 32 hex chars (16 bytes).
@@ -26,6 +27,17 @@ func InstallID() string {
 func RequestID() string {
 	return "req_" + hex.EncodeToString(randBytes(requestEntropyBytes))
 }
+
+// MediaUploadID returns a private staging identifier accepted by mediafs only.
+func MediaUploadID() string { return "mup_" + hex.EncodeToString(randBytes(mediaEntropyBytes)) }
+
+// MediaLeaseID returns an opaque completion capability, intentionally independent of the upload
+// id and source SHA so neither can be inferred from the other.
+func MediaLeaseID() string { return "mls_" + hex.EncodeToString(randBytes(mediaEntropyBytes)) }
+
+// MediaFetchToken returns a provider-only 256-bit capability. Its plaintext is never written to
+// SQLite or returned by the public upload API; persistence stores only its SHA-256 hash.
+func MediaFetchToken() string { return hex.EncodeToString(randBytes(32)) }
 
 // randBytes fills n cryptographically-random bytes.
 //
