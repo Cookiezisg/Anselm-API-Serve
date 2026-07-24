@@ -21,6 +21,7 @@ import (
 	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	apphealth "github.com/sunweilin/anselm/gateway/internal/app/health"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
+	appmedia "github.com/sunweilin/anselm/gateway/internal/app/media"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
@@ -28,10 +29,12 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
+	"github.com/sunweilin/anselm/gateway/internal/infra/mediafs"
 	"github.com/sunweilin/anselm/gateway/internal/infra/metrics"
 	"github.com/sunweilin/anselm/gateway/internal/infra/ratelimit"
 	"github.com/sunweilin/anselm/gateway/internal/infra/sqlite"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/installstore"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/mediastore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/settingsstore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
@@ -71,6 +74,7 @@ type App struct {
 	rate             *ratesample.Sampler
 	rl               *ratelimit.RateLimiter
 	throttle         *tokenThrottle
+	media            *appmedia.Service
 	openReservations *quotastore.Store
 	log              *slog.Logger
 
@@ -152,6 +156,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 5) Stores.
 	quotaStore := quotastore.New(db.Writer, db.Reader)
 	installStore := installstore.New(db.Writer, db.Reader)
+	mediaStore := mediastore.New(db.Writer, db.Reader)
 
 	// 6) Metrics bundle (RED + golden signals). Mounted loopback-only on admin.
 	mx := metrics.New()
@@ -167,6 +172,20 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		installsCreatedCounter{m: mx}, powCounter{m: mx})
 	proofSvc := appdeviceproof.New(installStore, noncecache.NewFailClosed(2*time.Minute, noncecache.DefaultMax))
 	modelCat := appmodel.New(cfgP)
+	var mediaSvc *appmedia.Service
+	if effective.MediaEnabled {
+		signer, serr := appmedia.NewHMACSigner(effective.MediaSigningSecret)
+		if serr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("media signer: %w", serr)
+		}
+		mediaSvc = appmedia.New(mediaStore, mediafs.New(effective.MediaStagingRoot), systemClock{}, appmedia.Limits{
+			MaxBytes: effective.MediaUploadMaxBytes, UploadTTL: effective.MediaUploadTTL, LeaseTTL: effective.MediaLeaseTTL,
+		}, signer)
+		log.Info("durable_media_enabled", "staging_root", effective.MediaStagingRoot, "upload_max_bytes", effective.MediaUploadMaxBytes, "chunk_max_bytes", effective.MediaChunkMaxBytes)
+	} else {
+		log.Info("durable_media_disabled", "reason", "MEDIA_ENABLED=false")
+	}
 
 	// 8) Two provider-local upstream clients. Endpoint, key pool, transport and
 	// breaker are frozen together so auth material can never cross providers.
@@ -239,13 +258,15 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 
 	// 14) Business + admin handlers.
 	bizHandler := router.BuildHandler(router.Deps{
-		Install: installSvc,
-		Proof:   proofSvc,
-		Chat:    chatSvc,
-		Quota:   quotaSvc,
-		Models:  modelCat,
-		Mx:      mx,
-		OnPanic: mx.Panics,
+		Install:            installSvc,
+		Proof:              proofSvc,
+		Chat:               chatSvc,
+		Quota:              quotaSvc,
+		Models:             modelCat,
+		Media:              mediaSvc,
+		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
+		Mx:                 mx,
+		OnPanic:            mx.Panics,
 		// Boot snapshot: MAX_BODY_BYTES is RestartRequired (the chain is assembled
 		// once), same contract as the N_global semaphore capacity.
 		MaxBodyBytes: effective.MaxBodyBytes,
@@ -355,6 +376,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		rate:             sampler,
 		rl:               rl,
 		throttle:         throttle,
+		media:            mediaSvc,
 		openReservations: quotaStore,
 		log:              log,
 		addrs: addrs{

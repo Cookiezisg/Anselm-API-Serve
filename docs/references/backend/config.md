@@ -4,7 +4,7 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-21
+reviewed: 2026-07-24
 review-due: 2026-10-19
 audience: [human, ai]
 ---
@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
+Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -77,6 +77,12 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `LISTEN_ADDR` | `127.0.0.1:8080` | 与另两监听互异 |
 | `RESET_TZ` | `Asia/Shanghai` | `LoadLocation` 失败 panic，无 UTC fallback |
 | `GATEWAY_DB_PATH` | `anselm-gateway.db` | SQLite 文件 |
+| `MEDIA_ENABLED` | `false` | durable media upload 显式开关；启用时全部 media 配置与 secret 必须完整 |
+| `MEDIA_STAGING_ROOT` | `dirname(GATEWAY_DB_PATH)/anselm-media` | 私有持久目录；不可是 web root/临时目录 |
+| `MEDIA_UPLOAD_MAX_BYTES` | 104,857,600 | 1..1,073,741,824；单对象磁盘上限 |
+| `MEDIA_CHUNK_MAX_BYTES` | `min(4MiB,MAX_BODY_BYTES)` | 1..`MAX_BODY_BYTES`，每个 raw resumable chunk 的上限 |
+| `MEDIA_UPLOAD_TTL_SEC` | 3600 | 1..604800；未完成 staging 到期 |
+| `MEDIA_LEASE_TTL_SEC` | 3600 | 1..604800；完成后的 opaque lease 到期 |
 
 ### 3.2 其它 startup env（不在 dashboard registry）
 
@@ -98,6 +104,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 endpoint |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
+| `MEDIA_SIGNING_SECRET` | `MEDIA_ENABLED=true` 时必填、至少 32 bytes；HMAC 派生 provider-only fetch credential，重启后可重建，SQLite 仅保存 hash |
 
 每个 backend 的 URL、key pool 与 breaker 在 construction 时冻结。Qwen 是产品 route 的部署必需能力；缺 key/base/workspace 是启动配置错误，不允许以“只有文本”降级。
 
@@ -111,6 +118,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
 8. `DASHBOARD_AUTH_MODE` 必须为 `disabled|builtin|external`；`builtin` 必须同设非空 `DASHBOARD_USER`/`DASHBOARD_PASSWORD`。`external` 的实际安全前提由 bootstrap 强制 loopback bind，加上部署者的前置 IAP 全路径 policy 共同满足。
+9. `MEDIA_ENABLED=true` 时 staging root 非空、signing secret 至少 32 bytes、`0<chunk≤MAX_BODY_BYTES≤8MiB` 且 `chunk≤upload max`、两个 TTL 均为正；任一不满足即 fail-fast。
 
 违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0017](../../decisions/0017-qwen-visual-route-and-tiered-cost-ledger.md)。
 

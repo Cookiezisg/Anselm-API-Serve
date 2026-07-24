@@ -178,7 +178,7 @@ v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同
 
 媒体原件/代理字节不进入 SQLite。`media_uploads` 只记录 install 绑定的分块上传状态、预声明 SHA-256、
 MIME、总/已收字节和到期时间；`media_leases` 是完成后的唯一 completion capability，拥有独立高熵 id 与
-只存哈希的 provider-fetch token。二者均以状态/到期索引支持启动和定期回收；`upload_id UNIQUE` 禁止一个
+HMAC 从 lease/install/expiry 确定性派生、只存哈希的 provider-fetch token。二者均以状态/到期索引支持启动和定期回收；`upload_id UNIQUE` 禁止一个
 staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能互相推导。
 
 | 表 | 状态闭集 | 关键唯一性 / 索引 |
@@ -187,8 +187,7 @@ staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能
 | `media_leases` | `active`,`expired`,`deleted` | `upload_id UNIQUE`、`fetch_token_hash UNIQUE`；expiry/install 索引 |
 
 `received_bytes` 是进度，不是完成证明；完成时必须从暂存文件重算 SHA-256 后才能转 `completed` 并创建 lease。
-过期/删除必须先撤销 DB capability，再删除文件；崩溃恢复按状态+期限回收，绝不因无法证明成功而把媒体跨 install
-复用。
+过期/删除必须先撤销 DB capability，再删除文件、最后 acknowledge；崩溃恢复会截去 fsync 后但 cursor 未推进的尾部，绝不因无法证明成功而把媒体跨 install 复用。
 
 ## 6. 迁移框架与连接纪律
 

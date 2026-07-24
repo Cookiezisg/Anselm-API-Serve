@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ type CreateInput struct {
 }
 
 // PrivateLease must never cross the public HTTP boundary. FetchToken is retained only until the
-// future provider-URL signer is wired; its hash alone is persisted.
+// provider URL signer is wired; its hash alone is persisted.
 type PrivateLease struct {
 	Lease      *dmedia.Lease
 	FetchToken string
@@ -65,13 +66,75 @@ type Service struct {
 	files  Files
 	clock  Clock
 	limits Limits
+	signer FetchSigner
 }
 
-func New(repo Repository, files Files, clock Clock, limits Limits) *Service {
-	if repo == nil || files == nil || clock == nil || limits.MaxBytes <= 0 || limits.UploadTTL <= 0 || limits.LeaseTTL <= 0 {
-		panic("mediaapp.New: repo, files, clock, positive limits are required")
+// RecoveryRepository is intentionally an optional extension of the request
+// repository. Unit-level request fakes need not emulate a database sweeper,
+// while the production media store provides the full restart/TTL lifecycle.
+type RecoveryRepository interface {
+	Expire(ctx context.Context, now time.Time) error
+	OpenUploads(ctx context.Context) ([]dmedia.Upload, error)
+	ExpiredFileIDs(ctx context.Context) ([]string, error)
+	ExpireOpen(ctx context.Context, uploadID string, now time.Time) error
+	AcknowledgeRemoved(ctx context.Context, uploadID string, now time.Time) error
+}
+
+func New(repo Repository, files Files, clock Clock, limits Limits, signer FetchSigner) *Service {
+	if repo == nil || files == nil || clock == nil || signer == nil || limits.MaxBytes <= 0 || limits.UploadTTL <= 0 || limits.LeaseTTL <= 0 {
+		panic("mediaapp.New: repo, files, clock, signer, positive limits are required")
 	}
-	return &Service{repo: repo, files: files, clock: clock, limits: limits}
+	return &Service{repo: repo, files: files, clock: clock, limits: limits, signer: signer}
+}
+
+// Recover is safe at startup and on a periodic loop. It first advances durable
+// lifecycle expiry, repairs only fsync-before-cursor crash tails, fails closed
+// when an open cursor points beyond its file, then removes already-expired bytes.
+// File deletion is acknowledged in SQLite afterwards so an interruption is
+// idempotently retried on the next run.
+func (s *Service) Recover(ctx context.Context) (int, error) {
+	repo, ok := s.repo.(RecoveryRepository)
+	if !ok {
+		return 0, errors.New("mediaapp.Recover: repository lacks recovery lifecycle")
+	}
+	now := s.clock.Now().UTC()
+	if err := repo.Expire(ctx, now); err != nil {
+		return 0, fmt.Errorf("mediaapp.Recover expire: %w", err)
+	}
+	open, err := repo.OpenUploads(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("mediaapp.Recover open: %w", err)
+	}
+	for _, u := range open {
+		size, serr := s.files.Size(ctx, u.ID)
+		if serr != nil && !errors.Is(serr, os.ErrNotExist) {
+			return 0, fmt.Errorf("mediaapp.Recover size: %w", serr)
+		}
+		if errors.Is(serr, os.ErrNotExist) || size < u.ReceivedBytes {
+			if err := repo.ExpireOpen(ctx, u.ID, now); err != nil {
+				return 0, fmt.Errorf("mediaapp.Recover expire corrupt: %w", err)
+			}
+			continue
+		}
+		if size > u.ReceivedBytes {
+			if err := s.files.Truncate(ctx, u.ID, u.ReceivedBytes); err != nil {
+				return 0, fmt.Errorf("mediaapp.Recover truncate: %w", err)
+			}
+		}
+	}
+	ids, err := repo.ExpiredFileIDs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("mediaapp.Recover candidates: %w", err)
+	}
+	for _, id := range ids {
+		if err := s.files.Remove(ctx, id); err != nil {
+			return 0, fmt.Errorf("mediaapp.Recover remove: %w", err)
+		}
+		if err := repo.AcknowledgeRemoved(ctx, id, now); err != nil {
+			return 0, fmt.Errorf("mediaapp.Recover acknowledge: %w", err)
+		}
+	}
+	return len(ids), nil
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, error) {
@@ -95,13 +158,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*dmedia.Upload, e
 
 // Append first reconciles a crash tail, then fsyncs the new bytes before moving the DB cursor. A
 // concurrent/replayed request which loses the DB CAS has its own unrecorded tail truncated again.
-func (s *Service) Append(ctx context.Context, installID, uploadID string, chunk []byte) (*dmedia.Upload, error) {
-	if len(chunk) == 0 || len(chunk) > int(s.limits.MaxBytes) {
+func (s *Service) Append(ctx context.Context, installID, uploadID string, expectedOffset int64, chunk []byte) (*dmedia.Upload, error) {
+	if expectedOffset < 0 || len(chunk) == 0 || len(chunk) > int(s.limits.MaxBytes) {
 		return nil, ErrInvalidInput
 	}
 	u, err := s.openOwned(ctx, installID, uploadID)
 	if err != nil {
 		return nil, err
+	}
+	if u.ReceivedBytes != expectedOffset {
+		return nil, ErrConflict
 	}
 	physical, err := s.files.Size(ctx, uploadID)
 	if err != nil {
@@ -155,10 +221,11 @@ func (s *Service) Complete(ctx context.Context, installID, uploadID string) (*Pr
 		return nil, ErrIntegrity
 	}
 	now := s.clock.Now().UTC()
-	token := idgen.MediaFetchToken()
 	lease := dmedia.Lease{ID: idgen.MediaLeaseID(), InstallID: installID, UploadID: uploadID, SHA256: sha,
-		MIMEType: u.MIMEType, SizeBytes: size, FetchTokenHash: dmedia.HashSecret(token), State: dmedia.LeaseActive,
+		MIMEType: u.MIMEType, SizeBytes: size, State: dmedia.LeaseActive,
 		ExpiresAt: now.Add(s.limits.LeaseTTL), CreatedAt: now}
+	token := s.signer.Token(lease.ID, lease.InstallID, lease.ExpiresAt)
+	lease.FetchTokenHash = dmedia.HashSecret(token)
 	got, completed, err := s.repo.CompleteUpload(ctx, installID, uploadID, sha, now, lease)
 	if err != nil {
 		return nil, err

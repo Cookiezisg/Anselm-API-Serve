@@ -97,6 +97,13 @@ func (p *Provider) Snapshot() []any {
 		"db_path", c.DBPath,
 		"disk_min_mb", c.DiskMinMB,
 		"disk_min_percent", c.DiskMinPercent,
+		"media_enabled", c.MediaEnabled,
+		"media_staging_root", c.MediaStagingRoot,
+		"media_upload_max_bytes", c.MediaUploadMaxBytes,
+		"media_chunk_max_bytes", c.MediaChunkMaxBytes,
+		"media_upload_ttl", c.MediaUploadTTL.String(),
+		"media_lease_ttl", c.MediaLeaseTTL.String(),
+		"media_signing_secret", c.MediaSigningSecretSource,
 	}
 }
 

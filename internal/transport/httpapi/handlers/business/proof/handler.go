@@ -4,6 +4,7 @@ package proof
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -49,6 +50,11 @@ func Protect(svc *appdeviceproof.Service, next http.Handler) http.Handler {
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				response.WriteError(w, apierr.ErrRequestBodyTooLarge)
+				return
+			}
 			response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 			return
 		}

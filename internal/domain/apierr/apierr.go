@@ -50,6 +50,8 @@ func LoginLocked(retryAfterSec int) *APIError {
 // domain; the values are the spec.
 const (
 	statusBadRequest          = 400
+	statusNotFound            = 404
+	statusUnprocessableEntity = 422
 	statusRequestTooLarge     = 413
 	statusUnauthorized        = 401
 	statusPaymentRequired     = 402
@@ -108,6 +110,16 @@ var (
 	// table deliberately has no audio-capable upstream. It is distinct from malformed input and from
 	// a missing visual-provider credential, so clients can preserve their attachment and retry after an upgrade.
 	ErrAudioUnavailable = NewError(statusServiceUnavailable, "AUDIO_UNAVAILABLE", "audio input is not available on this deployment")
+	// ErrMediaUnavailable means durable media ingress has not been explicitly
+	// configured on this gateway. It is not a malformed attachment and retrying
+	// the same bytes cannot repair it.
+	ErrMediaUnavailable = NewError(statusServiceUnavailable, "MEDIA_UNAVAILABLE", "durable media upload is not enabled on this deployment")
+	// Media upload failures intentionally distinguish client-fixable lifecycle
+	// mistakes from a verified object whose bytes/digest do not match.
+	ErrMediaUploadInvalid   = NewError(statusBadRequest, "MEDIA_UPLOAD_INVALID", "invalid media upload request")
+	ErrMediaUploadNotFound  = NewError(statusNotFound, "MEDIA_UPLOAD_NOT_FOUND", "media upload was not found")
+	ErrMediaUploadConflict  = NewError(statusConflict, "MEDIA_UPLOAD_CONFLICT", "media upload is not writable in its current state")
+	ErrMediaIntegrityFailed = NewError(statusUnprocessableEntity, "MEDIA_INTEGRITY_FAILED", "media upload failed integrity verification")
 
 	// /install reject paths use DISTINCT codes for audit separation (GW-INV-20):
 

@@ -15,6 +15,7 @@ import (
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
+	appmedia "github.com/sunweilin/anselm/gateway/internal/app/media"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
@@ -22,6 +23,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/chat"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/healthz"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/install"
+	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/media"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/models"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/quota"
@@ -59,6 +61,10 @@ type Deps struct {
 	Chat    *appchat.Service  // POST /v1/chat/completions
 	Quota   *appquota.Service // GET /v1/quota
 	Models  *appmodel.Catalog // GET /v1/models
+	// Media is nil while MEDIA_ENABLED=false; routes remain proof-gated and
+	// return MEDIA_UNAVAILABLE rather than silently accepting an unusable upload.
+	Media              *appmedia.Service
+	MediaChunkMaxBytes int64
 
 	// Mx wraps each business route with HTTP RED; nil → routes mounted bare.
 	Mx Wrapper
@@ -85,6 +91,7 @@ func BuildHandler(d Deps) http.Handler {
 	if limit <= 0 {
 		limit = domchat.BodyDecodeLimit
 	}
+	mediaHandler := media.New(d.Install, d.Media, d.MediaChunkMaxBytes)
 	// The install service doubles as the shared Authenticator for quota/models.
 	return assemble(routes{
 		install:        install.New(d.Install, d.Proof),
@@ -93,6 +100,9 @@ func BuildHandler(d Deps) http.Handler {
 		chat:           proof.Protect(d.Proof, chat.New(d.Chat, limit)),
 		quota:          proof.Protect(d.Proof, quota.New(d.Install, d.Quota)),
 		models:         proof.Protect(d.Proof, models.New(d.Install, d.Models)),
+		mediaCreate:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Create)),
+		mediaAppend:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Append)),
+		mediaComplete:  proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Complete)),
 		healthz:        healthz.New(),
 	}, d.Mx, d.OnPanic, limit)
 }
@@ -108,6 +118,9 @@ type routes struct {
 	chat           http.Handler
 	quota          http.Handler
 	models         http.Handler
+	mediaCreate    http.Handler
+	mediaAppend    http.Handler
+	mediaComplete  http.Handler
 	healthz        http.Handler
 }
 
@@ -133,6 +146,9 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("POST /v1/chat/completions", wrap("chat_completions", rt.chat))
 	mux.Handle("GET /v1/quota", wrap("quota", rt.quota))
 	mux.Handle("GET /v1/models", wrap("models", rt.models))
+	mux.Handle("POST /v1/media/uploads", wrap("media_create", rt.mediaCreate))
+	mux.Handle("PUT /v1/media/uploads/{uploadId}", wrap("media_append", rt.mediaAppend))
+	mux.Handle("POST /v1/media/uploads/{uploadId}/complete", wrap("media_complete", rt.mediaComplete))
 	// Liveness is the ONLY public health surface and is deliberately un-wrapped
 	// (no RED label, §8): it must stay pure and never touch the DB (GW-INV-13).
 	mux.Handle("GET /healthz", rt.healthz)

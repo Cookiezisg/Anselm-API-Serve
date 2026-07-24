@@ -113,6 +113,98 @@ func (s *Store) GetLeaseForInstall(ctx context.Context, installID, leaseID strin
 	return scanLease(row)
 }
 
+// Expire advances only lifecycle metadata; physical deletion happens afterwards
+// in app/media, because deleting a file before its durable state says expired
+// would create a retryable request whose cursor points at missing bytes.
+func (s *Store) Expire(ctx context.Context, now time.Time) error {
+	return s.w.Transaction(ctx, func(tx *orm.DB) error {
+		if _, err := tx.Exec(ctx, `UPDATE media_uploads SET state=?,updated_at=? WHERE state=? AND expires_at<=?`, dmedia.UploadExpired, now.UTC(), dmedia.UploadOpen, now.UTC()); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE media_leases SET state=? WHERE state=? AND expires_at<=?`, dmedia.LeaseExpired, dmedia.LeaseActive, now.UTC())
+		return err
+	})
+}
+
+// OpenUploads is the restart-recovery set: only still-live incomplete files may
+// have an fsync-before-cursor crash tail that needs truncation.
+func (s *Store) OpenUploads(ctx context.Context) ([]dmedia.Upload, error) {
+	rows, err := s.r.Query(ctx, `SELECT id,install_id,expected_sha256,mime_type,total_bytes,received_bytes,state,expires_at,created_at,updated_at,completed_at
+		FROM media_uploads WHERE state=?`, dmedia.UploadOpen)
+	if err != nil {
+		return nil, fmt.Errorf("mediastore.OpenUploads: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []dmedia.Upload
+	for rows.Next() {
+		var u dmedia.Upload
+		if err := rows.Scan(&u.ID, &u.InstallID, &u.ExpectedSHA256, &u.MIMEType, &u.TotalBytes, &u.ReceivedBytes, &u.State, &u.ExpiresAt, &u.CreatedAt, &u.UpdatedAt, &u.CompletedAt); err != nil {
+			return nil, fmt.Errorf("mediastore.OpenUploads scan: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mediastore.OpenUploads rows: %w", err)
+	}
+	return out, nil
+}
+
+// ExpiredFileIDs returns every staged object whose durable lifecycle no longer
+// permits provider use: abandoned uploads and completed uploads with an expired
+// lease. DISTINCT is required because a completed upload has exactly one lease.
+func (s *Store) ExpiredFileIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.r.Query(ctx, `SELECT DISTINCT u.id FROM media_uploads u
+		LEFT JOIN media_leases l ON l.upload_id=u.id
+		WHERE u.state=? OR l.state=?`, dmedia.UploadExpired, dmedia.LeaseExpired)
+	if err != nil {
+		return nil, fmt.Errorf("mediastore.ExpiredFileIDs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("mediastore.ExpiredFileIDs scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mediastore.ExpiredFileIDs rows: %w", err)
+	}
+	return out, nil
+}
+
+// ExpireOpen closes a corrupt/missing staging object before recovery deletes its
+// bytes. It is deliberately idempotent and refuses to touch a completed object.
+func (s *Store) ExpireOpen(ctx context.Context, uploadID string, now time.Time) error {
+	_, err := s.w.Exec(ctx, `UPDATE media_uploads SET state=?,updated_at=? WHERE id=? AND state=?`, dmedia.UploadExpired, now.UTC(), uploadID, dmedia.UploadOpen)
+	if err != nil {
+		return fmt.Errorf("mediastore.ExpireOpen: %w", err)
+	}
+	return nil
+}
+
+// AcknowledgeRemoved finalizes only after the file remove has succeeded (or was
+// already absent). Expired incomplete rows are deleted; completed metadata stays
+// auditable while its lease becomes deleted.
+func (s *Store) AcknowledgeRemoved(ctx context.Context, uploadID string, now time.Time) error {
+	return s.w.Transaction(ctx, func(tx *orm.DB) error {
+		res, err := tx.Exec(ctx, `DELETE FROM media_uploads WHERE id=? AND state=?`, uploadID, dmedia.UploadExpired)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		_, err = tx.Exec(ctx, `UPDATE media_leases SET state=?,deleted_at=? WHERE upload_id=? AND state=?`, dmedia.LeaseDeleted, now.UTC(), uploadID, dmedia.LeaseExpired)
+		return err
+	})
+}
+
 func scanUpload(row *sql.Row) (*dmedia.Upload, bool, error) {
 	var out dmedia.Upload
 	if err := row.Scan(&out.ID, &out.InstallID, &out.ExpectedSHA256, &out.MIMEType, &out.TotalBytes, &out.ReceivedBytes,

@@ -70,6 +70,10 @@ const (
 	MaxQueueWaitMS              int   = 60_000
 	MaxUpstreamHeaderTimeoutSec int   = 600
 	MaxDiskMinMB                int   = 1024 * 1024 * 1024
+	// A staged upload is persisted to disk rather than buffered in Go memory. The
+	// ceiling protects disk capacity and keeps an accidental unit typo from
+	// turning the gateway into an unbounded public file sink.
+	MaxMediaUploadBytes int64 = 1024 * 1024 * 1024
 )
 
 // PoW mode enum (reviewer B3 — three-state, not bool). off is the default and
@@ -151,6 +155,18 @@ type Config struct {
 	// REL-6 磁盘满 / WAL 膨胀防护:数据盘剩余低于阈值进只读降级。
 	DiskMinMB      int // DISK_MIN_MB(数据盘剩余绝对下限 MiB)
 	DiskMinPercent int // DISK_MIN_PERCENT(剩余百分比下限;0=禁用百分比判定)
+
+	// Durable media staging is an explicit capability. Keeping it off until its
+	// signing secret and persistent directory are configured prevents a partial
+	// rollout from accepting bytes that no provider can later fetch.
+	MediaEnabled             bool          // MEDIA_ENABLED
+	MediaStagingRoot         string        // MEDIA_STAGING_ROOT
+	MediaSigningSecret       []byte        // MEDIA_SIGNING_SECRET(env-only)
+	MediaSigningSecretSource string        // configured/disabled; never the secret
+	MediaUploadMaxBytes      int64         // MEDIA_UPLOAD_MAX_BYTES
+	MediaChunkMaxBytes       int64         // MEDIA_CHUNK_MAX_BYTES(<= MAX_BODY_BYTES)
+	MediaUploadTTL           time.Duration // MEDIA_UPLOAD_TTL_SEC
+	MediaLeaseTTL            time.Duration // MEDIA_LEASE_TTL_SEC
 
 	ResetTZ  string         // RESET_TZ
 	Location *time.Location // LoadLocation(ResetTZ) 结果
@@ -307,6 +323,23 @@ func (c *Config) ValidateSemantics() error {
 	}
 	if c.MaxMediaDecodedBytes < 1 || c.MaxMediaDecodedBytes > c.MaxBodyBytes {
 		return fmt.Errorf("SEC-2 config: MAX_MEDIA_DECODED_BYTES must be > 0 and <= MAX_BODY_BYTES")
+	}
+	if c.MediaEnabled {
+		if strings.TrimSpace(c.MediaStagingRoot) == "" {
+			return fmt.Errorf("SEC-2 config: MEDIA_ENABLED requires MEDIA_STAGING_ROOT")
+		}
+		if len(c.MediaSigningSecret) < 32 {
+			return fmt.Errorf("CONFIG_MEDIA_SIGNING_SECRET_REQUIRED: MEDIA_ENABLED requires MEDIA_SIGNING_SECRET with at least 32 bytes (env-only)")
+		}
+		if c.MediaUploadMaxBytes <= 0 || c.MediaUploadMaxBytes > MaxMediaUploadBytes {
+			return fmt.Errorf("SEC-2 config: MEDIA_UPLOAD_MAX_BYTES out of range")
+		}
+		if c.MediaChunkMaxBytes <= 0 || c.MediaChunkMaxBytes > c.MaxBodyBytes || c.MediaChunkMaxBytes > c.MediaUploadMaxBytes {
+			return fmt.Errorf("SEC-2 config: MEDIA_CHUNK_MAX_BYTES must be > 0 and <= both MAX_BODY_BYTES and MEDIA_UPLOAD_MAX_BYTES")
+		}
+		if c.MediaUploadTTL <= 0 || c.MediaLeaseTTL <= 0 {
+			return fmt.Errorf("SEC-2 config: media TTLs must be positive")
+		}
 	}
 	if err := validatePowSecretPresent(c.InstallPowMode, c.InstallPowSecret); err != nil {
 		return err

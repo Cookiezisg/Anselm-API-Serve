@@ -124,6 +124,31 @@ func TestLoadBaseMaxBodyBytesExplicit(t *testing.T) {
 	}
 }
 
+func TestLoadBaseDurableMediaIsExplicitAndComplete(t *testing.T) {
+	c := mustLoad(t, minimalEnv())
+	if c.MediaEnabled || c.MediaSigningSecretSource != "disabled" || c.MediaStagingRoot == "" {
+		t.Fatalf("media defaults = enabled:%v source:%q root:%q", c.MediaEnabled, c.MediaSigningSecretSource, c.MediaStagingRoot)
+	}
+	env := minimalEnv()
+	env["MEDIA_ENABLED"] = "true"
+	env["MEDIA_SIGNING_SECRET"] = "01234567890123456789012345678901"
+	env["MAX_BODY_BYTES"] = "4194304"
+	env["MEDIA_CHUNK_MAX_BYTES"] = "4194304"
+	c = mustLoad(t, env)
+	if !c.MediaEnabled || c.MediaSigningSecretSource != "configured" || c.MediaChunkMaxBytes != 4194304 {
+		t.Fatalf("media enabled config not assembled: %+v", c)
+	}
+	env["MEDIA_SIGNING_SECRET"] = "too-short"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "CONFIG_MEDIA_SIGNING_SECRET_REQUIRED") {
+		t.Fatalf("weak media secret must fail, got %v", err)
+	}
+	env["MEDIA_SIGNING_SECRET"] = "01234567890123456789012345678901"
+	env["MEDIA_CHUNK_MAX_BYTES"] = "4194305"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MEDIA_CHUNK_MAX_BYTES must be <= 4194304") {
+		t.Fatalf("chunk over body cap must fail, got %v", err)
+	}
+}
+
 func TestLoadBaseInputTokenCapZeroCompatibilityValue(t *testing.T) {
 	// The deprecated key still parses so old env/settings remain bootable, but
 	// its value no longer affects request admission.

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,18 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.MaxMediaParts = g.boundedInt("MAX_MEDIA_PARTS", 8, 1, config.MaxMediaParts)
 	defaultMediaBytes := min(int64(3*1024*1024), c.MaxBodyBytes*3/4)
 	c.MaxMediaDecodedBytes = g.boundedInt64("MAX_MEDIA_DECODED_BYTES", defaultMediaBytes, 1, config.MaxMediaDecodedBytes)
+	// Durable media is deliberately startup-hard: body chunks, retention and the
+	// signing key form one trust boundary and must not half-change under traffic.
+	// It defaults off so an existing gateway cannot accidentally become a file
+	// ingress before its persistent volume and secret are installed.
+	c.MediaEnabled = g.boolean("MEDIA_ENABLED", false)
+	c.MediaUploadMaxBytes = g.boundedInt64("MEDIA_UPLOAD_MAX_BYTES", 100*1024*1024, 1, config.MaxMediaUploadBytes)
+	defaultChunkBytes := min(int64(4*1024*1024), c.MaxBodyBytes)
+	c.MediaChunkMaxBytes = g.boundedInt64("MEDIA_CHUNK_MAX_BYTES", defaultChunkBytes, 1, c.MaxBodyBytes)
+	uploadTTLSec := g.boundedInt("MEDIA_UPLOAD_TTL_SEC", 3600, 1, 7*24*3600)
+	leaseTTLSec := g.boundedInt("MEDIA_LEASE_TTL_SEC", 3600, 1, 7*24*3600)
+	c.MediaUploadTTL = time.Duration(uploadTTLSec) * time.Second
+	c.MediaLeaseTTL = time.Duration(leaseTTLSec) * time.Second
 	c.NGlobalConcurrency = g.boundedInt("N_GLOBAL_CONCURRENCY", 8, 1, config.MaxNGlobalConcurrency)
 	c.RatePerMin = g.boundedInt("RATE_PER_MIN", 0, 0, config.MaxRatePerMin)
 	c.DailySublimit = g.boundedInt64("DAILY_SUBLIMIT", 0, 0, config.MaxDailySublimit)
@@ -182,6 +195,18 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 		panic(fmt.Sprintf("config: LoadLocation(%q) failed: %v", c.ResetTZ, lerr))
 	}
 	c.Location = loc
+	// The staging root is derived from the durable database directory unless
+	// explicitly pinned. It must be assembled before semantic validation because
+	// MEDIA_ENABLED makes it a required persistence boundary.
+	c.DBPath = g.str("GATEWAY_DB_PATH", "anselm-gateway.db")
+	defaultMediaRoot := filepath.Join(filepath.Dir(c.DBPath), "anselm-media")
+	c.MediaStagingRoot = g.str("MEDIA_STAGING_ROOT", defaultMediaRoot)
+	if secret := strings.TrimSpace(getenv("MEDIA_SIGNING_SECRET")); secret != "" {
+		c.MediaSigningSecret = []byte(secret)
+		c.MediaSigningSecretSource = "configured"
+	} else {
+		c.MediaSigningSecretSource = "disabled"
+	}
 
 	// Cross-field semantics (SEC-2) on the assembled config.
 	if g.err == nil {
@@ -201,7 +226,6 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 		g.fail(fmt.Sprintf("DASHBOARD_ADDR %q must not equal ADMIN_ADDR %q (the three listeners must be physically isolated)", c.DashboardAddr, c.AdminAddr))
 	}
 	c.LogLevel = g.str("LOG_LEVEL", "info")
-	c.DBPath = g.str("GATEWAY_DB_PATH", "anselm-gateway.db")
 
 	// Dashboard auth is an env-only, startup-hard trust-boundary choice. The
 	// default is disabled so an unconfigured deployment never exposes a new

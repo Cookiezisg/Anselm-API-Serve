@@ -54,6 +54,13 @@ func Run(app *App) error {
 	} else if n > 0 {
 		app.log.Info("startup_reconciled", "count", n)
 	}
+	if app.media != nil {
+		if n, merr := app.media.Recover(context.Background()); merr != nil {
+			app.log.Error("media_startup_recovery_failed", "error", merr.Error())
+		} else if n > 0 {
+			app.log.Info("media_startup_recovered", "removed", n)
+		}
+	}
 	app.disk.Check()
 	app.prober.probe(app.loopCtx) // prime upstream readiness before READY.
 
@@ -141,6 +148,20 @@ func (app *App) startLoops() {
 
 	// Disk guard — its own Run primes + ticks (REL-6).
 	add(func(ctx context.Context) { app.disk.Run(ctx, 30*time.Second) })
+
+	// Durable media retention — expiry is committed before a private staging file
+	// is removed, and any interrupted cleanup is retried at the next tick/start.
+	if app.media != nil {
+		add(func(ctx context.Context) {
+			tick(ctx, time.Minute, func() {
+				if n, err := app.media.Recover(ctx); err != nil {
+					app.log.Error("media_recovery_failed", "error", err.Error())
+				} else if n > 0 {
+					app.log.Info("media_expired_removed", "count", n)
+				}
+			})
+		})
+	}
 
 	// Metrics-refresh + OBS-4 alert state — 15s.
 	add(func(ctx context.Context) { app.metricsRefresh(ctx) })

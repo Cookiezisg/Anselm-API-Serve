@@ -4,7 +4,7 @@ type: reference
 status: active
 owner: @weilin
 created: 2026-06-21
-reviewed: 2026-07-21
+reviewed: 2026-07-24
 review-due: 2026-10-19
 audience: [human, ai]
 ---
@@ -40,6 +40,11 @@ audience: [human, ai]
 | `AUDIO_UNAVAILABLE` | **503** | audio input is not available on this deployment | 请求含合法 `input_audio`，但当前路由表无音频上游；严格校验后、reserve/Open 前拒绝；不受 Qwen 视觉配置影响；无 fallback |
 | `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
 | `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
+| `MEDIA_UNAVAILABLE` | 503 | durable media upload is not enabled on this deployment | `MEDIA_ENABLED=false`；同一 attachment 重试无效，operator 必须完成 staging/secret 配置 |
+| `MEDIA_UPLOAD_INVALID` | 400 | invalid media upload request | create JSON/sha/MIME/长度、offset、chunk/body 形状非法 |
+| `MEDIA_UPLOAD_NOT_FOUND` | 404 | media upload was not found | 未知或非本 install 的 upload；故意不暴露存在性 |
+| `MEDIA_UPLOAD_CONFLICT` | 409 | media upload is not writable in its current state | stale offset、完成前字节未满、已完成/已过期/replay |
+| `MEDIA_INTEGRITY_FAILED` | 422 | media upload failed integrity verification | staged bytes大小或 SHA-256 不匹配；客户端必须重建 upload |
 | `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | ChargePossible；不 retry，保留 full quote |
 
 ### wire code 与 charge exposure 正交

@@ -75,6 +75,8 @@ audience: [human, ai]
 | GW-INV-43 | 整请求 media part 数≤`MAX_MEDIA_PARTS`、累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`；文本/tool JSON 的 UTF-8 estimate 仅用于 DeepSeek quote、超过模型 input limit 时 clamp quote 而**绝不准入拒绝**，`INPUT_TOKEN_CAP` 仅兼容保留；真实 context 由选中 provider 判定。图片/视频由 shape/bytes 限内存，账本按 Qwen full hard limits 的最高分档预留 | base64 OOM、误用保守估算制造假超限，或实际 provider 拒绝污染 breaker/泄漏原文 |
 | GW-INV-44 | `DASHSCOPE_API_KEY` 与 endpoint/workspace 是启动必需配置：Qwen backend 必须构造、readiness 的 cached authenticated `/models` probe 必须确认 Qwen 固定模型，DeepSeek 固定模型同样必需；绝无静默 fallback。合法音频始终先返回 `503 AUDIO_UNAVAILABLE` | 配置不全却错误启动，或媒体被错误送到文本模型 |
 | GW-INV-45 | production deploy 只消费本仓成功 push-main CI 的精确且仍为 main tip 的 `head_sha`；远端 transition 先持久化 root-only marker，永久 Caddy condition 在 marker 存在时禁止 ingress 跨 reboot 自启；checksummed bundle 含 recovery program，commit/rollback 都须在兼容单元 durable 后清 marker，人工新发版遇 marker 必先 `--recover-incomplete` | CI 失败/过期代码上线，崩溃后半迁移 DB/二进制对公网开放，或恢复依赖已被下一版覆盖的脚本 |
+| GW-INV-46 | durable media 只接受 proof-bound install-owned opaque upload id；chunk 必须以服务端确认的精确 offset 追加并 fsync 后 CAS cursor；完成重算 size+SHA 后才原子签发一个 lease。fetch token 为 HMAC 可重建值，SQLite 仅存 hash；不向 HTTP 返回 token/path/SHA/provider URL | 并发/replay 覆盖字节、崩溃产生未确认尾部、跨 install 枚举/复用，或 bearer capability 落库/泄漏 |
+| GW-INV-47 | media expiry 先写 DB 状态，后删私有文件，再 acknowledge；启动和每分钟恢复均截断 fsync-before-cursor crash tail、对 cursor 超过物理文件的 staging fail-closed，并重试未完成清理 | restart 后错误续传、过期媒体仍可被 provider 取用，或删除中断留下不可回收私有 bytes |
 
 ## E. 跨切配置 / 可观测
 
