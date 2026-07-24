@@ -72,11 +72,14 @@ read_meta() {
 GATEWAY_DOMAIN="$(read_meta gateway-domain)"
 SITE_DOMAIN="$(read_meta site-domain)"
 ACME_EMAIL="$(read_meta acme-email)"
+RESET_UNLAUNCHED_GATEWAY_DATA="$(read_meta reset-unlaunched-gateway-data)"
 SHA="$(read_meta sha)"
 [[ "${GATEWAY_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid gateway domain"
 [[ "${SITE_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid site domain"
 [[ "${SHA}" =~ ^[0-9a-f]{12}$ ]] || die "invalid SHA"
 [[ -n "${ACME_EMAIL}" ]] || die "ACME email is empty"
+[[ "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 0 || "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 1 ]] ||
+	die "invalid reset-unlaunched-gateway-data flag"
 
 for required in anselm-gateway Caddyfile anselm-caddy-deploy-guard.conf \
 	anselm-gateway.service anselm-gateway.socket render-caddy.sh rollback.sh gateway.env; do
@@ -424,6 +427,20 @@ sudo sync
 
 # The compatibility snapshot is durable before the new binary can migrate the
 # database. This does not require sqlite3 and is executed with every writer down.
+if [[ "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 1 ]]; then
+	# A manual deployment may request this only after the workflow's exact
+	# confirmation phrase.  This is deliberately narrow: no directory or glob is
+	# removed, only the validated gateway SQLite main/WAL/SHM files.  The durable
+	# snapshot above still makes a failure before commit automatically recoverable.
+	log "confirmed pre-launch reset: removing the legacy gateway SQLite database"
+	for db_file in "${DB_PATH}" "${DB_PATH}-wal" "${DB_PATH}-shm"; do
+		if sudo test -e "${db_file}" || sudo test -L "${db_file}"; then
+			sudo test -f "${db_file}" && ! sudo test -L "${db_file}" || die "unsafe reset SQLite path: ${db_file}"
+			sudo rm -f -- "${db_file}"
+		fi
+	done
+	sudo sync
+fi
 
 # Install all new state while public traffic is still blocked.
 sudo install -d -o root -g root -m 0755 "${BIN_DIR}" /usr/local/sbin /etc/caddy /var/www

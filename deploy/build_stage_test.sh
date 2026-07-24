@@ -55,6 +55,7 @@ if grep -q '^DASHBOARD_USER=' "${STAGE}/gateway.env" || grep -q '^DASHBOARD_PASS
 	fail "disabled dashboard mode must not materialise builtin credentials"
 fi
 (cd "${STAGE}" && sha256sum --strict -c manifest.sha256 >/dev/null) || fail "payload manifest failed"
+grep -Fqx '0' "${STAGE}/meta/reset-unlaunched-gateway-data" || fail "default reset flag is not disabled"
 cmp -s "${STAGE}/rollback.sh" "${SCRIPT_DIR}/rollback.sh" ||
 	fail "bundle recovery program differs from reviewed rollback implementation"
 grep -Eq '^[0-9a-f]{64}  \./rollback\.sh$' "${STAGE}/manifest.sha256" ||
@@ -110,6 +111,7 @@ mkdir -m 0700 "${EXTERNAL_STAGE}"
 DEEPSEEK_API_KEY='key' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
+	RESET_UNLAUNCHED_GATEWAY_DATA='1' \
 	DASHBOARD_AUTH_MODE='external' \
 	DASHBOARD_USER='stale-user' \
 	DASHBOARD_PASSWORD='stale-password' \
@@ -119,6 +121,7 @@ DEEPSEEK_API_KEY='key' \
 	SHA='0123456789ab' \
 	bash "${SCRIPT_DIR}/build-stage.sh" "${EXTERNAL_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
 grep -Fqx 'DASHBOARD_AUTH_MODE="external"' "${EXTERNAL_STAGE}/gateway.env" || fail "external mode missing"
+grep -Fqx '1' "${EXTERNAL_STAGE}/meta/reset-unlaunched-gateway-data" || fail "confirmed reset flag missing"
 if grep -q '^DASHBOARD_USER=' "${EXTERNAL_STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${EXTERNAL_STAGE}/gateway.env"; then
 	fail "external dashboard mode must not materialise stale builtin credentials"
 fi

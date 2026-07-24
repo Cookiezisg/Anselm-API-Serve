@@ -101,6 +101,7 @@ EXPECTED_FILES=$(printf '%s\n' \
 	'manifest.sha256' \
 	'meta/acme-email' \
 	'meta/gateway-domain' \
+	'meta/reset-unlaunched-gateway-data' \
 	'meta/sha' \
 	'meta/site-domain' \
 	'render-caddy.sh' \

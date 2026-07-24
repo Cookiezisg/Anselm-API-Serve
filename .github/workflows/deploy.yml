@@ -20,6 +20,19 @@ on:
     workflows: [ci]
     types: [completed]
     branches: [main]
+  # This is intentionally not part of ordinary deployment.  It is a one-time
+  # escape hatch for an explicitly confirmed, pre-launch clean-slate release.
+  workflow_dispatch:
+    inputs:
+      reset_unlaunched_gateway_data:
+        description: "Delete the unlaunched gateway SQLite database before deployment"
+        required: true
+        type: boolean
+        default: false
+      confirmation:
+        description: "Type RESET_UNLAUNCHED_GATEWAY_DATA to authorize deletion"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,16 +48,20 @@ jobs:
     # workflow_run can expose production secrets, so accept only the repository's
     # own successful push-to-main CI run and deploy that run's immutable SHA.
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.reset_unlaunched_gateway_data == true &&
+       inputs.confirmation == 'RESET_UNLAUNCHED_GATEWAY_DATA')
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
@@ -143,7 +160,7 @@ jobs:
       - name: resolve version
         id: ver
         env:
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
             echo 'workflow_run head_sha is not a full lowercase commit SHA' >&2
@@ -155,7 +172,7 @@ jobs:
       # newer push. Never let completion order roll production back implicitly.
       - name: verify admitted SHA is still the main tip
         env:
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           main_tip="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
@@ -183,6 +200,7 @@ jobs:
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          RESET_UNLAUNCHED_GATEWAY_DATA: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
           set -euo pipefail

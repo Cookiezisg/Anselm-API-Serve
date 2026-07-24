@@ -81,6 +81,7 @@ DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-disabled}"
 DASHBOARD_USER="${DASHBOARD_USER:-}"
 DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
+RESET_UNLAUNCHED_GATEWAY_DATA="${RESET_UNLAUNCHED_GATEWAY_DATA:-0}"
 
 for secret_name in DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_WORKSPACE_ID; do
 	require_single_line "${secret_name}" "${!secret_name}"
@@ -121,6 +122,8 @@ require_single_line ACME_EMAIL "${ACME_EMAIL}"
 [[ "${ACME_EMAIL}" =~ ^[A-Za-z0-9.!#$%\&\'*+/=?^_\`{|}~-]+@[A-Za-z0-9.-]+$ ]] ||
 	die "ACME_EMAIL is not a valid deployment email"
 [[ "${SHA}" =~ ^[0-9a-f]{12}$ ]] || die "SHA must be 12 lowercase hexadecimal characters"
+[[ "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 0 || "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 1 ]] ||
+	die "RESET_UNLAUNCHED_GATEWAY_DATA must be 0 or 1"
 
 install -m 0755 "${BINARY}" "${STAGE}/anselm-gateway"
 install -m 0644 "${REPO_ROOT}/Caddyfile" "${STAGE}/Caddyfile"
@@ -187,6 +190,7 @@ write_env ADMIN_ADDR "127.0.0.1:9090"
 write_meta gateway-domain "${GATEWAY_DOMAIN}"
 write_meta site-domain "${SITE_DOMAIN}"
 write_meta acme-email "${ACME_EMAIL}"
+write_meta reset-unlaunched-gateway-data "${RESET_UNLAUNCHED_GATEWAY_DATA}"
 write_meta sha "${SHA}"
 
 (
