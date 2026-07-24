@@ -96,6 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			mt, payload, err := upConn.ReadMessage()
 			if err != nil {
 				_ = client.writeJSON(map[string]any{"type": "error", "code": "SPEECH_UPSTREAM_CLOSED"})
+				_ = downConn.SetReadDeadline(time.Now())
 				return
 			}
 			if mt != websocket.TextMessage && mt != websocket.BinaryMessage {
@@ -108,6 +109,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Type string `json:"type"`
 			}
 			if json.Unmarshal(payload, &evt) == nil && evt.Type == "session.finished" {
+				_ = downConn.SetReadDeadline(time.Now())
 				return
 			}
 		}
