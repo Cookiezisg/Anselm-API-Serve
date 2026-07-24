@@ -26,6 +26,8 @@ import (
 const (
 	maxAudioFrameBytes = 256 * 1024
 	sessionMaxAge      = 2 * time.Minute
+	defaultPongWait    = 30 * time.Second
+	defaultPingEvery   = 10 * time.Second
 	writeWait          = 10 * time.Second
 )
 
@@ -35,12 +37,19 @@ type Service interface {
 }
 
 type Handler struct {
-	svc    Service
-	dialer *websocket.Dialer
+	svc       Service
+	dialer    *websocket.Dialer
+	pongWait  time.Duration
+	pingEvery time.Duration
 }
 
 func New(svc Service) *Handler {
-	return &Handler{svc: svc, dialer: websocket.DefaultDialer}
+	return &Handler{
+		svc:       svc,
+		dialer:    websocket.DefaultDialer,
+		pongWait:  defaultPongWait,
+		pingEvery: defaultPingEvery,
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,9 +93,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = downConn.Close() }()
 	downConn.SetReadLimit(maxAudioFrameBytes)
 	sessionDeadline := time.Now().Add(sessionMaxAge)
-	_ = downConn.SetReadDeadline(sessionDeadline)
-	_ = upConn.SetReadDeadline(sessionDeadline.Add(writeWait))
+	_ = downConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
+	_ = upConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
+	downConn.SetPongHandler(func(string) error {
+		return downConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
+	})
+	upConn.SetPongHandler(func(string) error {
+		return upConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
+	})
 	client := &clientWriter{conn: downConn}
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	go heartbeat(stopHeartbeat, downConn, sessionDeadline, h.pingEvery)
+	go heartbeat(stopHeartbeat, upConn, sessionDeadline, h.pingEvery)
 
 	language := strings.TrimSpace(r.URL.Query().Get("language"))
 	if err := writeUpstreamJSON(upConn, sessionUpdate(language)); err != nil {
@@ -104,6 +123,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = downConn.SetReadDeadline(time.Now())
 				return
 			}
+			_ = upConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
 			if mt != websocket.TextMessage && mt != websocket.BinaryMessage {
 				continue
 			}
@@ -130,6 +150,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		_ = downConn.SetReadDeadline(readDeadline(sessionDeadline, h.pongWait))
 		switch mt {
 		case websocket.BinaryMessage:
 			if len(payload) == 0 || len(payload) > maxAudioFrameBytes {
@@ -206,6 +227,34 @@ func writeUpstreamJSON(conn *websocket.Conn, v any) error {
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return conn.WriteMessage(websocket.TextMessage, b)
+}
+
+func readDeadline(max time.Time, wait time.Duration) time.Time {
+	deadline := time.Now().Add(wait)
+	if deadline.After(max) {
+		return max
+	}
+	return deadline
+}
+
+func heartbeat(stop <-chan struct{}, conn *websocket.Conn, max time.Time, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if time.Now().After(max) {
+				_ = conn.SetReadDeadline(time.Now())
+				return
+			}
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				_ = conn.SetReadDeadline(time.Now())
+				return
+			}
+		}
+	}
 }
 
 type clientWriter struct {

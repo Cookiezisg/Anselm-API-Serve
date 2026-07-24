@@ -57,7 +57,7 @@ audience: [human, ai]
 | binary | 16kHz PCM bytes；单帧≤256KiB；空帧拒绝 |
 | text JSON | 仅 `{"type":"commit"}` 或 `{"type":"finish"}`；其它字段/类型不构成能力 |
 
-网关 owns upstream `session.update`：`input_audio_format="pcm"`、`sample_rate=16000`、`turn_detection.type="server_vad"`、`silence_duration_ms=400`。随后 binary frame 被编码成 Qwen `input_audio_buffer.append`，`commit`/`finish` 分别转成 `input_audio_buffer.commit`/`session.finish`，`cancel` 只关闭本次会话、不转发为上游 JSON。服务端把 Qwen ASR realtime 事件原样作为 text WebSocket message 返给客户端；典型事件包括 partial delta、completed transcription 与 `session.finished`。单次会话有 2 分钟绝对上限。部署未配置 Qwen key/endpoint 时返回 `503 SPEECH_UNAVAILABLE`；上游 key 永不进入 client wire/log。
+网关 owns upstream `session.update`：`input_audio_format="pcm"`、`sample_rate=16000`、`turn_detection.type="server_vad"`、`silence_duration_ms=400`。随后 binary frame 被编码成 Qwen `input_audio_buffer.append`，`commit`/`finish` 分别转成 `input_audio_buffer.commit`/`session.finish`，`cancel` 只关闭本次会话、不转发为上游 JSON。服务端把 Qwen ASR realtime 事件原样作为 text WebSocket message 返给客户端；典型事件包括 partial delta、completed transcription 与 `session.finished`。服务端对 client leg 与 upstream leg 均发送 WebSocket ping，收到 message/pong 后滚动 30s 读 deadline，单次会话仍有 2 分钟绝对上限。部署未配置 Qwen key/endpoint 时返回 `503 SPEECH_UNAVAILABLE`；上游 key 永不进入 client wire/log。
 
 ## 2. `POST /v1/chat/completions`
 

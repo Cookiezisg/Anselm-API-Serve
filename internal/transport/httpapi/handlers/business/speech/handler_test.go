@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -168,6 +169,73 @@ func TestHandler_CancelClosesWithoutForwardingControl(t *testing.T) {
 	case evt := <-events:
 		t.Fatalf("cancel leaked upstream as event %#v", evt)
 	default:
+	}
+}
+
+func TestHandler_HeartbeatsBothWebSocketLegs(t *testing.T) {
+	upstreamPing := make(chan struct{}, 1)
+	downstreamPing := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() { _ = c.Close() }()
+		c.SetPingHandler(func(appData string) error {
+			select {
+			case upstreamPing <- struct{}{}:
+			default:
+			}
+			return c.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+		})
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	h := New(fakeSpeechSvc{up: appspeech.Upstream{
+		URL: strings.Replace(upstream.URL, "http://", "ws://", 1), APIKey: "qwen-key",
+	}})
+	h.pingEvery = 10 * time.Millisecond
+	h.pongWait = 200 * time.Millisecond
+	downstream := httptest.NewServer(h)
+	defer downstream.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(strings.Replace(downstream.URL, "http://", "ws://", 1),
+		http.Header{proofhttp.HeaderInstallID: []string{"ins_1"}})
+	if err != nil {
+		t.Fatalf("dial downstream: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	conn.SetPingHandler(func(appData string) error {
+		select {
+		case downstreamPing <- struct{}{}:
+		default:
+		}
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+	})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for name, ch := range map[string]<-chan struct{}{
+		"upstream":   upstreamPing,
+		"downstream": downstreamPing,
+	} {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("missing %s heartbeat ping", name)
+		}
 	}
 }
 
