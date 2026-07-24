@@ -1,4 +1,4 @@
-.PHONY: build build-linux test run tidy vet lint docs verify
+.PHONY: build build-linux test run tidy vet lint docs verify qwen-asr-evals
 
 BIN := bin/gateway
 
@@ -35,3 +35,8 @@ docs:
 
 # 本地门禁:vet + build + race 测试全绿(cmd/docs 落地后并入 docs)。
 verify: vet build test docs
+
+# 显式付费 live eval：真实连接 DashScope realtime ASR，经本地 gateway speech proxy 路径完成一次会话。
+# 必须由调用者提供 DASHSCOPE_API_KEY/EVALS_KEY 与 DASHSCOPE_WORKSPACE_ID/EVALS_BASE_URL。
+qwen-asr-evals:
+	EVALS_QWEN_ASR=1 go test -count=1 -run TestLiveQwenASRThroughGatewayProxy -v ./internal/transport/httpapi/handlers/business/speech

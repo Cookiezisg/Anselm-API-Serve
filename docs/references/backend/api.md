@@ -59,6 +59,10 @@ audience: [human, ai]
 
 网关 owns upstream `session.update`：`input_audio_format="pcm"`、`sample_rate=16000`、`turn_detection.type="server_vad"`、`silence_duration_ms=400`。随后 binary frame 被编码成 Qwen `input_audio_buffer.append`，`commit`/`finish` 分别转成 `input_audio_buffer.commit`/`session.finish`，`cancel` 只关闭本次会话、不转发为上游 JSON。服务端把 Qwen ASR realtime 事件原样作为 text WebSocket message 返给客户端；典型事件包括 partial delta、completed transcription 与 `session.finished`。服务端对 client leg 与 upstream leg 均发送 WebSocket ping，收到 message/pong 后滚动 30s 读 deadline，单次会话仍有 2 分钟绝对上限。ASR 会话在上游拨号前进入同一 quota/ledger：按 `qwen3-asr-flash-realtime` 预留 120 秒，按成功转发 PCM 字节向上取整为秒结算；累计音频超过预留上限会返回帧内 `SPEECH_AUDIO_TOO_LONG` 并结束会话。部署未配置 Qwen key/endpoint 时返回 `503 SPEECH_UNAVAILABLE`；上游 key 永不进入 client wire/log。
 
+真实上游验收入口为 `make qwen-asr-evals`。它只在显式 `EVALS_QWEN_ASR=1` 下运行，要求
+`DASHSCOPE_API_KEY`/`EVALS_KEY` 加 `DASHSCOPE_WORKSPACE_ID`/`EVALS_BASE_URL`；可选
+`EVALS_ASR_WAV=/path/to/pcm16-mono-16k.wav` 时会要求真实转写文本，否则只做 live protocol/connect smoke。
+
 ## 2. `POST /v1/chat/completions`
 
 ### 2.1 top-level 与 message 白名单
