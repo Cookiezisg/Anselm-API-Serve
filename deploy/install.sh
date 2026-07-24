@@ -32,6 +32,29 @@ log() {
 	printf 'install: %s\n' "$*"
 }
 
+# Deployment failures are reported in the CI job, which is the only practical
+# place to diagnose a remote systemd startup failure.  Keep that useful without
+# turning the job log into a secret-exfiltration channel: service output and the
+# short, current-boot journal excerpt are passed through this conservative
+# redactor before they leave the host.
+redact_diagnostics() {
+	sed -E \
+		-e 's/([Aa]uthorization:[[:space:]]*[Bb]earer)[[:space:]]+[^[:space:]]+/\1 [REDACTED]/g' \
+		-e 's/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy][[:space:]]*:[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
+		-e 's/([A-Za-z_]*[Aa][Pp][Ii]_[Kk][Ee][Yy][A-Za-z_]*[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
+		-e 's/(sk-[A-Za-z0-9._-]{8,})/[REDACTED]/g'
+}
+
+diagnose_gateway_start_failure() {
+	log "anselm-gateway.service failed to start; sanitized diagnostics follow"
+	{
+		sudo systemctl show anselm-gateway.service \
+			-p Result -p ExecMainCode -p ExecMainStatus -p ActiveState -p SubState || true
+		sudo systemctl status anselm-gateway.service --no-pager --full -n 30 || true
+		sudo journalctl -u anselm-gateway.service --boot --no-pager -o cat -n 80 || true
+	} 2>&1 | redact_diagnostics
+}
+
 [[ $# -eq 1 ]] || die "usage: $0 VERIFIED_STAGE"
 STAGE="$1"
 [[ "${STAGE}" =~ ^/tmp/anselm-deploy\.[A-Za-z0-9]{10}$ ]] || die "unsafe stage path"
@@ -427,7 +450,10 @@ sudo mv -Tf "${LINK}.tmp" "${LINK}"
 sudo systemctl daemon-reload
 sudo systemctl enable anselm-gateway.socket >/dev/null
 sudo systemctl start anselm-gateway.socket
-sudo systemctl start anselm-gateway.service
+if ! sudo systemctl start anselm-gateway.service; then
+	diagnose_gateway_start_failure
+	die "anselm-gateway.service failed to start"
+fi
 
 gate_ok() {
 	local ready=0 healthy=0 i

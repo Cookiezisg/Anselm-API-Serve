@@ -74,6 +74,19 @@ switch_line="$(grep -nF 'sudo mv -Tf "${ROLLBACK_TOOL_TMP}" "${ROLLBACK_TOOL}"' 
 	fail "rollback entry is not snapshotted/marked/switched in crash-safe order"
 grep -Fq 'sudo "${BUNDLE}/recovery/rollback.sh" --automatic --bundle "${BUNDLE}"' "${INSTALL_SCRIPT}" ||
 	fail "automatic restore does not use the bundle-local recovery program"
+grep -Fq 'diagnose_gateway_start_failure()' "${INSTALL_SCRIPT}" ||
+	fail "gateway startup diagnostics are missing"
+grep -Fq 'if ! sudo systemctl start anselm-gateway.service; then' "${INSTALL_SCRIPT}" ||
+	fail "gateway startup failure is not diagnosed before rollback"
+redactor_output="$(printf '%s\n' \
+	'Authorization: Bearer bearer-secret' \
+	'X-API-Key: header-secret' \
+	'DASHSCOPE_API_KEY=env-secret' \
+	'sk-ws-raw-secret-token' | \
+	bash -c "$(sed -n '/^redact_diagnostics()/,/^}/p' "${INSTALL_SCRIPT}"); redact_diagnostics")"
+[[ "${redactor_output}" != *bearer-secret* && "${redactor_output}" != *header-secret* && \
+	"${redactor_output}" != *env-secret* && "${redactor_output}" != *sk-ws-raw-secret-token* ]] ||
+	fail "gateway startup diagnostics do not redact credentials"
 
 BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
 mkdir -m 0700 "${BUILTIN_STAGE}"
