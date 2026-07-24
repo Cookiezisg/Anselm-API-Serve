@@ -20,17 +20,21 @@ type Provider string
 const (
 	ProviderDeepSeek Provider = "deepseek"
 	ProviderKimi     Provider = "kimi"
+	ProviderQwen     Provider = "qwen"
 )
 
 const (
 	DeepSeekV4Flash       = "deepseek-v4-flash"
 	KimiK26               = "kimi-k2.6"
+	Qwen37Plus            = "qwen3.7-plus"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
 	DeepSeekOutputLimit   = int64(384_000)
 	KimiInputLimit        = int64(262_144)
 	KimiOutputLimit       = int64(32_768)
+	Qwen37InputLimit      = int64(1_000_000)
+	Qwen37OutputLimit     = int64(65_536)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -87,17 +91,27 @@ func (u Usage) MergeSnapshot(v Usage) Usage {
 	return u
 }
 
-// RateCard is an immutable pricing snapshot. Prices are exact pUSD/token.
-type RateCard struct {
-	ID                string
-	Provider          Provider
-	Model             string
-	InputLimit        int64
-	OutputLimit       int64
+// pricingTier is one request-wide pricing band. Model Studio selects a tier from
+// the total input tokens in a request and charges every input token at that
+// tier's price; Qwen3.7 also prices output at the selected tier. It stays
+// private so callers cannot manufacture a rate that differs from the card.
+type pricingTier struct {
+	InputUpperBound   int64
 	InputPUSD         int64
-	AudioInputPUSD    int64
 	CacheHitInputPUSD int64
 	OutputPUSD        int64
+}
+
+// RateCard is an immutable pricing snapshot. The legacy scalar fields are
+// intentionally replaced by ordered tiers: future provider tariffs must not be
+// flattened into a rate that under-reserves a whole request.
+type RateCard struct {
+	ID          string
+	Provider    Provider
+	Model       string
+	InputLimit  int64
+	OutputLimit int64
+	tiers       []pricingTier
 }
 
 var rateCards = map[Provider]map[string]RateCard{
@@ -107,7 +121,10 @@ var rateCards = map[Provider]map[string]RateCard{
 			InputLimit: DeepSeekInputLimit, OutputLimit: DeepSeekOutputLimit,
 			// Official standard pricing per 1M tokens: hit $0.0028,
 			// cache miss $0.14, output $0.28.
-			InputPUSD: 140_000, CacheHitInputPUSD: 2_800, OutputPUSD: 280_000,
+			tiers: []pricingTier{{
+				InputUpperBound: DeepSeekInputLimit,
+				InputPUSD:       140_000, CacheHitInputPUSD: 2_800, OutputPUSD: 280_000,
+			}},
 		},
 	},
 	ProviderKimi: {
@@ -117,7 +134,23 @@ var rateCards = map[Provider]map[string]RateCard{
 			// Official Kimi K2.6 pricing per 1M tokens: cache hit $0.16,
 			// cache miss $0.95, output $4.00. This gateway routes K2.6's
 			// supported image and video inputs; audio is deliberately excluded.
-			InputPUSD: 950_000, CacheHitInputPUSD: 160_000, OutputPUSD: 4_000_000,
+			tiers: []pricingTier{{
+				InputUpperBound: KimiInputLimit,
+				InputPUSD:       950_000, CacheHitInputPUSD: 160_000, OutputPUSD: 4_000_000,
+			}},
+		},
+	},
+	ProviderQwen: {
+		Qwen37Plus: {
+			ID: "qwen3.7-plus-sg-thinking-2026-07-24", Provider: ProviderQwen, Model: Qwen37Plus,
+			InputLimit: Qwen37InputLimit, OutputLimit: Qwen37OutputLimit,
+			// Singapore list pricing, thinking enabled, per 1M tokens. The first
+			// tier is 0 < input <= 256K; the second is 256K < input <= 1M.
+			// Implicit context-cache hits are billed at 20% of standard input.
+			tiers: []pricingTier{
+				{InputUpperBound: 256_000, InputPUSD: 1_600_000, CacheHitInputPUSD: 320_000, OutputPUSD: 1_600_000},
+				{InputUpperBound: Qwen37InputLimit, InputPUSD: 4_800_000, CacheHitInputPUSD: 960_000, OutputPUSD: 4_800_000},
+			},
 		},
 	},
 }
@@ -136,6 +169,25 @@ func Lookup(provider Provider, model string) (RateCard, error) {
 	return r, nil
 }
 
+// tierForInput returns the one request-wide tariff selected by the input-token
+// count. A zero input bound is only possible while constructing a quote; it
+// selects the first tier. Actual usage still requires prompt_tokens > 0.
+func (r RateCard) tierForInput(tokens int64) (pricingTier, bool) {
+	if tokens < 0 || tokens > r.InputLimit || len(r.tiers) == 0 {
+		return pricingTier{}, false
+	}
+	for _, tier := range r.tiers {
+		if tier.InputUpperBound <= 0 || tier.InputUpperBound > r.InputLimit ||
+			tier.InputPUSD <= 0 || tier.OutputPUSD <= 0 || tier.CacheHitInputPUSD < 0 {
+			return pricingTier{}, false
+		}
+		if tokens <= tier.InputUpperBound {
+			return tier, true
+		}
+	}
+	return pricingTier{}, false
+}
+
 // Plan is snapshotted once before Reserve and then carried unchanged through
 // settle/rollback. ReservedPUSD is a provable upper quote for the supplied token
 // bounds under this frozen card.
@@ -148,6 +200,7 @@ type Plan struct {
 	OutputQuote  int64
 	ReservedPUSD int64
 	card         RateCard
+	tier         pricingTier
 }
 
 // Validate proves that a Plan is exactly one produced by NewPlan. This lets a
@@ -158,10 +211,16 @@ func (p Plan) Validate() error {
 	if err != nil {
 		return err
 	}
-	if p != want {
+	if !samePlan(p, want) {
 		return ErrUnknownRateCard
 	}
 	return nil
+}
+
+func samePlan(a, b Plan) bool {
+	return a.Provider == b.Provider && a.Model == b.Model && a.RateCardID == b.RateCardID &&
+		a.InputClass == b.InputClass && a.PromptQuote == b.PromptQuote &&
+		a.OutputQuote == b.OutputQuote && a.ReservedPUSD == b.ReservedPUSD && a.tier == b.tier
 }
 
 // NewPlan prices a conservative input/output token bound. The caller chooses
@@ -180,11 +239,15 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	if promptBound < 0 || outputBound < 0 || promptBound > card.InputLimit || outputBound > card.OutputLimit {
 		return Plan{}, ErrUnknownRateCard
 	}
-	inCost, err := checkedMul(promptBound, card.InputPUSD)
+	tier, ok := card.tierForInput(promptBound)
+	if !ok {
+		return Plan{}, ErrUnknownRateCard
+	}
+	inCost, err := checkedMul(promptBound, tier.InputPUSD)
 	if err != nil {
 		return Plan{}, err
 	}
-	outCost, err := checkedMul(outputBound, card.OutputPUSD)
+	outCost, err := checkedMul(outputBound, tier.OutputPUSD)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -195,7 +258,7 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	return Plan{
 		Provider: provider, Model: model, RateCardID: card.ID,
 		InputClass: inputClass, PromptQuote: promptBound, OutputQuote: outputBound,
-		ReservedPUSD: total, card: card,
+		ReservedPUSD: total, card: card, tier: tier,
 	}, nil
 }
 
@@ -240,6 +303,10 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		// onto completion_tokens. total-prompt is the conservative output view.
 		completion = derivedOutput
 	}
+	tier, ok := p.card.tierForInput(prompt)
+	if !ok {
+		return 0, false, nil
+	}
 
 	var inputCost int64
 	switch p.Provider {
@@ -253,11 +320,11 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		if cacheTotal < prompt {
 			miss = prompt - hit
 		}
-		hitCost, e := checkedMul(hit, p.card.CacheHitInputPUSD)
+		hitCost, e := checkedMul(hit, tier.CacheHitInputPUSD)
 		if e != nil {
 			return 0, false, e
 		}
-		missCost, e := checkedMul(miss, p.card.InputPUSD)
+		missCost, e := checkedMul(miss, tier.InputPUSD)
 		if e != nil {
 			return 0, false, e
 		}
@@ -265,19 +332,19 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		if e != nil {
 			return 0, false, e
 		}
-	case ProviderKimi:
+	case ProviderKimi, ProviderQwen:
 		// The compatibility response may omit cache details. Treat such prompt
 		// tokens as cache misses; when it reports cached tokens, charge the exact
-		// lower K2.6 hit rate without ever undercharging unknown tokens.
+		// provider cache-hit rate without ever undercharging unknown tokens.
 		hit := nonNegative(u.CachedPromptTokens)
 		if hit > prompt {
 			return 0, false, nil
 		}
-		hitCost, e := checkedMul(hit, p.card.CacheHitInputPUSD)
+		hitCost, e := checkedMul(hit, tier.CacheHitInputPUSD)
 		if e != nil {
 			return 0, false, e
 		}
-		missCost, e := checkedMul(prompt-hit, p.card.InputPUSD)
+		missCost, e := checkedMul(prompt-hit, tier.InputPUSD)
 		if e != nil {
 			return 0, false, e
 		}
@@ -288,7 +355,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 	default:
 		return 0, false, ErrUnknownRateCard
 	}
-	outputCost, err := checkedMul(completion, p.card.OutputPUSD)
+	outputCost, err := checkedMul(completion, tier.OutputPUSD)
 	if err != nil {
 		return 0, false, err
 	}

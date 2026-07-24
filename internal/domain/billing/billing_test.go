@@ -46,6 +46,58 @@ func TestKimiImageAndThinkingConservativeCost(t *testing.T) {
 	}
 }
 
+func TestQwenTieredPlanReservesWorstTierAndSettlesActualTier(t *testing.T) {
+	// Inline image/video input cannot prove its visual-token count from bytes.
+	// The caller therefore freezes the full 1M/64K worst case before Open.
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, Qwen37InputLimit, Qwen37OutputLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReserve := Qwen37InputLimit*4_800_000 + Qwen37OutputLimit*4_800_000
+	if p.ReservedPUSD != wantReserve {
+		t.Fatalf("reserve=%d want %d", p.ReservedPUSD, wantReserve)
+	}
+
+	// Model Studio selects the tier from total prompt tokens in THIS request.
+	// At the inclusive 256K boundary all prompt and output tokens use the low
+	// tier, while an implicit cache hit receives its documented 20% input rate.
+	cost, ok, err := p.Cost(Usage{
+		Present: true, PromptTokens: 256_000, CompletionTokens: 100, TotalTokens: 256_100,
+		CachedPromptTokens: 10_000,
+	})
+	if err != nil || !ok {
+		t.Fatalf("Cost err=%v ok=%v", err, ok)
+	}
+	want := int64(10_000*320_000 + 246_000*1_600_000 + 100*1_600_000)
+	if cost != want {
+		t.Fatalf("low-tier actual=%d want %d", cost, want)
+	}
+
+	// Crossing the boundary by one token changes the unit price for every
+	// input/output token in the request; it is not progressive pricing.
+	cost, ok, err = p.Cost(Usage{
+		Present: true, PromptTokens: 256_001, CompletionTokens: 100, TotalTokens: 256_101,
+	})
+	if err != nil || !ok {
+		t.Fatalf("Cost err=%v ok=%v", err, ok)
+	}
+	want = int64(256_001*4_800_000 + 100*4_800_000)
+	if cost != want {
+		t.Fatalf("high-tier actual=%d want %d", cost, want)
+	}
+}
+
+func TestQwenQuoteUsesInclusiveLowTierBelow256K(t *testing.T) {
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 256_000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(256_000*1_600_000 + 1*1_600_000)
+	if p.ReservedPUSD != want {
+		t.Fatalf("reserve=%d want %d", p.ReservedPUSD, want)
+	}
+}
+
 func TestMissingUsageKeepsReservation(t *testing.T) {
 	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 1, 1)
 	if err != nil {
