@@ -31,7 +31,7 @@ audience: [human, ai]
 | `DELETE /v1/media/uploads/{uploadId}` | `media_cancel` | device proof | 先持久化为 `aborted` 再删除私有暂存字节；同 install 的重试安全，周期 recovery 会确认清理 |
 | `PUT /v1/media/uploads/{uploadId}` | `media_append` | device proof | raw bytes；必须带精确 `Upload-Offset`，成功返回新的 offset；不接受 multipart |
 | `POST /v1/media/uploads/{uploadId}/complete` | `media_complete` | device proof | 空 body；重算 staged file 的 SHA-256 且以 bytes magic 重验声明 MIME 后，才返回 opaque `leaseId` 与短期 `fetchPath` |
-| `GET /v1/media/leases/{leaseId}/content?token=…` | `media_fetch` | HMAC capability | 仅模型侧短期拉取；不要求/不接受 device proof，失败统一 404 |
+| `GET /v1/media/leases/{leaseId}/content?token=…` | `media_fetch` | HMAC capability | 短期内容拉取口（运维/诊断可用）；不要求/不接受 device proof，失败统一 404。**模型侧已不经它取内容**——chat 把已校验 lease 内容内联上游（ADR 0012） |
 | `GET /healthz` | 不包 RED | 无 | liveness；不碰 DB/provider |
 
 设备证明头：protected call 带 `X-Anselm-Install-ID` + `X-Anselm-Proof`；registration 改带 `X-Anselm-Public-Key` + `X-Anselm-Proof`。proof payload 固定 `{v,kid,iat,jti,nonce,htm,htu,bh}`，Ed25519 签名覆盖 base64url payload；`htu` 是 lowercase authority + path/query，`bh` 是 exact body SHA-256。空/未知 install→401，坏签名/过期→401，重复 jti→409，banned→403。带 `Origin` 的 `OPTIONS` 一律 403，且不发任何 `Access-Control-*`。
@@ -40,7 +40,7 @@ audience: [human, ai]
 
 该接口只在 `MEDIA_ENABLED=true` 时可用；关闭时仍要求 device proof，返回 `503 MEDIA_UNAVAILABLE`。创建 JSON 必须严格为 `{"sha256":"<64 lowercase hex>","mimeType":"image/jpeg|image/png|image/webp|video/mp4|audio/wav|audio/mpeg","totalBytes":N}`，未知字段拒绝。`GET upload` 只返回仍 open 的 install-owned cursor，客户端在 raw `PUT` 连接中断、无法确认服务端是否写入时必须先读它，不能盲重发。每个 `PUT` 的 body 是原始 chunk，`Upload-Offset` 必须是非负十进制且等于服务端已确认 offset；chunk 长度不得超过 `MEDIA_CHUNK_MAX_BYTES` 和全局 `MAX_BODY_BYTES`。上传 id 对其他 install 不可枚举（统一 `MEDIA_UPLOAD_NOT_FOUND`）。
 
-完成必须在 `receivedBytes==totalBytes` 后从私有 staging 文件复算字节数与 SHA-256；仅这一步原子地将 upload seal 为 completed 并创建一次 lease。响应的 `fetchPath` 是唯一可交给模型 provider 的短期 HMAC capability：它含 token query，但不含 install、原始 SHA 或文件路径；客户端将它相对 gateway base URL 绝对化。读取端点不走 device proof（provider 无法携带），只校验 token、lease active 状态与 expiry，任一失败统一 404；成功 `Cache-Control: private, no-store`、`nosniff`。文件先 fsync、再 CAS 推进 cursor；崩溃后启动/定期恢复会截去未持久化 cursor 的文件尾，过期 capability 先持久化撤销、后删除文件。
+完成必须在 `receivedBytes==totalBytes` 后从私有 staging 文件复算字节数与 SHA-256；仅这一步原子地将 upload seal 为 completed 并创建一次 lease。响应的 `fetchPath` 是短期 HMAC capability：含 token query，不含 install、原始 SHA 或文件路径。**客户端把它以相对形原样嵌进 chat 请求的 `image_url`/`video_url`**（ADR 0011——凡带 scheme/host 一律拒）；chat 校验归属与时效后**读出内容、以 data URI 内联转发上游**（ADR 0012——上游 provider 的拉取器拒绝从本网关公开主机下载，线上实测；内联同时消灭对第三方拉取策略的依赖）。读取端点不走 device proof（provider 无法携带），只校验 token、lease active 状态与 expiry，任一失败统一 404；成功 `Cache-Control: private, no-store`、`nosniff`。文件先 fsync、再 CAS 推进 cursor；崩溃后启动/定期恢复会截去未持久化 cursor 的文件尾，过期 capability 先持久化撤销、后删除文件。
 
 ### 1.2 Realtime speech transcription
 
@@ -138,7 +138,7 @@ message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`M
 
 - 音频 `data` 是 raw strict base64（不是 data URI）；`format` 仅 `wav|mp3`，且必须匹配文件魔数。当前部署在任一 reserve/Open 前返回 `503 AUDIO_UNAVAILABLE`，因此它是**协议已知但尚未路由**的能力。
 
-message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+video+audio part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`。远程 `http(s)` URL、PDF、file/file_id、未知 MIME/format/part、跨 variant 多余字段全部 400；gateway **不 fetch 客户端 URL**。
+message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须带非空 `tool_call_id`。media 只允许在 `role="user"`；整请求 image+video+audio part 数≤`MAX_MEDIA_PARTS`，累计 decoded bytes≤`MAX_MEDIA_DECODED_BYTES`（lease 引用入口计零 decoded 字节，其预算在**内联时**按 lease 记录大小执行——同一口径，见下）。**唯一被接受的非 data 引用**是本网关自己的相对 lease fetch 路径 `/v1/media/leases/{id}/content?token=…`（ADR 0011）：chat 逐个校验「本网关签发给当前 install 且仍 active」（失败统一 404 `MEDIA_LEASE_NOT_FOUND`，绝不做存在性预言机；`MEDIA_ENABLED=false` 时 503 `MEDIA_UNAVAILABLE`），随后**读出内容以 data URI 内联进上游请求**（ADR 0012），累计超 `MAX_MEDIA_DECODED_BYTES` 则 400。其余远程 `http(s)` URL、PDF、file/file_id、未知 MIME/format/part、跨 variant 多余字段全部 400；gateway **不 fetch 客户端 URL**，也**不再要求 provider 回拉本网关**。
 
 ### 2.3 唯一路由表
 

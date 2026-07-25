@@ -205,7 +205,6 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// upstream providers an unreachable (or worse, someone else's) URL. Validation requires it
 	// whenever MEDIA_ENABLED. 无默认值:网关猜不出自己的公开 origin,猜错等于把不可达(更糟:别人的)URL
 	// 交给上游。MEDIA_ENABLED 时校验强制要求它。
-	c.MediaPublicBaseURL = g.str("MEDIA_PUBLIC_BASE_URL", "")
 	if secret := strings.TrimSpace(getenv("MEDIA_SIGNING_SECRET")); secret != "" {
 		c.MediaSigningSecret = []byte(secret)
 		c.MediaSigningSecretSource = "configured"

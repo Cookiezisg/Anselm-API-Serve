@@ -1068,15 +1068,20 @@ func waitForSlot(t *testing.T, s *Service, n int) {
 
 // The cross-cutting case this gateway never had (ADR 0011): a chat request naming a media lease.
 // Its absence is exactly why the desktop could ship "lease URL as image_url" while this side
-// rejected every one of them — each repo's tests covered only its own half.
+// rejected every one of them — each repo's tests covered only its own half. ADR 0012 then changed
+// the upstream TRANSPORT from an absolutized fetch-back URL to inlined bytes: the provider's
+// fetcher refuses to download from this gateway's public host (measured live), so what must now
+// reach upstream is a data URI carrying the verified lease content.
 //
 // 本网关此前**从未有过**的跨接用例(ADR 0011):一个指称 media lease 的 chat 请求。正因为它缺席,桌面端才
-// 能发布「lease URL 即 image_url」而这一侧把它们全数拒绝——两仓测试各只覆盖自己那半。
-func TestMediaLeaseReferenceIsVerifiedThenAbsolutizedForUpstream(t *testing.T) {
+// 能发布「lease URL 即 image_url」而这一侧把它们全数拒绝——两仓测试各只覆盖自己那半。ADR 0012 随后把上游
+// **运输形态**从「绝对化的回拉 URL」改为「内联字节」:provider 拉取器拒绝从本网关公开主机下载(线上实测),
+// 故如今必须抵达上游的是携带已校验 lease 内容的 data URI。
+func TestMediaLeaseReferenceIsVerifiedThenInlinedForUpstream(t *testing.T) {
 	const rel = "/v1/media/leases/mls_ok/content?token=tok"
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + rel + `"}}]}]}`
 
-	t.Run("verified reference reaches upstream ABSOLUTE", func(t *testing.T) {
+	t.Run("verified reference reaches upstream INLINED as a data URI", func(t *testing.T) {
 		leases := &fakeLeases{}
 		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}, Leases: leases})
@@ -1093,7 +1098,7 @@ func TestMediaLeaseReferenceIsVerifiedThenAbsolutizedForUpstream(t *testing.T) {
 		// 谓词必须针对**已鉴权**的 install——鉴权器解析出的那个 id,绝不是客户端发来的字符串。拿客户端
 		// 自报的值去校验,等于让调用方自称是 lease 的主人。
 		if leases.calls[0].InstallID != "inst1" {
-			t.Fatalf("VerifyLease must be asked about the RESOLVED install, got %q", leases.calls[0].InstallID)
+			t.Fatalf("OpenLeaseForInstall must be asked about the RESOLVED install, got %q", leases.calls[0].InstallID)
 		}
 		if len(up.calls) != 1 {
 			t.Fatalf("a verified reference must reach upstream, calls=%d", len(up.calls))
@@ -1102,8 +1107,29 @@ func TestMediaLeaseReferenceIsVerifiedThenAbsolutizedForUpstream(t *testing.T) {
 		if !ok || len(parts) != 1 || parts[0].ImageURL == nil {
 			t.Fatalf("upstream request lost its media part: %+v", up.calls[0].Request.Messages[0])
 		}
-		if got, want := parts[0].ImageURL.URL, "https://gw.example"+rel; got != want {
-			t.Fatalf("upstream must receive the gateway-absolutized URL\n got: %s\nwant: %s", got, want)
+		wantURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(tinyPNG)
+		if got := parts[0].ImageURL.URL; got != wantURI {
+			t.Fatalf("upstream must receive the lease content INLINE — a fetch-back URL depends on the provider's fetcher policy (ADR 0012)\n got: %s\nwant: %s", got, wantURI)
+		}
+	})
+
+	t.Run("a lease bigger than the decoded budget is refused, not inflated upstream", func(t *testing.T) {
+		// ValidateAndClassify charges data URIs against MaxMediaDecodedBytes but a lease contributes
+		// zero decoded bytes on the way in — the budget must therefore bind where the bytes actually
+		// join the upstream body. Without this, a 100MiB lease upload inflates into a request no
+		// provider accepts. 入口处 lease 计零解码字节,预算必须绑在字节并入上游体之处——否则 100MiB 的
+		// lease 上传会膨胀成没有 provider 会接受的请求。
+		leases := &fakeLeases{size: 1 << 40} // recorded size: 1TiB 记录大小 1TiB
+		up := &fakeUpstream{body: `{}`}
+		svc, wg := build(Deps{Auth: okAuth(), Quota: &fakeQuota{}, Upstream: up, RL: &fakeRL{allow: true}, Leases: leases})
+		sink := newFakeSink()
+		svc.Handle(context.Background(), HandleInput{InstallID: "ins_caller", Body: []byte(body)}, sink)
+		wg.Wait()
+		if len(up.calls) != 0 {
+			t.Fatal("an over-budget lease must never be forwarded")
+		}
+		if sink.statusCode() != 400 || !strings.Contains(sink.bodyString(), "decoded size limit") {
+			t.Fatalf("want 400 with the decoded-size message, got %d %s", sink.statusCode(), sink.bodyString())
 		}
 	})
 

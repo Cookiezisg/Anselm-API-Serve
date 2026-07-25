@@ -2,7 +2,9 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
@@ -65,14 +67,28 @@ type Deps struct {
 	Leases MediaLeases
 }
 
-// MediaLeases verifies that a lease reference belongs to the CALLING install and is still usable.
-// Implemented by the media service; see its VerifyLease for why chat needs a predicate stricter
-// than the unauthenticated provider-fetch route's.
+// MediaLeases verifies AND opens a lease reference under the strict predicate — it must belong to
+// the CALLING install and still be usable. Implemented by the media service; see its
+// OpenLeaseForInstall for why chat needs a predicate stricter than the unauthenticated
+// provider-fetch route's, and ADR 0012 for why chat reads the BYTES (the provider's fetcher refuses
+// to download from this gateway's public host, so the verified content is inlined upstream).
 //
-// MediaLeases 校验 lease 引用属于**发起请求的 install** 且仍可用。由 media service 实现;chat 为何需要
-// 比「未鉴权的 provider 拉取路由」更严的谓词,见其 VerifyLease。
+// MediaLeases 在严格谓词下校验**并打开** lease 引用——须属于发起请求的 install 且仍可用。由 media service
+// 实现;chat 为何需要比未鉴权 provider 拉取路由更严的谓词见其 OpenLeaseForInstall,chat 为何要读**字节**
+// 见 ADR 0012(provider 拉取器拒绝从本网关公开主机下载,故已校验内容改为内联上游)。
 type MediaLeases interface {
-	VerifyLease(ctx context.Context, installID, leaseID, token string) (mimeType string, err error)
+	OpenLeaseForInstall(ctx context.Context, installID, leaseID, token string) (*LeaseContent, error)
+}
+
+// LeaseContent is one opened, verified lease: its MIME, its exact recorded size, and its bytes.
+// Declared HERE (not imported from the media package) so the dependency stays a port — bootstrap
+// adapts the media service's own source type into this one.
+// LeaseContent 是一个已打开、已校验的 lease:MIME、记录在案的精确大小、字节流。声明在**本包**(不从 media
+// 包导入),依赖保持端口形——由 bootstrap 把 media service 自己的源类型适配成它。
+type LeaseContent struct {
+	MIMEType  string
+	SizeBytes int64
+	Body      io.ReadCloser
 }
 
 // New wires the Service and fixes the N_global semaphore capacity from the
@@ -212,31 +228,64 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		writeErr(sink, apierr.ErrAudioUnavailable)
 		return
 	}
-	// 4b) Resolve any media lease references BEFORE routing, reserving or forwarding (ADR 0011).
+	// 4b) Resolve any media lease references BEFORE routing, reserving or forwarding (ADR 0011/0012).
 	// Each one is a CLAIM until verified: it must name a lease this gateway issued to THIS install
-	// and still active. Only after every reference verifies is the request absolutized against the
-	// gateway's own public origin — absolutizing first would hand an unverified reference to the
-	// upstream provider, which is precisely the SSRF the relative-only wire prevents.
+	// and still active. Verified content is then INLINED into the upstream request as data URIs —
+	// the provider's fetcher refuses to download from this gateway's public host (measured live,
+	// ADR 0012), and the gateway holds the verified bytes locally anyway, so a fetch-back URL was a
+	// dependency on third-party fetcher policy this path never needed. Handing anything unverified
+	// upstream — in URL OR inline form — stays forbidden for the same reason as ever.
 	//
-	// 4b) 在路由/预留/转发**之前**解析媒体 lease 引用(ADR 0011)。每个引用在校验前都只是**主张**:它必须
-	// 指称本网关签发给**当前 install** 且仍 active 的 lease。**全部**校验通过后才用网关自己的公开 origin
-	// 绝对化——先绝对化就等于把未经校验的引用交给上游 provider,正是「只收相对形」所防的那条 SSRF。
+	// 4b) 在路由/预留/转发**之前**解析媒体 lease 引用(ADR 0011/0012)。每个引用在校验前都只是**主张**:
+	// 它必须指称本网关签发给**当前 install** 且仍 active 的 lease。校验通过的内容随后以 data URI **内联**
+	// 进上游请求——provider 的拉取器拒绝从本网关公开主机下载(线上实测,ADR 0012),而网关本地本就持有已
+	// 校验的字节,「让对方回头拉一趟」是这条路径从不需要的第三方策略依赖。未经校验的东西——无论 URL 形还是
+	// 内联形——照旧不得抵达上游。
 	if refs := req.MediaLeaseRefs(); len(refs) > 0 {
 		if s.leases == nil {
 			// Nothing could have issued this lease on this deployment. 本部署根本签发不出这个 lease。
 			writeErr(sink, apierr.ErrMediaUnavailable)
 			return
 		}
+		inline := make(map[string]domchat.InlinedLease, len(refs))
+		var inlinedBytes int64
 		for _, ref := range refs {
-			if _, err := s.leases.VerifyLease(ctx, installID, ref.LeaseID, ref.Token); err != nil {
+			src, err := s.leases.OpenLeaseForInstall(ctx, installID, ref.LeaseID, ref.Token)
+			if err != nil {
 				// One collapsed answer for absent / foreign / expired / tampered — never an
 				// existence oracle over another install's lease ids.
 				// 不存在/非本人/已过期/被篡改共用一个答复——绝不做他人 lease id 的存在性预言机。
 				writeErr(sink, apierr.ErrMediaLeaseNotFound)
 				return
 			}
+			// The same cumulative decoded-bytes budget ValidateAndClassify charges data URIs.
+			// Lease media bypassed that meter (it contributed zero decoded bytes on the way in), so
+			// the budget is enforced HERE, where the bytes actually join the upstream body — without
+			// it a 100MiB lease upload would happily inflate into an upstream request no provider
+			// accepts. 与 ValidateAndClassify 对 data URI 记账的同一套累计解码字节预算。lease 媒体在入口
+			// 处计零解码字节、绕过了那只表,故预算在**字节真正并入上游请求体**的这里执行——没有它,一个
+			// 100MiB 的 lease 上传会膨胀成没有任何 provider 会接受的上游请求。
+			inlinedBytes += src.SizeBytes
+			if cfg.MaxMediaDecodedBytes > 0 && inlinedBytes > cfg.MaxMediaDecodedBytes {
+				_ = src.Body.Close()
+				writeErr(sink, apierr.NewError(apierr.ErrBadRequest.Status, apierr.ErrBadRequest.Code,
+					"media exceeds the per-request decoded size limit"))
+				return
+			}
+			data, err := io.ReadAll(io.LimitReader(src.Body, src.SizeBytes+1))
+			_ = src.Body.Close()
+			if err != nil || int64(len(data)) != src.SizeBytes {
+				// The lease row and the staged file disagree — a storage fault, not a caller error.
+				// lease 行与落盘文件不一致——存储侧故障,非调用方错误。
+				writeErr(sink, apierr.ErrMediaUnavailable)
+				return
+			}
+			inline[ref.Raw] = domchat.InlinedLease{
+				MIMEType: src.MIMEType,
+				Base64:   base64.StdEncoding.EncodeToString(data),
+			}
 		}
-		req = req.WithAbsoluteMediaLeaseURLs(cfg.MediaPublicBaseURL)
+		req = req.WithInlinedMediaLeases(inline)
 	}
 
 	provider, model, modelOutputLimit := routeFor(modality, cfg)

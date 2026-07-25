@@ -39,6 +39,10 @@ const leasePathSuffix = "/content"
 type MediaLeaseRef struct {
 	LeaseID string
 	Token   string
+
+	// Raw is the reference exactly as it appeared on the wire — the key WithInlinedMediaLeases
+	// replaces by. Raw 是引用在线缆上的原样——WithInlinedMediaLeases 以它为替换键。
+	Raw string
 }
 
 // parseMediaLeaseRef recognizes the gateway's own relative lease fetch path. It is deliberately
@@ -72,7 +76,7 @@ func parseMediaLeaseRef(rawURL string) (MediaLeaseRef, bool) {
 	if token == "" {
 		return MediaLeaseRef{}, false
 	}
-	return MediaLeaseRef{LeaseID: id, Token: token}, true
+	return MediaLeaseRef{LeaseID: id, Token: token, Raw: rawURL}, true
 }
 
 // MediaLeaseRefs returns every lease reference in the request, in wire order. The app layer must
@@ -106,29 +110,50 @@ func (in InboundRequest) MediaLeaseRefs() []MediaLeaseRef {
 	return refs
 }
 
-// WithAbsoluteMediaLeaseURLs returns a copy of the request whose recognized lease references are
-// rewritten to `base + relativePath`. It lives in this package because ContentPart slices hang off
-// Content's unexported field: rewriting anywhere else would mean exporting the innards of the
-// content union just to mutate two strings.
+// InlinedLease is one verified lease's content, ready to travel as a data URI.
+// InlinedLease 是一个已校验 lease 的内容,以 data URI 形态随行。
+type InlinedLease struct {
+	MIMEType string
+	Base64   string
+}
+
+// WithInlinedMediaLeases returns a copy of the request whose recognized lease references are replaced
+// by `data:` URIs carrying the lease's own bytes — the map is keyed by the RAW reference string. It
+// lives in this package because ContentPart slices hang off Content's unexported field: rewriting
+// anywhere else would mean exporting the innards of the content union just to mutate two strings.
 //
-// It must run AFTER the app layer has verified every reference and BEFORE Sanitize builds the body
-// that is forwarded upstream — absolutizing an unverified reference would be exactly the SSRF the
-// relative-only rule exists to prevent, only performed by us instead of by the caller.
+// Why INLINE rather than absolutize (which is what this function's predecessor did): the upstream
+// multimodal provider's fetcher refuses to download from this gateway's public host. Measured on the
+// live deployment (2026-07-25, ADR 0012): the same bytes, the same lease-shaped path and the same
+// token query all fetch fine from the bare site host, while every URL on the `api.` host fails with
+// "Failed to download multimodal content" and the origin's access log shows the fetcher NEVER
+// CONNECTED — the block is at their edge or policy layer, invisible and out of our control. The
+// gateway already holds the verified bytes locally, so handing the provider a URL it must fetch back
+// from us was a dependency on third-party fetcher policy we never needed.
 //
-// Anything the parser does not recognize is left untouched: this function never invents a URL, so a
-// value that was going to be rejected by validation still is.
+// It must run AFTER the app layer has verified every reference (an unverified reference must never
+// reach the upstream in any form) and BEFORE Sanitize builds the forwarded body.
 //
-// WithAbsoluteMediaLeaseURLs 返回一份副本,其中被识别的 lease 引用改写为 `base + 相对路径`。它住在本包,
-// 因为 ContentPart 切片挂在 Content 的**未导出**字段上:在别处重写就意味着仅为改两个字符串而把内容联合
-// 的内脏导出去。
+// A recognized reference with no map entry is left untouched — this function never invents content,
+// and the stale relative URL then fails upstream validation loudly rather than silently.
 //
-// 它必须在 app 层校验完**每一个**引用之后、在 Sanitize 构造转发体之前运行——把**未经校验**的引用绝对化,
-// 正是「只收相对形」要防的那条 SSRF,只不过改由我们自己代劳。
+// InlinedLease 随行的是**已校验** lease 的内容。WithInlinedMediaLeases 返回一份副本,其中被识别的 lease
+// 引用替换为携带 lease 自身字节的 `data:` URI——map 以**原始引用串**为键。它住在本包,因为 ContentPart
+// 切片挂在 Content 的未导出字段上。
 //
-// 解析器不认的一律原样不动:本函数从不凭空造 URL,故本来会被校验拒掉的值仍会被拒。
-func (in InboundRequest) WithAbsoluteMediaLeaseURLs(base string) InboundRequest {
-	base = strings.TrimRight(base, "/")
-	if base == "" {
+// 为什么**内联**而非绝对化(本函数的前身做的事):上游多模态 provider 的拉取器拒绝从本网关的公开主机下载。
+// 线上实测(2026-07-25,ADR 0012):同样的字节、同样的 lease 形路径、同样的 token query,放在裸域全部拉取
+// 正常;而 `api.` 主机上的任何 URL 一律 "Failed to download multimodal content",且源站访问日志显示拉取器
+// **从未连入**——拦截发生在对方边缘或策略层,不可见、不可控。网关本地本就持有已校验的字节,让 provider 再
+// 回头拉我们一趟,是一条我们从不需要的对第三方拉取策略的依赖。
+//
+// 必须在 app 层校验完**每一个**引用之后(未经校验的引用不得以任何形态抵达上游)、在 Sanitize 构造转发体
+// 之前运行。
+//
+// 被识别但 map 里没有的引用原样不动——本函数从不凭空造内容,残留的相对 URL 会在上游校验处大声失败,
+// 而非静默。
+func (in InboundRequest) WithInlinedMediaLeases(inline map[string]InlinedLease) InboundRequest {
+	if len(inline) == 0 {
 		return in
 	}
 	out := in
@@ -147,16 +172,16 @@ func (in InboundRequest) WithAbsoluteMediaLeaseURLs(base string) InboundRequest 
 		for pi := range rewritten {
 			switch {
 			case rewritten[pi].Type == PartTypeImageURL && rewritten[pi].ImageURL != nil:
-				if _, ok := parseMediaLeaseRef(rewritten[pi].ImageURL.URL); ok {
+				if data, ok := inline[rewritten[pi].ImageURL.URL]; ok {
 					clone := *rewritten[pi].ImageURL
-					clone.URL = base + clone.URL
+					clone.URL = "data:" + data.MIMEType + ";base64," + data.Base64
 					rewritten[pi].ImageURL = &clone
 					changed = true
 				}
 			case rewritten[pi].Type == PartTypeVideoURL && rewritten[pi].VideoURL != nil:
-				if _, ok := parseMediaLeaseRef(rewritten[pi].VideoURL.URL); ok {
+				if data, ok := inline[rewritten[pi].VideoURL.URL]; ok {
 					clone := *rewritten[pi].VideoURL
-					clone.URL = base + clone.URL
+					clone.URL = "data:" + data.MIMEType + ";base64," + data.Base64
 					rewritten[pi].VideoURL = &clone
 					changed = true
 				}

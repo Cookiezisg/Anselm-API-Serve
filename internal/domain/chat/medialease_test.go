@@ -85,7 +85,11 @@ func TestMediaLeaseRefs_CollectsEveryReferenceInOrder(t *testing.T) {
 		})},
 	}}
 	refs := in.MediaLeaseRefs()
-	want := []MediaLeaseRef{{"mls_1", "a"}, {"mls_2", "b"}, {"mls_3", "c"}}
+	want := []MediaLeaseRef{
+		{LeaseID: "mls_1", Token: "a", Raw: "/v1/media/leases/mls_1/content?token=a"},
+		{LeaseID: "mls_2", Token: "b", Raw: "/v1/media/leases/mls_2/content?token=b"},
+		{LeaseID: "mls_3", Token: "c", Raw: "/v1/media/leases/mls_3/content?token=c"},
+	}
 	if len(refs) != len(want) {
 		t.Fatalf("want %d refs, got %d: %+v", len(want), len(refs), refs)
 	}

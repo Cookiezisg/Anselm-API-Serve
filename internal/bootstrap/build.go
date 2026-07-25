@@ -413,5 +413,19 @@ func mediaLeasesOrNil(svc *appmedia.Service) appchat.MediaLeases {
 	if svc == nil {
 		return nil
 	}
-	return svc
+	return leaseContentAdapter{svc: svc}
+}
+
+// leaseContentAdapter converts the media service's LeaseSource into chat's port-local LeaseContent —
+// the two app packages stay decoupled (chat declares its port types, bootstrap adapts).
+// leaseContentAdapter 把 media service 的 LeaseSource 适配成 chat 端口本地的 LeaseContent——两个 app 包
+// 保持解耦(chat 声明自己的端口类型,bootstrap 负责适配)。
+type leaseContentAdapter struct{ svc *appmedia.Service }
+
+func (a leaseContentAdapter) OpenLeaseForInstall(ctx context.Context, installID, leaseID, token string) (*appchat.LeaseContent, error) {
+	src, err := a.svc.OpenLeaseForInstall(ctx, installID, leaseID, token)
+	if err != nil {
+		return nil, err
+	}
+	return &appchat.LeaseContent{MIMEType: src.MIMEType, SizeBytes: src.SizeBytes, Body: src.Body}, nil
 }

@@ -171,6 +171,44 @@ func (s *Service) OpenLease(ctx context.Context, leaseID, token string) (*LeaseS
 	return &LeaseSource{MIMEType: lease.MIMEType, SizeBytes: lease.SizeBytes, Body: body}, nil
 }
 
+// OpenLeaseForInstall opens a lease's content under VerifyLease's STRICT predicate — including the
+// `lease.InstallID != installID` ownership check the unauthenticated provider-fetch route cannot
+// have. It exists for the chat path's media inlining (ADR 0012): the upstream provider's fetcher
+// refuses to download from this gateway's public host, so the verified bytes travel inside the
+// upstream request instead, and the bytes must only ever be handed to the install that owns them.
+//
+// Every failure collapses into ErrNotFound for the same existence-oracle reason as VerifyLease.
+//
+// OpenLeaseForInstall 在 VerifyLease 的**严格**谓词下打开 lease 内容——含未鉴权 provider 拉取路由不可能有
+// 的 `lease.InstallID != installID` 归属校验。它为 chat 路径的媒体内联而生(ADR 0012):上游 provider 的
+// 拉取器拒绝从本网关公开主机下载,故已校验的字节改为随上游请求同行,而字节只能交给拥有它的 install。
+//
+// 一切失败归并 ErrNotFound,理由与 VerifyLease 的存在性预言机相同。
+func (s *Service) OpenLeaseForInstall(ctx context.Context, installID, leaseID, token string) (*LeaseSource, error) {
+	repo, ok := s.repo.(LeaseRepository)
+	if !ok {
+		return nil, errors.New("mediaapp.OpenLeaseForInstall: repository lacks lease lookup")
+	}
+	if strings.TrimSpace(installID) == "" || strings.TrimSpace(leaseID) == "" || token == "" {
+		return nil, ErrNotFound
+	}
+	lease, found, err := repo.GetLease(ctx, leaseID)
+	if err != nil {
+		return nil, fmt.Errorf("mediaapp.OpenLeaseForInstall lookup: %w", err)
+	}
+	if !found || lease.InstallID != installID || lease.State != dmedia.LeaseActive ||
+		!s.clock.Now().UTC().Before(lease.ExpiresAt) ||
+		!s.signer.Verify(token, lease.ID, lease.InstallID, lease.ExpiresAt) ||
+		dmedia.HashSecret(token) != lease.FetchTokenHash {
+		return nil, ErrNotFound
+	}
+	body, err := s.files.Open(ctx, lease.UploadID)
+	if err != nil {
+		return nil, fmt.Errorf("mediaapp.OpenLeaseForInstall file: %w", err)
+	}
+	return &LeaseSource{MIMEType: lease.MIMEType, SizeBytes: lease.SizeBytes, Body: body}, nil
+}
+
 // VerifyLease decides whether a lease reference carried in a CHAT request is one this gateway issued
 // to THIS install and is still usable — without opening the object (the chat path only needs the
 // verdict and the MIME, never the bytes).

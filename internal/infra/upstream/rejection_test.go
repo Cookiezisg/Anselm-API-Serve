@@ -110,7 +110,7 @@ func TestRejectionReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rejectionReason(strings.NewReader(tc.body))
+			got, _ := rejectionReason(strings.NewReader(tc.body))
 			if got != tc.want {
 				t.Fatalf("rejectionReason = %q, want %q", got, tc.want)
 			}

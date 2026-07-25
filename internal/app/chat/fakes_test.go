@@ -269,7 +269,6 @@ func testCfg() *config.Config {
 		MaxMessages:             100,
 		MaxMessageChars:         100000,
 		MaxMediaParts:           8,
-		MediaPublicBaseURL:      "https://gw.example",
 		MaxMediaDecodedBytes:    1 << 20,
 		MaxBodyBytes:            4 << 20,
 		NGlobalConcurrency:      2,
@@ -329,15 +328,17 @@ var errBoom = errors.New("boom")
 const goodBody = `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
 const goodStreamBody = `{"model":"x","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 
-// fakeLeases stands in for the media service's VerifyLease. It records what chat asked so a test can
-// assert the CALLING install is what gets checked — the predicate whose absence would let any
-// install reference another's media.
+// fakeLeases stands in for the media service's OpenLeaseForInstall. It records what chat asked so a
+// test can assert the CALLING install is what gets checked — the predicate whose absence would let
+// any install reference another's media — and scripts the bytes chat inlines (ADR 0012).
 //
-// fakeLeases 顶替 media service 的 VerifyLease,并记录 chat 问了什么,使测试能断言被校验的是**发起请求的**
-// install——少了这条谓词,任一 install 都能引用他人的媒体。
+// fakeLeases 顶替 media service 的 OpenLeaseForInstall,记录 chat 问了什么(使测试能断言被校验的是**发起
+// 请求的** install——少了这条谓词,任一 install 都能引用他人的媒体),并脚本化 chat 内联的字节(ADR 0012)。
 type fakeLeases struct {
 	mu    sync.Mutex
 	err   error
+	data  []byte // lease content; defaults to tinyPNG when nil 内容,nil 时用 tinyPNG
+	size  int64  // recorded SizeBytes; defaults to len(data) 记录在案的大小,缺省=len(data)
 	calls []fakeLeaseCall
 }
 
@@ -347,12 +348,22 @@ type fakeLeaseCall struct {
 	Token     string
 }
 
-func (f *fakeLeases) VerifyLease(_ context.Context, installID, leaseID, token string) (string, error) {
+var tinyPNG = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4}
+
+func (f *fakeLeases) OpenLeaseForInstall(_ context.Context, installID, leaseID, token string) (*LeaseContent, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakeLeaseCall{installID, leaseID, token})
 	f.mu.Unlock()
 	if f.err != nil {
-		return "", f.err
+		return nil, f.err
 	}
-	return "image/png", nil
+	data := f.data
+	if data == nil {
+		data = tinyPNG
+	}
+	size := f.size
+	if size == 0 {
+		size = int64(len(data))
+	}
+	return &LeaseContent{MIMEType: "image/png", SizeBytes: size, Body: io.NopCloser(bytes.NewReader(data))}, nil
 }

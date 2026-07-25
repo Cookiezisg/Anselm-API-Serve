@@ -472,7 +472,18 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, first
 		ra := parseRetryAfter(resp.Header.Get("Retry-After"), c.now())
 		cls := classifyStatus(resp.StatusCode)
 		if cls == classUpstreamRejected {
-			reason := rejectionReason(resp.Body)
+			reason, providerMsg := rejectionReason(resp.Body)
+			// Operator diagnostics ONLY — the caller still receives nothing but the coarse enum
+			// (GW-INV-11 is about what we FORWARD, not what we can see in our own journal). Without
+			// this line an upstream rejection is a black box: the 2026-07-25 media-fetch failure took
+			// an hour of live probing to attribute because the gateway kept the provider's one-line
+			// explanation to itself.
+			// 只作运维诊断——调用方拿到的仍只有粗粒度枚举(GW-INV-11 管的是**转发**什么,不是我们自己的
+			// 日志里能看什么)。没有这一行,上游拒绝就是黑盒:2026-07-25 的媒体拉取故障折腾了一小时线上
+			// 探测才定位,因为网关把 provider 那一句解释留给了自己。
+			slog.Warn("upstream_rejected",
+				"backend", string(c.backend), "status", resp.StatusCode,
+				"reason", reason, "provider_message", providerMsg)
 			_ = resp.Body.Close()
 			cleanup()
 			return nil, resolveRejected(reason), ra
@@ -521,7 +532,9 @@ func drainAndClose(rc io.ReadCloser) error {
 // The provider's OpenAI-style shape is {"error":{"message":...}}; the context-
 // overflow message reads "This model's maximum context length is N tokens..."
 // and the max_tokens range error names "max_tokens" — matched case-insensitively.
-func rejectionReason(body io.Reader) string {
+// The second return is the provider's own (bounded, truncated) explanation — for the local journal
+// only, never for the caller. 第二个返回值是 provider 自己的解释(有界、截断)——只进本地日志,绝不给调用方。
+func rejectionReason(body io.Reader) (string, string) {
 	raw, _ := io.ReadAll(io.LimitReader(body, 4*1024))
 	type errorEnvelope struct {
 		Error struct {
@@ -537,6 +550,10 @@ func rejectionReason(body io.Reader) string {
 			env = list[0]
 		}
 	}
+	providerMsg := env.Error.Message
+	if len(providerMsg) > 300 {
+		providerMsg = providerMsg[:300]
+	}
 	msg := strings.ToLower(env.Error.Message)
 	switch {
 	case strings.Contains(msg, "context length"),
@@ -544,10 +561,10 @@ func rejectionReason(body io.Reader) string {
 		strings.Contains(msg, "input too large"),
 		strings.Contains(msg, "too many input tokens"),
 		strings.Contains(msg, "maximum input"):
-		return apierr.RejectedContextLength
+		return apierr.RejectedContextLength, providerMsg
 	case strings.Contains(msg, "max_tokens"):
-		return apierr.RejectedMaxTokens
+		return apierr.RejectedMaxTokens, providerMsg
 	default:
-		return apierr.RejectedInvalid
+		return apierr.RejectedInvalid, providerMsg
 	}
 }

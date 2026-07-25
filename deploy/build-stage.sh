@@ -176,7 +176,6 @@ write_env MEDIA_UPLOAD_TTL_SEC "3600"
 write_env MEDIA_LEASE_TTL_SEC "3600"
 # 由已校验的 GATEWAY_DOMAIN 派生,不新增部署输入——保证网关自报的公开 origin 与它实际被服务的域名
 # 恒一致。它是 chat 把**相对** lease 引用绝对化后交给上游 provider 的前缀(ADR 0011)。
-write_env MEDIA_PUBLIC_BASE_URL "https://${GATEWAY_DOMAIN}"
 write_env N_GLOBAL_CONCURRENCY "16"
 write_env QUEUE_WAIT_MS "1500"
 write_env RATE_PER_MIN "0"
