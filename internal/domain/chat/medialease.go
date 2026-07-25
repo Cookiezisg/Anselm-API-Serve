@@ -41,7 +41,7 @@ type MediaLeaseRef struct {
 	Token   string
 }
 
-// parseMediaLeaseRef recognises the gateway's own relative lease fetch path. It is deliberately
+// parseMediaLeaseRef recognizes the gateway's own relative lease fetch path. It is deliberately
 // strict: any scheme, any host, a missing token, a path that is not exactly
 // `/v1/media/leases/{id}/content`, or an id containing a path separator all fail. A caller that
 // gets ok=false must treat the value as an ordinary (and therefore rejected) URL — never as a
@@ -106,7 +106,7 @@ func (in InboundRequest) MediaLeaseRefs() []MediaLeaseRef {
 	return refs
 }
 
-// WithAbsoluteMediaLeaseURLs returns a copy of the request whose recognised lease references are
+// WithAbsoluteMediaLeaseURLs returns a copy of the request whose recognized lease references are
 // rewritten to `base + relativePath`. It lives in this package because ContentPart slices hang off
 // Content's unexported field: rewriting anywhere else would mean exporting the innards of the
 // content union just to mutate two strings.
@@ -115,7 +115,7 @@ func (in InboundRequest) MediaLeaseRefs() []MediaLeaseRef {
 // that is forwarded upstream — absolutizing an unverified reference would be exactly the SSRF the
 // relative-only rule exists to prevent, only performed by us instead of by the caller.
 //
-// Anything the parser does not recognise is left untouched: this function never invents a URL, so a
+// Anything the parser does not recognize is left untouched: this function never invents a URL, so a
 // value that was going to be rejected by validation still is.
 //
 // WithAbsoluteMediaLeaseURLs 返回一份副本,其中被识别的 lease 引用改写为 `base + 相对路径`。它住在本包,
