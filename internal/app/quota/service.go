@@ -87,11 +87,21 @@ func mapReserveErr(err error) error {
 		return apierr.ErrRateLimited
 	case errors.Is(err, quota.ErrBudgetExceeded):
 		return apierr.ErrBudgetExhausted
-	case errors.Is(err, quota.ErrCategoryDailyExceeded):
-		// Today the image ledger is the only category (closed set); a later
-		// category maps its own sentinel here alongside its Limits field.
-		// 今天品类账本仅图像一员(封闭集);后续品类连同 Limits 字段在此映射自己的 sentinel。
-		return apierr.ErrImageQuotaExhausted
+	case errors.As(err, new(*quota.CategoryDailyExceededError)):
+		// The denial names its own ledger, so each category maps to its own wire code. A default
+		// that answered for an unknown category would tell the client to "try image generation
+		// again tomorrow" about a capability it never touched.
+		// 拒绝自己点名账本,故每个品类映射到自己的 wire 码。给未知品类兜一个 default,等于对着一个
+		// 用户根本没碰过的能力说「明天再试图像生成」。
+		var catErr *quota.CategoryDailyExceededError
+		_ = errors.As(err, &catErr)
+		switch catErr.Category {
+		case quota.CategoryImage:
+			return apierr.ErrImageQuotaExhausted
+		case quota.CategorySpeech:
+			return apierr.ErrTTSQuotaExhausted
+		}
+		return err
 	default:
 		return err
 	}

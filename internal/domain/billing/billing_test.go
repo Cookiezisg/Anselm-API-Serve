@@ -309,3 +309,50 @@ func TestImagesPlanAndCost(t *testing.T) {
 		t.Fatal("ImagesCost on a token plan must fail closed (accounts must not mix)")
 	}
 }
+
+// TestCharactersPlanAndCost pins the speech rate-card pair (WRK-082 批C): a frozen per-character
+// plan whose reserve equals its settle for the same count, the Validate roundtrip the persistence
+// boundary relies on, and the closed-set rejections. The cross-class assertions matter most: a
+// characters plan must not answer ImagesCost and an images plan must not answer CharactersCost —
+// the two are priced in different units and a silent crossover would bill audio at 35e9 per unit.
+//
+// TestCharactersPlanAndCost 钉语音卡对(批C)。最要紧的是**跨类**断言:字符 plan 不得答 ImagesCost、
+// 图像 plan 不得答 CharactersCost——两者单位不同,静默串线会把音频按每单位 35e9 计费。
+func TestCharactersPlanAndCost(t *testing.T) {
+	p, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 100)
+	if err != nil {
+		t.Fatalf("characters plan: %v", err)
+	}
+	if p.InputClass != InputCharacters || p.ReservedPUSD != 100*14_000_000 {
+		t.Fatalf("plan = class %d reserved %d, want characters/1.4e9", p.InputClass, p.ReservedPUSD)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
+	}
+	cost, err := p.CharactersCost(100)
+	if err != nil || cost != p.ReservedPUSD {
+		t.Fatalf("CharactersCost(100) = %d,%v — want reserve==settle", cost, err)
+	}
+	if _, err := NewCharactersPlan(ProviderQwen, QwenImage20, 100); err == nil {
+		t.Fatal("characters plan on the image card must fail closed")
+	}
+	if _, err := NewCharactersPlan(ProviderDeepSeek, DeepSeekV4Flash, 100); err == nil {
+		t.Fatal("characters plan on a text card must fail closed")
+	}
+	if _, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 0); err == nil {
+		t.Fatal("zero-character plan must fail closed")
+	}
+	if _, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, QwenTTSInputLimit+1); err == nil {
+		t.Fatal("over-card character count must fail closed")
+	}
+	if _, err := p.ImagesCost(1); err == nil {
+		t.Fatal("a characters plan must refuse ImagesCost (unit crossover)")
+	}
+	img, err := NewImagesPlan(ProviderQwen, QwenImage20, 1)
+	if err != nil {
+		t.Fatalf("images plan: %v", err)
+	}
+	if _, err := img.CharactersCost(1); err == nil {
+		t.Fatal("an images plan must refuse CharactersCost (unit crossover)")
+	}
+}

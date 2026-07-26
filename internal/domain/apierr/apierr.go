@@ -127,6 +127,22 @@ var (
 	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer
 	// "try again tomorrow", not back off and retry.
 	ErrImageQuotaExhausted = NewError(statusTooManyRequests, "IMAGE_QUOTA_EXHAUSTED", "daily image generation quota reached, try again tomorrow")
+	// ErrTTSUnavailable — speech SYNTHESIS is not available on this deployment
+	// (SPEECH_ENABLED off or no upstream credential). Deliberately NOT named
+	// SPEECH_UNAVAILABLE: that code is already the realtime ASR (speech→text)
+	// denial, and one code answering for both directions would leave a client
+	// that lost its microphone indistinguishable on the wire from one that
+	// cannot read a message aloud.
+	//
+	// ErrTTSUnavailable —— 本部署不提供语音**合成**。刻意不叫 SPEECH_UNAVAILABLE:那个码已是
+	// 实时 ASR(语音→文本)的拒绝,一个码答两个方向,会让「麦克风没了」与「读不出这条消息」在线缆上
+	// 无从区分。
+	ErrTTSUnavailable = NewError(statusServiceUnavailable, "TTS_UNAVAILABLE", "speech synthesis is not available on this deployment")
+	// ErrTTSQuotaExhausted — the per-install daily speech-character cap is
+	// reached (WRK-082 P8). The image twin's reasoning: distinct from
+	// RATE_LIMITED (pacing) and QUOTA_EXHAUSTED (the monthly entitlement)
+	// because the honest client action is "try again tomorrow".
+	ErrTTSQuotaExhausted = NewError(statusTooManyRequests, "TTS_QUOTA_EXHAUSTED", "daily speech synthesis quota reached, try again tomorrow")
 	// Media upload failures intentionally distinguish client-fixable lifecycle
 	// mistakes from a verified object whose bytes/digest do not match.
 	ErrMediaUploadInvalid   = NewError(statusBadRequest, "MEDIA_UPLOAD_INVALID", "invalid media upload request")

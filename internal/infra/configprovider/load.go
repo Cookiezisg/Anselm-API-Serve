@@ -79,6 +79,11 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// 图像路由打**原生** DashScope API(multimodal-generation),与 compatible-mode 的 QwenBaseURL
 	// 不同 origin——绝不互相推导。
 	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", "https://dashscope.aliyuncs.com")
+	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.Qwen3TTSFlash)
+	// Cherry is the cross-generation default voice (WRK-082 P10: the parameter stays on the wire,
+	// the desktop settings page does not expose it — one good default beats a picker nobody tunes).
+	// Cherry 是跨代默认音色(P10:参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。
+	c.TTSDefaultVoice = g.str("TTS_DEFAULT_VOICE", "Cherry")
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
@@ -108,6 +113,10 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// 图像生成默认关(能力非天赋);日限默认取 P8 产品数,单开能力即得预期预算。
 	c.ImageEnabled = g.boolean("IMAGE_ENABLED", false)
 	c.ImageDailyLimit = g.boundedInt64("IMAGE_DAILY_LIMIT", 10, 0, config.MaxImageDailyLimit)
+	// Speech is its own switch with its own unit: 50K characters/day (P8), not 10 of anything.
+	// 语音是自己的开关、自己的单位:5 万字符/天(P8),不是十个什么东西。
+	c.SpeechEnabled = g.boolean("SPEECH_ENABLED", false)
+	c.SpeechDailyLimit = g.boundedInt64("SPEECH_DAILY_LIMIT", 50_000, 0, config.MaxSpeechDailyLimit)
 	c.MediaUploadMaxBytes = g.boundedInt64("MEDIA_UPLOAD_MAX_BYTES", 100*1024*1024, 1, config.MaxMediaUploadBytes)
 	defaultChunkBytes := min(int64(4*1024*1024), c.MaxBodyBytes)
 	c.MediaChunkMaxBytes = g.boundedInt64("MEDIA_CHUNK_MAX_BYTES", defaultChunkBytes, 1, c.MaxBodyBytes)

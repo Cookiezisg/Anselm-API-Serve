@@ -628,7 +628,76 @@ func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.
 	}
 }
 
-// imagePlan builds a frozen one-image plan (the only category plan today).
+// speechPlan builds a frozen n-character speech plan (the second category).
+func speechPlan(t *testing.T, chars int64) billing.Plan {
+	t.Helper()
+	p, err := billing.NewCharactersPlan(billing.ProviderQwen, billing.Qwen3TTSFlash, chars)
+	if err != nil {
+		t.Fatalf("characters plan: %v", err)
+	}
+	return p
+}
+
+// TestReserve_CategoriesAreIndependentLedgers proves the two categories never see each other: a
+// speech reservation consumes CHARACTERS against SpeechDailyLimit, an exhausted image cap does not
+// block speech (and vice versa), and each denial NAMES its own ledger so the app layer can map it
+// to the right wire code. A shared counter — or a denial that cannot say which ledger it came
+// from — would tell a user whose images ran out that speech is unavailable too.
+//
+// 两个品类互不相见:语音预留按**字符**对 SpeechDailyLimit 记账;图像限额耗尽不挡语音、反之亦然;
+// 每个拒绝**点名**自己的账本,app 层才能映到正确 wire 码。共用计数器——或一个说不出自己来自哪个
+// 账本的拒绝——会让图像用尽的用户被告知语音也没了。
+func TestReserve_CategoriesAreIndependentLedgers(t *testing.T) {
+	s := newTestStore(t)
+	lim := limits()
+	lim.ImageDailyLimit = 1
+	lim.SpeechDailyLimit = 100
+
+	img := reserve(t, s, "ins_a", imagePlan(t), lim)
+	if img.CategoryApplied != quota.CategoryImage || img.CategoryUnits != 1 {
+		t.Fatalf("image reservation = %q/%d", img.CategoryApplied, img.CategoryUnits)
+	}
+	sp := reserve(t, s, "ins_a", speechPlan(t, 60), lim)
+	if sp.CategoryApplied != quota.CategorySpeech || sp.CategoryUnits != 60 {
+		t.Fatalf("speech reservation = %q/%d, want speech/60", sp.CategoryApplied, sp.CategoryUnits)
+	}
+
+	// Image cap is now exhausted; speech still has 40 characters left. 图像满了,语音还剩 40。
+	var catErr *quota.CategoryDailyExceededError
+	_, err := s.Reserve(context.Background(), "ins_a", imagePlan(t), testPeriod(), lim)
+	if !errors.As(err, &catErr) || catErr.Category != quota.CategoryImage {
+		t.Fatalf("image denial = %v, want a denial naming the image ledger", err)
+	}
+	if !errors.Is(err, quota.ErrCategoryDailyExceeded) {
+		t.Fatalf("category denial must still satisfy the umbrella sentinel: %v", err)
+	}
+	reserve(t, s, "ins_a", speechPlan(t, 40), lim)
+
+	// Now speech is exhausted too, and ITS denial names the speech ledger. 语音也满了,拒绝点名语音。
+	_, err = s.Reserve(context.Background(), "ins_a", speechPlan(t, 1), testPeriod(), lim)
+	if !errors.As(err, &catErr) || catErr.Category != quota.CategorySpeech {
+		t.Fatalf("speech denial = %v, want a denial naming the speech ledger", err)
+	}
+}
+
+// TestRollback_ReversesSpeechCharacters proves the recorded-units reversal is unit-agnostic: a
+// rolled-back 80-character reservation frees exactly 80 characters, not one "request".
+func TestRollback_ReversesSpeechCharacters(t *testing.T) {
+	s := newTestStore(t)
+	lim := limits()
+	lim.SpeechDailyLimit = 100
+
+	r := reserve(t, s, "ins_a", speechPlan(t, 80), lim)
+	if _, err := s.Reserve(context.Background(), "ins_a", speechPlan(t, 80), testPeriod(), lim); !errors.Is(err, quota.ErrCategoryDailyExceeded) {
+		t.Fatalf("cap not enforced before rollback: %v", err)
+	}
+	if err := s.Rollback(context.Background(), r); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	reserve(t, s, "ins_a", speechPlan(t, 80), lim) // the freed 80 characters are available again
+}
+
+// imagePlan builds a frozen one-image plan (the first category).
 func imagePlan(t *testing.T) billing.Plan {
 	t.Helper()
 	p, err := billing.NewImagesPlan(billing.ProviderQwen, billing.QwenImage20, 1)

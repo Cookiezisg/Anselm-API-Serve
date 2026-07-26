@@ -81,6 +81,8 @@ audience: [human, ai]
 | GW-INV-49 | 品类日闸(0006):图像预留在**同一** BEGIN IMMEDIATE 里按张消耗 `install_category_daily.units`,超 `IMAGE_DAILY_LIMIT` 拒 `IMAGE_QUOTA_EXHAUSTED`;限额=0 仍记账;rollback 恰按 Reservation 快照(`CategoryApplied/CategoryUnits`)反转、绝不重读 live config;ledger 行以 `category/category_units` 与预留逐字段对账 | 日闸旁路 = 免费档图像成本失控;反转读 live 配置 = 热改限额期间账目漂移 |
 | GW-INV-50 | 图像生成成功即按冻结卡全额 settle(reserve==settle,确定性按张成本);客户端是否下载产物 URL 与计费无关;提交后 timeout/connect/5xx 等歧义结果照 full quote settle,绝不 rollback | 下载与否影响计费 = 可白嫖;歧义 rollback = 上游已扣我们未记 |
 | GW-INV-51 | 直通给客户端的上游产物 URL 不含任何**网关配置的** upstream API key(OSS 签名参数 `OSSAccessKeyId` 是上游临时访问标识、非网关凭证,不在此列);机械测试:URL 串与全部已配 key 逐一取交为空 | key 随 URL 出端 = 凭证泄漏,免费档全线沦陷 |
+| GW-INV-52 | 品类日账本**逐品类独立**:`install_category_daily` 按 `(install, category, day)` 分行,图像按张、语音按**输入字符**各记各账;任一品类耗尽绝不影响另一品类;`planCategory`/`categoryCap` 是封闭 switch,新品类连同自己的 `Limits` 字段与 wire 码一起立法 | 共用计数器 = 图像用尽把语音一起关掉(反之亦然),用户被告知一个自己根本没碰过的能力没了 |
+| GW-INV-53 | 品类日闸的拒绝**自带品类名**(`*quota.CategoryDailyExceededError`,并满足 `errors.Is(ErrCategoryDailyExceeded)`);app 层按品类映射 wire 码(image→`IMAGE_QUOTA_EXHAUSTED` / speech→`TTS_QUOTA_EXHAUSTED`),未知品类**不兜底**、原样上抛 | 光有伞 sentinel 会逼 app 层拿某一个品类的码代表全部(已实际发生过);兜底 default 则会对着用户没碰过的能力说「明天再试」 |
 
 ## E. 跨切配置 / 可观测
 

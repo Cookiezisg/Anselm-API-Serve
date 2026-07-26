@@ -101,10 +101,11 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 		}
 
 		// Gate 2c (WRK-082 批B): the per-category daily unit ledger. An image plan consumes
-		// `units` = image count against ImageDailyLimit inside this SAME transaction; a disabled
-		// limit (0) still records consumption so enabling the cap later starts from truth.
-		// 闸 2c(批B):品类日 units 账本。图像 plan 在**同一**事务里按张数消耗 units、对
-		// ImageDailyLimit 把关;限额关闭(0)时仍记消耗,日后开闸从真相起步。
+		// `units` = the plan's own unit (image count / speech characters) against that category's
+		// cap inside this SAME transaction; a disabled limit (0) still records consumption so
+		// enabling the cap later starts from truth.
+		// 闸 2c:品类日 units 账本。plan 在**同一**事务里按自己的单位(图张数 / 语音字符数)消耗
+		// units、对该品类的限额把关;限额关闭(0)时仍记消耗,日后开闸从真相起步。
 		if category, units := planCategory(plan); category != "" {
 			if _, err := tx.Exec(ctx,
 				`INSERT OR IGNORE INTO install_category_daily(install_id, category, period_day, units)
@@ -118,7 +119,10 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 					   WHERE install_id = ? AND category = ? AND period_day = ? AND units + ? <= ?`,
 					units, installID, category, p.Day, units, dayCap); err != nil {
 					if isConditionalMiss(err) {
-						return quota.ErrCategoryDailyExceeded
+						// Name the ledger in the denial: a bare umbrella sentinel forced the app
+						// layer to hardcode one category's wire code for all of them.
+						// 拒绝里点名账本:光有伞 sentinel 会逼 app 层拿一个品类的 wire 码代表所有品类。
+						return &quota.CategoryDailyExceededError{Category: category}
 					}
 					return err
 				}
@@ -216,6 +220,8 @@ func planCategory(plan billing.Plan) (category string, units int64) {
 	switch plan.InputClass {
 	case billing.InputImages:
 		return quota.CategoryImage, plan.PromptQuote
+	case billing.InputCharacters:
+		return quota.CategorySpeech, plan.PromptQuote
 	default:
 		return "", 0
 	}
@@ -228,6 +234,8 @@ func categoryCap(category string, lim quota.Limits) int64 {
 	switch category {
 	case quota.CategoryImage:
 		return lim.ImageDailyLimit
+	case quota.CategorySpeech:
+		return lim.SpeechDailyLimit
 	default:
 		return 0
 	}

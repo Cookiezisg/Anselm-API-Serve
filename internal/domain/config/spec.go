@@ -189,6 +189,15 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.ImageDailyLimit, 10) }},
+		{Key: "SPEECH_DAILY_LIMIT", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxSpeechDailyLimit,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("SPEECH_DAILY_LIMIT", raw, 0, MaxSpeechDailyLimit)
+				if err == nil {
+					c.SpeechDailyLimit = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.SpeechDailyLimit, 10) }},
 		{Key: "INSTALL_PER_IP_HOUR", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: int64(MaxInstallPerIPHour),
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt("INSTALL_PER_IP_HOUR", raw, 0, MaxInstallPerIPHour)
@@ -324,6 +333,9 @@ func Specs() []Spec {
 		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
 		{Key: "IMAGE_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.ImageEnabled) }},
 		{Key: "IMAGE_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageUpstreamModel }},
+		{Key: "SPEECH_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.SpeechEnabled) }},
+		{Key: "TTS_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSUpstreamModel }},
+		{Key: "TTS_DEFAULT_VOICE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSDefaultVoice }},
 		{Key: "DASHSCOPE_NATIVE_BASE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DashScopeNativeBase }},
 		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
 		{Key: "DASHSCOPE_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.QwenBaseURL }},

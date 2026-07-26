@@ -27,6 +27,7 @@ const (
 	Qwen37Plus            = "qwen3.7-plus"
 	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
 	QwenImage20           = "qwen-image-2.0"
+	Qwen3TTSFlash         = "qwen3-tts-flash"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
@@ -38,8 +39,15 @@ const (
 	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1
 	// (WRK-082 P12); the small headroom only bounds the card, it does not widen the wire.
 	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1(P12);小余量只界卡、不放宽线缆。
-	QwenImageInputLimit   = int64(6)
-	QwenImageOutputLimit  = int64(0)
+	QwenImageInputLimit  = int64(6)
+	QwenImageOutputLimit = int64(0)
+	// QwenTTSInputLimit bounds characters per reservation. The gateway wire caps one request at
+	// maxInputChars (WRK-082 代拍 C5: the desktop chunks long text, the gateway stays one
+	// request = one reservation = one settle); the headroom only bounds the card.
+	// QwenTTSInputLimit 界定单次预留的字符数。网关线缆单请求上限为 maxInputChars(代拍 C5:长文本由
+	// 桌面端切块,网关恒守「一请求=一预留=一结算」);余量只界卡。
+	QwenTTSInputLimit     = int64(4_000)
+	QwenTTSOutputLimit    = int64(0)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -56,13 +64,16 @@ func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 // InputClass is retained in the frozen Plan wire shape. Standard covers token
 // plans; AudioSeconds is used only by realtime ASR, where the provider bills
 // elapsed audio duration rather than chat tokens; Images is used only by image
-// generation, where the provider bills per successfully generated image.
+// generation, where the provider bills per successfully generated image;
+// Characters is used only by speech synthesis, where the provider bills the
+// INPUT text length rather than the produced audio's duration.
 type InputClass uint8
 
 const (
 	InputStandard InputClass = iota
 	InputAudioSeconds
 	InputImages
+	InputCharacters
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -165,6 +176,21 @@ var rateCards = map[Provider]map[string]RateCard{
 			// 对账——ID 里的 "assumed" 让这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenImageInputLimit, InputPUSD: 35_000_000_000, OutputPUSD: 0}},
 		},
+		Qwen3TTSFlash: {
+			ID: "qwen3-tts-flash-assumed-2026-07-27", Provider: ProviderQwen, Model: Qwen3TTSFlash,
+			InputLimit: QwenTTSInputLimit, OutputLimit: QwenTTSOutputLimit,
+			// WORKING ASSUMPTION (WRK-082 代拍 C2): ¥1 / 10K characters ≈ $0.0000139 per character
+			// = 14e6 pUSD. The official price page renders its table in JS and could not be read
+			// verbatim; the third-party figure is what this card encodes. Same discipline as the
+			// image card: this budgets the operator's OWN wallet gate (reserve == settle, cost is
+			// deterministic in the request's own character count) while the upstream bills its real
+			// list price regardless. The "assumed" ID keeps the reconciliation debt visible.
+			// 工作假设(代拍 C2):¥1/万字符≈$0.0000139/字符=14e6 pUSD。官方价目表由 JS 渲染、取不到
+			// 逐字数值,此卡编码的是第三方数字。与图像卡同纪律:它只作 operator 自家钱包闸(reserve==
+			// settle,成本在本请求字符数上确定),上游按真实价目计费不受影响。ID 里的 "assumed" 让这
+			// 笔对账债保持可见。
+			tiers: []pricingTier{{InputUpperBound: QwenTTSInputLimit, InputPUSD: 14_000_000, OutputPUSD: 0}},
+		},
 	},
 }
 
@@ -258,6 +284,10 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 		if provider != ProviderQwen || model != QwenImage20 || outputBound != 0 || promptBound < 1 {
 			return Plan{}, ErrUnknownRateCard
 		}
+	case InputCharacters:
+		if provider != ProviderQwen || model != Qwen3TTSFlash || outputBound != 0 || promptBound < 1 {
+			return Plan{}, ErrUnknownRateCard
+		}
 	default:
 		return Plan{}, ErrUnknownRateCard
 	}
@@ -333,6 +363,36 @@ func (p Plan) ImagesCost(images int64) (int64, error) {
 		return 0, ErrUnknownRateCard
 	}
 	return checkedMul(images, tier.InputPUSD)
+}
+
+// NewCharactersPlan prices a speech-synthesis reservation by INPUT character
+// count. The count is known exactly before the call (it is the request's own
+// text), so reserve equals settle for a successful synthesis — the same
+// deterministic shape as images, and the reason speech needs no usage feedback
+// from the upstream to close its books.
+//
+// NewCharactersPlan 按**输入**字符数定价语音合成预留。字符数在调用前就精确已知(它就是请求自带的
+// 文本),故合成成功时 reserve == settle——与图像同一种确定性形状,也正因如此语音不需要上游回报
+// usage 就能平账。
+func NewCharactersPlan(provider Provider, model string, characters int64) (Plan, error) {
+	return NewPlan(provider, model, InputCharacters, characters, 0)
+}
+
+// CharactersCost converts an authoritative character count under a frozen speech
+// plan — the ImagesCost twin, kept separate from token Usage so speech
+// accounting cannot be mixed with chat.
+//
+// CharactersCost 在冻结的语音 plan 下换算权威字符数——ImagesCost 的孪生,与 token Usage 刻意
+// 分离,语音账不与 chat 混。
+func (p Plan) CharactersCost(characters int64) (int64, error) {
+	if p.InputClass != InputCharacters || characters < 0 || characters > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(characters)
+	if !ok {
+		return 0, ErrUnknownRateCard
+	}
+	return checkedMul(characters, tier.InputPUSD)
 }
 
 // Cost converts an authoritative cumulative usage snapshot under the frozen

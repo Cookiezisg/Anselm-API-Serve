@@ -60,6 +60,7 @@ const (
 	MaxRatePerMin               int   = 10_000_000
 	MaxDailySublimit            int64 = 1_000_000_000
 	MaxImageDailyLimit          int64 = 100_000
+	MaxSpeechDailyLimit         int64 = 100_000_000
 	MaxInstallPerIPHour         int   = 1_000_000
 	MaxInstallGlobalDailyCap    int64 = 100_000_000
 	MaxInstallPerFPDaily        int64 = 1_000_000
@@ -164,6 +165,19 @@ type Config struct {
 	ImageUpstreamModel  string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
 	ImageDailyLimit     int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
 	DashScopeNativeBase string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
+
+	// Speech synthesis is its own explicit capability (WRK-082 批C), separate from
+	// image generation: an operator may want one and not the other, and they bill in
+	// different units (characters vs images). It shares DASHSCOPE_NATIVE_BASE and the
+	// Qwen credential because DashScope has NO OpenAI-compatible TTS endpoint — the
+	// native multimodal-generation path is the only one that exists (调研实证).
+	// 语音合成是自己的显式能力(批C),与图像生成分开:运营者可能只要其中一个,且两者计费单位
+	// 不同(字符 vs 张)。它与图像共用 DASHSCOPE_NATIVE_BASE 与 Qwen 凭证,因为 DashScope **没有**
+	// OpenAI 兼容的 TTS 端点——原生 multimodal-generation 是唯一存在的那条路(调研实证)。
+	SpeechEnabled    bool   // SPEECH_ENABLED
+	TTSUpstreamModel string // TTS_UPSTREAM_MODEL(exact priced DashScope TTS model id)
+	SpeechDailyLimit int64  // SPEECH_DAILY_LIMIT(per-install per-day characters;0=off)
+	TTSDefaultVoice  string // TTS_DEFAULT_VOICE(used when the request omits voice)
 
 	// Durable media staging is an explicit capability. Keeping it off until its
 	// signing secret and persistent directory are configured prevents a partial
@@ -346,6 +360,21 @@ func (c *Config) ValidateSemantics() error {
 		}
 		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
 			return fmt.Errorf("SEC-2 config: IMAGE_ENABLED requires DASHSCOPE_NATIVE_BASE")
+		}
+	}
+	if c.SpeechEnabled {
+		// Same fail-fast reasoning as images, one capability over. 与图像同款 fail-fast。
+		if len(c.QwenAPIKeys) == 0 {
+			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires DASHSCOPE_API_KEY")
+		}
+		if _, err := billing.NewCharactersPlan(billing.ProviderQwen, c.TTSUpstreamModel, 1); err != nil {
+			return fmt.Errorf("SEC-2 config: TTS_UPSTREAM_MODEL has no exact rate card: %w", err)
+		}
+		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
+			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires DASHSCOPE_NATIVE_BASE")
+		}
+		if strings.TrimSpace(c.TTSDefaultVoice) == "" {
+			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires TTS_DEFAULT_VOICE")
 		}
 	}
 	if c.MediaEnabled {

@@ -33,20 +33,49 @@ var (
 	// simple and avoiding an overlap with an unfinished accounting mutation.
 	ErrMonthlyResetBlocked = errors.New("quota: monthly reset blocked by open reservations")
 	// ErrCategoryDailyExceeded — the per-install per-category daily unit cap
-	// (image count today; speech characters in a later batch) would be exceeded
-	// (gate 2c). The category rides the plan's InputClass; the app layer maps it
-	// to the category-specific wire sentinel.
+	// (image count, speech characters) would be exceeded (gate 2c). It is the
+	// UMBRELLA sentinel: the store always returns a *CategoryDailyExceededError
+	// naming the category, and that value reports Is(ErrCategoryDailyExceeded)
+	// true — so callers who only care "some category is out" keep working, while
+	// the app layer reads the category to pick the wire sentinel.
+	//
+	// ErrCategoryDailyExceeded 是**伞** sentinel:store 恒返带品类名的
+	// *CategoryDailyExceededError,而该值 Is(ErrCategoryDailyExceeded) 为真——只关心
+	// 「某个品类满了」的调用方照常工作,app 层则读品类挑 wire sentinel。
 	ErrCategoryDailyExceeded = errors.New("quota: per-category daily units exhausted")
 )
 
+// CategoryDailyExceededError is the gate-2c denial WITH its category. A denial
+// that cannot say which ledger it came from forces every consumer to guess, and
+// that guess was already wired as a constant once (every category rendering as
+// IMAGE_QUOTA_EXHAUSTED). Carrying the parameter on the error is the Go answer;
+// a second sentinel per category would declare the closed set twice.
+//
+// CategoryDailyExceededError 是**带品类**的 gate-2c 拒绝。一个说不出自己来自哪个账本的拒绝
+// 会逼每个消费方去猜,而这个猜测已经被写死成常量过一次(所有品类都渲成 IMAGE_QUOTA_EXHAUSTED)。
+// 把参数挂在错误上是 Go 的答案;每品类再加一个 sentinel 等于把封闭集声明两遍。
+type CategoryDailyExceededError struct{ Category string }
+
+func (e *CategoryDailyExceededError) Error() string {
+	return "quota: per-category daily units exhausted: " + e.Category
+}
+
+// Is makes every category-specific denial satisfy errors.Is(err, ErrCategoryDailyExceeded).
+//
+// Is 让每个具体品类的拒绝都满足 errors.Is(err, ErrCategoryDailyExceeded)。
+func (e *CategoryDailyExceededError) Is(target error) bool {
+	return target == ErrCategoryDailyExceeded
+}
+
 // Category names the per-category daily unit ledgers (install_category_daily).
 // A closed set: every new member is legislated together with its own Limits
-// field and wire sentinel.
+// field and its app-layer wire mapping.
 //
 // Category 是品类日账本(install_category_daily)的名字。封闭集:每个新成员连同自己的
-// Limits 字段与 wire sentinel 一起立法。
+// Limits 字段与 app 层 wire 映射一起立法。
 const (
-	CategoryImage = "image"
+	CategoryImage  = "image"
+	CategorySpeech = "speech"
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -98,6 +127,7 @@ type Limits struct {
 	GlobalMonthlySpendPUSD int64
 	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
 	ImageDailyLimit        int64 // 0 disables the per-install daily image-count cap (WRK-082 P8: default 10).
+	SpeechDailyLimit       int64 // 0 disables the per-install daily speech-character cap (WRK-082 P8: default 50000).
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller
