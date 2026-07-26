@@ -51,6 +51,62 @@ landed-into:
   (非 secret,入 config.Specs)。
 - 认证/配额/journal:device-proof 逐请求签名、per-install 日限 + 月度钱包双闸、既有轨道零新机制。
 
+## 3.5 批B 施工契约定稿(2026-07-27 读码扇出后;实现照此机械施工)
+
+**config(`domain/config/spec.go` 既有 Spec 机制)**:
+- `IMAGE_ENABLED`(与 `MEDIA_ENABLED` 同 tier;bool,默认 false)
+- `IMAGE_UPSTREAM_MODEL`(TierStartupHard,默认 `qwen-image-2.0`)
+- `IMAGE_DAILY_LIMIT`(TierRuntimeHot,默认 10,0=关)
+- `DASHSCOPE_NATIVE_BASE`(TierStartupHard,默认 `https://dashscope.aliyuncs.com`——multimodal-generation
+  是原生 DashScope API,**不走**既有 compatible-mode 的 `QwenBaseURL`;workspace host 形实测后再定)
+- `IMAGE_UPSTREAM_TIMEOUT_SEC`(默认 120——同步上游连接持有几十秒)
+
+**billing**:`InputImages` 追加进 InputClass 枚举(wire 冻结形增量);模型常量 `QwenImage20`;
+按张 rate card(**价格待实测对账**,先按 P8 工作假设 ¥0.25/张 ≈ $0.035 = 35_000_000_000 pUSD/张,
+注释钉死「上线前对官方价页对账」,主仓代拍 B3);`NewImagesPlan(provider, model, n)` +
+`(Plan).ImagesCost(n)`(镜像 AudioSeconds 对;n=1 时 reserve==settle,确定性成本)。
+
+**quota(代拍 B4:品类日闸一个机制吃图与 TTS 两批)**:
+- 迁移 `0006_install_category_daily.sql`:
+  `install_category_daily(install_id, category, period_day, units, PRIMARY KEY(install_id,category,period_day))`
+- `Limits` + `ImageDailyLimit`;`Reservation` + `CategoryApplied string` + `CategoryUnits int64`
+  (rollback 凭预留时记录反转,不重读 live config——同 `SublimitApplied` 纪律)
+- store.Reserve:`plan.InputClass==InputImages` 时在**同一** BEGIN IMMEDIATE 里
+  `UPDATE ... SET units=units+? WHERE ... AND units+? <= lim.ImageDailyLimit`,
+  拒 → `quota.ErrCategoryDailyExceeded` → 新 apierr `IMAGE_QUOTA_EXHAUSTED`(429)
+
+**app/image(克隆 speech 形)**:ports Authenticator/RateLimiter/Config/Quota/Clock/Metrics +
+Upstream 端口 `Generate(ctx, prompt, size, model) (url string, err error)`;
+Service:Authorize → NewImagesPlan(1) → Reserve → [transport 调 upstream] → 成功 Settle 全额 /
+可证明未计费的拒绝 Rollback;可用性 = `len(QwenAPIKeys)>0 && ImageEnabled`(双半)。
+
+**infra(upstream 侧)**:DashScope 同步 client——
+`POST {DASHSCOPE_NATIVE_BASE}/api/v1/services/aigc/multimodal-generation/generation`,
+body `{model, input:{messages:[{role:"user",content:[{text:prompt}]}]}, parameters:{size,n:1,watermark:false}}`,
+解析 `output.choices[0].message.content[].image` 取 URL;错误归一既有粗粒度枚举、原文不透传;
+key 仅注入 cloned request(既有铁律)。
+
+**transport `business/images/handler.go`**:`POST /v1/images/generations`(proof.Protect);
+请求 `{model?, prompt, size?, n?}`——`n>1` 422 拒(关闭联合类)、prompt 非空且 ≤2000 字符、
+`size` 为 `WxH` 形且总像素 ∈ [512², 2048²](默认 `1024*1024`);
+响应 `{created, data:[{url}]}`;journal/metrics 低基数 label 照 chat 惯例。
+
+**能力面**:`AnselmCapabilities`(version 1 增量字段)+
+`ImageGeneration *GenProfile{Available bool, DailyLimit int64}`——不硬套 token 语义的 RouteProfile;
+老客户端解码器忽略未知字段、老网关缺字段=nil=不可用,滚动兼容自然成立。
+
+**错误码闭集新增**:`IMAGE_UNAVAILABLE`(503)、`IMAGE_QUOTA_EXHAUSTED`(429)——error-codes.md 登记。
+
+**GW-INV 新不变量(施工时按登记册取正式编号)**:
+1. 直通 URL 不含任何已配置 upstream API key(机械测试:URL 串与全部已配 key 逐一取交)——
+   注意 OSS 签名 URL 携带 `OSSAccessKeyId`(OSS 临时访问标识,非 DashScope key),不变量表述必须精确到「网关配置的 key」。
+2. 生成成功即 settle 全额;客户端是否下载与计费无关;歧义结果 full quote settle。
+3. category daily units 预留-回滚对称(凭 Reservation 快照,不重读 live config)。
+
+**测试**:billing(Plan Validate 往返/ImagesCost)、quotastore(category gate 原子 + 回滚反转 +
+月/日/钱包既有门不回归)、app/image service(授权/双半可用性/结算回滚)、handler(校验拒绝/信封)、
+e2e 假上游全链;真上游冒烟待 B2 解锁。
+
 ## 4. 施工序(跟主仓批次走)
 
 1. **批B 第 0 步**:✅ 文档半已完成(2026-07-27,四家官方文档核准——DashScope 同步形/入参
