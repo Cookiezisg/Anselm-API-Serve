@@ -23,7 +23,7 @@ landed-into:
 
 | 端点 | 上游 | 免费档配额(P8) | 计费单位 |
 |---|---|---|---|
-| `POST /v1/images/generations` | DashScope qwen-image(异步任务:提交→轮询→取 URL) | 10 张/天/install | 按张(照 `InputAudioSeconds` 非 token 单位先例) |
+| `POST /v1/images/generations` | DashScope **同步形**(主仓代拍 B1,官方推荐):`POST https://{DASHSCOPE_WORKSPACE_ID}.<region>.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`,qwen-image-2.0 系,直接返 **24h OSS URL**——免任务轮询层;上游连接持有几十秒,该路由单独设宽上游超时 | 10 张/天/install | 按张(照 `InputAudioSeconds` 非 token 单位先例) |
 | `POST /v1/audio/speech` | DashScope qwen3-tts-instruct-flash(HTTP 非实时) | 5 万字符/天/install | 按字符 |
 
 视频**不进免费档**(P8):网关不开视频路由,零改动。
@@ -53,8 +53,9 @@ landed-into:
 
 ## 4. 施工序(跟主仓批次走)
 
-1. **批B 第 0 步(真 key 实证)**:直打 DashScope qwen-image 异步 API,实证任务形/URL 性质/时延,
-   证据回填本页 §3。
+1. **批B 第 0 步**:✅ 文档半已完成(2026-07-27,四家官方文档核准——DashScope 同步形/入参
+   messages 形/`parameters.size,n`/2.0 系 512²–2048² 总像素/URL 24h);⏸ 真 key 线缆半待主仓
+   代拍 B2 解锁(SSH 被权限闸拒、本地无 key),解锁后真出一张验 URL 无 key/时延/journal。
 2. 批B:images 端点(domain → app → infra → transport → 测试 → ref 文档,GW-INV 验收)。
 3. 批C:speech 端点(同模子)。
 4. landed:契约入 references 四索引、不变量正式编号、URL 直通落本仓 ADR、本页填 landed-into。
