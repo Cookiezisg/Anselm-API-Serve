@@ -24,13 +24,16 @@ type RouteProfile struct {
 	Available   bool  `json:"available"`
 }
 
-// GenProfile publishes one generation capability (image today; speech later).
-// It deliberately does NOT reuse RouteProfile: token limits are meaningless for
-// per-artifact generation — what a client needs is availability and the daily
-// per-install cap (0 = uncapped).
+// GenProfile publishes one generation capability. It deliberately does NOT
+// reuse RouteProfile: token limits are meaningless for per-artifact generation —
+// what a client needs is availability and the daily per-install cap (0 =
+// uncapped). The cap's UNIT is the capability's own (images for image,
+// characters for speech), which is why each capability carries its own profile
+// instead of sharing one number.
 //
-// GenProfile 发布一项生成能力(今图像;后语音)。刻意不复用 RouteProfile:token 上限对按件
-// 生成无意义——客户端要的是可用性与日 per-install 上限(0=不设)。
+// GenProfile 发布一项生成能力。刻意不复用 RouteProfile:token 上限对按件生成无意义——客户端要的
+// 是可用性与日 per-install 上限(0=不设)。上限的**单位**随能力本身(图像按张、语音按字符),这
+// 正是每项能力各带一份 profile、而非共用一个数的原因。
 type GenProfile struct {
 	Available  bool  `json:"available"`
 	DailyLimit int64 `json:"daily_limit"`
@@ -46,11 +49,12 @@ type GenProfile struct {
 // ImageGeneration 为增量字段(version 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 nil=不可用
 // ——双向滚动兼容。
 type AnselmCapabilities struct {
-	Version         int          `json:"version"`
-	Routing         string       `json:"routing"`
-	Text            RouteProfile `json:"text"`
-	Multimodal      RouteProfile `json:"multimodal"`
-	ImageGeneration *GenProfile  `json:"image_generation,omitempty"`
+	Version          int          `json:"version"`
+	Routing          string       `json:"routing"`
+	Text             RouteProfile `json:"text"`
+	Multimodal       RouteProfile `json:"multimodal"`
+	ImageGeneration  *GenProfile  `json:"image_generation,omitempty"`
+	SpeechGeneration *GenProfile  `json:"speech_generation,omitempty"`
 }
 
 // ListEnvelope is the OpenAI list wrapper: {"object":"list","data":[...]}.

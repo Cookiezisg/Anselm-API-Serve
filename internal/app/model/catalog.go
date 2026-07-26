@@ -68,6 +68,15 @@ func (c *Catalog) List() model.ListEnvelope {
 					Available:  cfg.ImageEnabled && len(cfg.QwenAPIKeys) > 0,
 					DailyLimit: cfg.ImageDailyLimit,
 				},
+				// Speech synthesis, same whole-path rule and its OWN switch: an operator may
+				// run one capability without the other, so a client must not infer either
+				// from the other (WRK-082 批C). DailyLimit here is CHARACTERS.
+				// 语音合成同守整条路法则、且是**自己的**开关:运营者可能只开其中一个,客户端不得
+				// 从一个推另一个(批C)。此处 DailyLimit 的单位是**字符**。
+				SpeechGeneration: &model.GenProfile{
+					Available:  cfg.SpeechEnabled && len(cfg.QwenAPIKeys) > 0,
+					DailyLimit: cfg.SpeechDailyLimit,
+				},
 			},
 		})
 	}

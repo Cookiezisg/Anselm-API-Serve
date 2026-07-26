@@ -26,6 +26,7 @@ import (
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
+	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
@@ -277,6 +278,20 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:    systemClock{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
+	// Speech synthesis (WRK-082 批C): the image twin, same key and same native
+	// origin, its own capability switch. Also unconditional — Available() answers
+	// from live config (capability off → TTS_UNAVAILABLE).
+	// 语音合成(批C):图像的孪生件,同一把 key、同一个原生 origin,自己的能力开关。同样无条件
+	// 构造——可用性由 Available() 按 live 配置回答(能力关 → TTS_UNAVAILABLE)。
+	ttsSvc := apptts.New(apptts.Deps{
+		Auth:     installSvc,
+		Quota:    quotaSvc,
+		RL:       rl,
+		Config:   cfgP,
+		Upstream: upstream.NewTTSGen(effective.DashScopeNativeBase, imageKey),
+		Clock:    systemClock{},
+		Metrics:  chatMetrics{m: mx, inflight: inflight},
+	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
 	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
@@ -297,6 +312,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Models:             modelCat,
 		Speech:             speechSvc,
 		Images:             imageSvc,
+		TTS:                ttsSvc,
 		Media:              mediaSvc,
 		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
 		Mx:                 mx,

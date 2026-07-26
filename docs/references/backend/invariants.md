@@ -83,6 +83,7 @@ audience: [human, ai]
 | GW-INV-51 | 直通给客户端的上游产物 URL 不含任何**网关配置的** upstream API key(OSS 签名参数 `OSSAccessKeyId` 是上游临时访问标识、非网关凭证,不在此列);机械测试:URL 串与全部已配 key 逐一取交为空 | key 随 URL 出端 = 凭证泄漏,免费档全线沦陷 |
 | GW-INV-52 | 品类日账本**逐品类独立**:`install_category_daily` 按 `(install, category, day)` 分行,图像按张、语音按**输入字符**各记各账;任一品类耗尽绝不影响另一品类;`planCategory`/`categoryCap` 是封闭 switch,新品类连同自己的 `Limits` 字段与 wire 码一起立法 | 共用计数器 = 图像用尽把语音一起关掉(反之亦然),用户被告知一个自己根本没碰过的能力没了 |
 | GW-INV-53 | 品类日闸的拒绝**自带品类名**(`*quota.CategoryDailyExceededError`,并满足 `errors.Is(ErrCategoryDailyExceeded)`);app 层按品类映射 wire 码(image→`IMAGE_QUOTA_EXHAUSTED` / speech→`TTS_QUOTA_EXHAUSTED`),未知品类**不兜底**、原样上抛 | 光有伞 sentinel 会逼 app 层拿某一个品类的码代表全部(已实际发生过);兜底 default 则会对着用户没碰过的能力说「明天再试」 |
+| GW-INV-54 | 语音合成按**输入字符数**(rune,非 byte)预留并 settle——字符数在调用前精确已知,故 reserve==settle 且无需上游 usage 回报;`voice` 缺席时由 `TTS_DEFAULT_VOICE` 填入而非空串上线缆;直通的产物 URL 归一到 `https`(上游可能返 `http` 的 OSS 结果 URL,而本系统两端都拒绝明文取产物;OSS 预签名覆盖 path/query 不覆盖 scheme——真钱冒烟里出 403 即此假设被推翻) | 按 byte 计费把每条中文请求静默乘三;空 voice 上线缆 = 上游 400;明文产物 URL = 桌面下载器按铁律拒收,能力在真机上等于不存在 |
 
 ## E. 跨切配置 / 可观测
 
