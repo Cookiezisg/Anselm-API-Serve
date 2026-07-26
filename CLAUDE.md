@@ -34,7 +34,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ## 4. 工作流(切片纪律)
 
 地基优先的 Clean Arch 重写**已完成**并落 `main`;后续每处改动仍按同一纪律走:`domain → app → infra → transport → 测试 → ref 文档`，GW-INV 当验收。
-- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 是重写期的抽取契约、现已 landed/superseded，作历史参考非现行准绳。capability/provider/pUSD 主决策见 ADR-0017，上下文准入与 route profile 由 ADR-0016 定向补充；ADR-001 raw-token 账本及 ADR-005/006 被取代部分只是历史。
+- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 中重写期抽取契约已 landed/superseded 作历史参考,**现行进行中工单**是 [`working/multimodal-generation.md`](docs/working/multimodal-generation.md)(生成能力:图/TTS + URL 直通,主战役 = 主仓 WRK-082)。capability/provider/pUSD 主决策见 ADR-0017，上下文准入与 route profile 由 ADR-0016 定向补充；ADR-001 raw-token 账本及 ADR-005/006 被取代部分只是历史。
 
 ## 5. 门禁命令
 
