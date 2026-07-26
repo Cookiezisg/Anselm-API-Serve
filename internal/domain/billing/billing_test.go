@@ -269,3 +269,43 @@ func TestCostDirectlyRejectsEveryNegativeUsageDimension(t *testing.T) {
 		})
 	}
 }
+
+// TestImagesPlanAndCost pins the image rate-card pair: a frozen per-image plan whose reserve
+// equals its settle for the same count (deterministic pricing), the Validate roundtrip that the
+// persistence boundary relies on, and the closed-set rejections (wrong provider/model, zero
+// images, out-of-card counts, cross-class cost calls).
+func TestImagesPlanAndCost(t *testing.T) {
+	p, err := NewImagesPlan(ProviderQwen, QwenImage20, 1)
+	if err != nil {
+		t.Fatalf("images plan: %v", err)
+	}
+	if p.InputClass != InputImages || p.ReservedPUSD != 35_000_000_000 {
+		t.Fatalf("plan = class %d reserved %d, want images/35e9", p.InputClass, p.ReservedPUSD)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
+	}
+	cost, err := p.ImagesCost(1)
+	if err != nil || cost != p.ReservedPUSD {
+		t.Fatalf("ImagesCost(1) = %d,%v — want reserve==settle", cost, err)
+	}
+	if _, err := NewImagesPlan(ProviderDeepSeek, DeepSeekV4Flash, 1); err == nil {
+		t.Fatal("images plan on a text card must fail closed")
+	}
+	if _, err := NewImagesPlan(ProviderQwen, QwenImage20, 0); err == nil {
+		t.Fatal("zero-image plan must fail closed")
+	}
+	if _, err := NewImagesPlan(ProviderQwen, QwenImage20, QwenImageInputLimit+1); err == nil {
+		t.Fatal("over-card image count must fail closed")
+	}
+	if _, err := p.ImagesCost(QwenImageInputLimit + 1); err == nil {
+		t.Fatal("over-card ImagesCost must fail closed")
+	}
+	chat, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 10, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chat.ImagesCost(1); err == nil {
+		t.Fatal("ImagesCost on a token plan must fail closed (accounts must not mix)")
+	}
+}

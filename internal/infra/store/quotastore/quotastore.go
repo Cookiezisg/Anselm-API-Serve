@@ -100,6 +100,38 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 			r.SublimitApplied = true
 		}
 
+		// Gate 2c (WRK-082 批B): the per-category daily unit ledger. An image plan consumes
+		// `units` = image count against ImageDailyLimit inside this SAME transaction; a disabled
+		// limit (0) still records consumption so enabling the cap later starts from truth.
+		// 闸 2c(批B):品类日 units 账本。图像 plan 在**同一**事务里按张数消耗 units、对
+		// ImageDailyLimit 把关;限额关闭(0)时仍记消耗,日后开闸从真相起步。
+		if category, units := planCategory(plan); category != "" {
+			if _, err := tx.Exec(ctx,
+				`INSERT OR IGNORE INTO install_category_daily(install_id, category, period_day, units)
+				 VALUES (?, ?, ?, 0)`, installID, category, p.Day); err != nil {
+				return fmt.Errorf("quotastore: category-day upsert: %w", err)
+			}
+			dayCap := categoryCap(category, lim)
+			if dayCap > 0 {
+				if err := execOne(ctx, tx, "category daily reserve",
+					`UPDATE install_category_daily SET units = units + ?
+					   WHERE install_id = ? AND category = ? AND period_day = ? AND units + ? <= ?`,
+					units, installID, category, p.Day, units, dayCap); err != nil {
+					if isConditionalMiss(err) {
+						return quota.ErrCategoryDailyExceeded
+					}
+					return err
+				}
+			} else if err := execOne(ctx, tx, "category daily record",
+				`UPDATE install_category_daily SET units = units + ?
+				   WHERE install_id = ? AND category = ? AND period_day = ? AND units <= ?`,
+				units, installID, category, p.Day, int64(math.MaxInt64)-units); err != nil {
+				return err
+			}
+			r.CategoryApplied = category
+			r.CategoryUnits = units
+		}
+
 		if _, err := tx.Exec(ctx,
 			`INSERT OR IGNORE INTO provider_spend_daily(provider, period_day, spend_pusd, requests)
 			 VALUES (?, ?, 0, 0)`, string(plan.Provider), p.Day); err != nil {
@@ -149,10 +181,11 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 			`INSERT INTO spend_ledger(
 			   request_id, install_id, provider, model, rate_card_id,
 			   period_month, period_day, reserved_pusd, charged_pusd, state,
-			   sublimit_applied, created_at, terminal_at
-			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)`,
+			   sublimit_applied, category, category_units, created_at, terminal_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)`,
 			r.RequestID, installID, string(plan.Provider), plan.Model, plan.RateCardID,
-			p.Month, p.Day, plan.ReservedPUSD, stateOpen, boolInt(r.SublimitApplied), time.Now().UTC()); err != nil {
+			p.Month, p.Day, plan.ReservedPUSD, stateOpen, boolInt(r.SublimitApplied),
+			r.CategoryApplied, r.CategoryUnits, time.Now().UTC()); err != nil {
 			return fmt.Errorf("quotastore: spend ledger insert: %w", err)
 		}
 		return nil
@@ -173,6 +206,33 @@ func validatePlan(plan billing.Plan) error {
 	return nil
 }
 
+// planCategory maps a plan onto its per-category daily unit demand ("" = the plan carries no
+// category ledger). The mapping is a closed switch on InputClass — a new category is legislated
+// here together with its Limits field (categoryCap) and wire sentinel.
+//
+// planCategory 把 plan 映到其品类日 units 需求(""=无品类账)。按 InputClass 的封闭 switch——
+// 新品类连同 Limits 字段(categoryCap)与 wire sentinel 一起在此立法。
+func planCategory(plan billing.Plan) (category string, units int64) {
+	switch plan.InputClass {
+	case billing.InputImages:
+		return quota.CategoryImage, plan.PromptQuote
+	default:
+		return "", 0
+	}
+}
+
+// categoryCap selects the Limits field that caps a category (0 = disabled).
+//
+// categoryCap 选出封顶某品类的 Limits 字段(0=关闭)。
+func categoryCap(category string, lim quota.Limits) int64 {
+	switch category {
+	case quota.CategoryImage:
+		return lim.ImageDailyLimit
+	default:
+		return 0
+	}
+}
+
 // Settle commits the authoritative pUSD charge. A top-up is deliberately not
 // capped: the provider has already spent the money, so the ledger must record
 // truth and subsequent reserves will observe an exhausted/overdrawn wallet.
@@ -191,10 +251,11 @@ func (s *Store) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int
 			  WHERE request_id = ? AND state = ?
 			    AND install_id = ? AND provider = ? AND model = ? AND rate_card_id = ?
 			    AND period_month = ? AND period_day = ? AND reserved_pusd = ?
-			    AND sublimit_applied = ?`,
+			    AND sublimit_applied = ? AND category = ? AND category_units = ?`,
 			stateSettled, actualPUSD, time.Now().UTC(), r.RequestID, stateOpen,
 			r.InstallID, string(r.Plan.Provider), r.Plan.Model, r.Plan.RateCardID,
-			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied))
+			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied),
+			r.CategoryApplied, r.CategoryUnits)
 		if err != nil {
 			return fmt.Errorf("quotastore: ledger settle: %w", err)
 		}
@@ -223,10 +284,11 @@ func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
 			  WHERE request_id = ? AND state = ?
 			    AND install_id = ? AND provider = ? AND model = ? AND rate_card_id = ?
 			    AND period_month = ? AND period_day = ? AND reserved_pusd = ?
-			    AND sublimit_applied = ?`,
+			    AND sublimit_applied = ? AND category = ? AND category_units = ?`,
 			stateRolledBack, time.Now().UTC(), r.RequestID, stateOpen,
 			r.InstallID, string(r.Plan.Provider), r.Plan.Model, r.Plan.RateCardID,
-			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied))
+			r.Period.Month, r.Period.Day, r.ReservedPUSD, boolInt(r.SublimitApplied),
+			r.CategoryApplied, r.CategoryUnits)
 		if err != nil {
 			return fmt.Errorf("quotastore: ledger rollback: %w", err)
 		}
@@ -252,6 +314,17 @@ func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
 			  WHERE install_id = ? AND period_day = ? AND spend_pusd >= ?`,
 			r.ReservedPUSD, r.InstallID, r.Period.Day, r.ReservedPUSD); err != nil {
 			return err
+		}
+		// Reverse exactly the recorded category units (the SublimitApplied discipline): a missing
+		// row or underflow is accounting corruption and aborts the whole rollback transaction.
+		// 恰按记录反转品类 units(SublimitApplied 纪律):行缺失或下溢即账目损坏,整个回滚事务中止。
+		if r.CategoryApplied != "" && r.CategoryUnits > 0 {
+			if err := execOne(ctx, tx, "category rollback",
+				`UPDATE install_category_daily SET units = units - ?
+				  WHERE install_id = ? AND category = ? AND period_day = ? AND units >= ?`,
+				r.CategoryUnits, r.InstallID, r.CategoryApplied, r.Period.Day, r.CategoryUnits); err != nil {
+				return err
+			}
 		}
 		if err := execOne(ctx, tx, "provider rollback",
 			`UPDATE provider_spend_daily

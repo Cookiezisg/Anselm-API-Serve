@@ -180,6 +180,15 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.DailySublimit, 10) }},
+		{Key: "IMAGE_DAILY_LIMIT", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxImageDailyLimit,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("IMAGE_DAILY_LIMIT", raw, 0, MaxImageDailyLimit)
+				if err == nil {
+					c.ImageDailyLimit = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.ImageDailyLimit, 10) }},
 		{Key: "INSTALL_PER_IP_HOUR", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: int64(MaxInstallPerIPHour),
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt("INSTALL_PER_IP_HOUR", raw, 0, MaxInstallPerIPHour)
@@ -313,6 +322,9 @@ func Specs() []Spec {
 		// never hot-reload — they gate the PERF-2 worst-case RSS self-check).
 		{Key: "TEXT_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TextUpstreamModel }},
 		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
+		{Key: "IMAGE_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.ImageEnabled) }},
+		{Key: "IMAGE_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageUpstreamModel }},
+		{Key: "DASHSCOPE_NATIVE_BASE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DashScopeNativeBase }},
 		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
 		{Key: "DASHSCOPE_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.QwenBaseURL }},
 		{Key: "GOMEMLIMIT_MIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.GoMemLimitMiB) }},

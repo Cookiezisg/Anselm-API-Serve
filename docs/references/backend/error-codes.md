@@ -42,6 +42,8 @@ audience: [human, ai]
 | `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
 | `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
 | `MEDIA_UNAVAILABLE` | 503 | durable media upload is not enabled on this deployment | `MEDIA_ENABLED=false`；同一 attachment 重试无效，operator 必须完成 staging/secret 配置 |
+| `IMAGE_UNAVAILABLE` | **503** | image generation is not available on this deployment | `IMAGE_ENABLED=false` 或无 Qwen 凭证；重试无效,区别于日额度 |
+| `IMAGE_QUOTA_EXHAUSTED` | 429 | daily image generation quota reached, try again tomorrow | 品类日闸(`IMAGE_DAILY_LIMIT`)拒;区别于 RATE_LIMITED(节流)与 QUOTA_EXHAUSTED(月请求额) |
 | `MEDIA_UPLOAD_INVALID` | 400 | invalid media upload request | create JSON/sha/MIME/长度、offset、chunk/body 形状非法 |
 | `MEDIA_UPLOAD_NOT_FOUND` | 404 | media upload was not found | 未知或非本 install 的 upload；故意不暴露存在性 |
 | `MEDIA_UPLOAD_CONFLICT` | 409 | media upload is not writable in its current state | stale offset、完成前字节未满、已完成/已过期/replay |

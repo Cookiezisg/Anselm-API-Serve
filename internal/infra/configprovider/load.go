@@ -73,6 +73,12 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.PublicModelID = g.str("PUBLIC_MODEL_ID", "anselm-auto")
 	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
 	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
+	c.ImageUpstreamModel = g.str("IMAGE_UPSTREAM_MODEL", billing.QwenImage20)
+	// The image route calls the NATIVE DashScope API (multimodal-generation), which lives on a
+	// different origin than the OpenAI compatible-mode QwenBaseURL — never derive one from the other.
+	// 图像路由打**原生** DashScope API(multimodal-generation),与 compatible-mode 的 QwenBaseURL
+	// 不同 origin——绝不互相推导。
+	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", "https://dashscope.aliyuncs.com")
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
@@ -97,6 +103,11 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// It defaults off so an existing gateway cannot accidentally become a file
 	// ingress before its persistent volume and secret are installed.
 	c.MediaEnabled = g.boolean("MEDIA_ENABLED", false)
+	// Image generation defaults off (a capability, not a birthright); the daily cap defaults to
+	// the WRK-082 P8 product number so enabling the capability alone ships the intended budget.
+	// 图像生成默认关(能力非天赋);日限默认取 P8 产品数,单开能力即得预期预算。
+	c.ImageEnabled = g.boolean("IMAGE_ENABLED", false)
+	c.ImageDailyLimit = g.boundedInt64("IMAGE_DAILY_LIMIT", 10, 0, config.MaxImageDailyLimit)
 	c.MediaUploadMaxBytes = g.boundedInt64("MEDIA_UPLOAD_MAX_BYTES", 100*1024*1024, 1, config.MaxMediaUploadBytes)
 	defaultChunkBytes := min(int64(4*1024*1024), c.MaxBodyBytes)
 	c.MediaChunkMaxBytes = g.boundedInt64("MEDIA_CHUNK_MAX_BYTES", defaultChunkBytes, 1, c.MaxBodyBytes)

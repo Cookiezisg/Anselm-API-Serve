@@ -110,6 +110,8 @@ audience: [human, ai]
 | `charged_pusd` | INTEGER | nullable CHECK ≥0；settle 可大于 reserved（truthful top-up） |
 | `state` | TEXT | NOT NULL CHECK IN (`open`,`settled`,`rolled_back`,`orphaned`) |
 | `sublimit_applied` | INTEGER | NOT NULL DEFAULT 0 CHECK IN (0,1) |
+| `category` | TEXT | NOT NULL DEFAULT ''；品类日账本归属(`image`;空=非品类请求)——0006 |
+| `category_units` | INTEGER | NOT NULL DEFAULT 0；该预留消耗的品类 units(图=张数)——0006 |
 | `created_at` | DATETIME | NOT NULL |
 | `terminal_at` | DATETIME | nullable |
 

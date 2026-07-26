@@ -59,6 +59,7 @@ const (
 	MaxNGlobalConcurrency       int   = 100_000
 	MaxRatePerMin               int   = 10_000_000
 	MaxDailySublimit            int64 = 1_000_000_000
+	MaxImageDailyLimit          int64 = 100_000
 	MaxInstallPerIPHour         int   = 1_000_000
 	MaxInstallGlobalDailyCap    int64 = 100_000_000
 	MaxInstallPerFPDaily        int64 = 1_000_000
@@ -155,6 +156,14 @@ type Config struct {
 	// REL-6 磁盘满 / WAL 膨胀防护:数据盘剩余低于阈值进只读降级。
 	DiskMinMB      int // DISK_MIN_MB(数据盘剩余绝对下限 MiB)
 	DiskMinPercent int // DISK_MIN_PERCENT(剩余百分比下限;0=禁用百分比判定)
+
+	// Image generation is an explicit capability (WRK-082 批B): off until the
+	// operator enables it against a priced upstream model. The daily limit is the
+	// per-install image-count cap (P8: default 10; 0 disables the gate).
+	ImageEnabled        bool   // IMAGE_ENABLED
+	ImageUpstreamModel  string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
+	ImageDailyLimit     int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
+	DashScopeNativeBase string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
 
 	// Durable media staging is an explicit capability. Keeping it off until its
 	// signing secret and persistent directory are configured prevents a partial
@@ -323,6 +332,21 @@ func (c *Config) ValidateSemantics() error {
 	}
 	if c.MaxMediaDecodedBytes < 1 || c.MaxMediaDecodedBytes > c.MaxBodyBytes {
 		return fmt.Errorf("SEC-2 config: MAX_MEDIA_DECODED_BYTES must be > 0 and <= MAX_BODY_BYTES")
+	}
+	if c.ImageEnabled {
+		// Image generation is a fail-fast capability: enabling it without a Qwen credential, a
+		// priced model, or a native-API origin would produce a route that can only 503 at runtime.
+		// 图像生成是 fail-fast 能力:开着却没 Qwen key、没定价模型、没原生 API origin,等于造一条
+		// 只能在运行时 503 的路由。
+		if len(c.QwenAPIKeys) == 0 {
+			return fmt.Errorf("SEC-2 config: IMAGE_ENABLED requires DASHSCOPE_API_KEY")
+		}
+		if _, err := billing.NewImagesPlan(billing.ProviderQwen, c.ImageUpstreamModel, 1); err != nil {
+			return fmt.Errorf("SEC-2 config: IMAGE_UPSTREAM_MODEL has no exact rate card: %w", err)
+		}
+		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
+			return fmt.Errorf("SEC-2 config: IMAGE_ENABLED requires DASHSCOPE_NATIVE_BASE")
+		}
 	}
 	if c.MediaEnabled {
 		if strings.TrimSpace(c.MediaStagingRoot) == "" {

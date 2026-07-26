@@ -59,8 +59,14 @@ func newTestStore(t *testing.T) *Store {
 			charged_pusd INTEGER CHECK(charged_pusd >= 0),
 			state TEXT NOT NULL CHECK(state IN ('open','settled','rolled_back','orphaned')),
 			sublimit_applied INTEGER NOT NULL CHECK(sublimit_applied IN (0,1)),
+			category TEXT NOT NULL DEFAULT '',
+			category_units INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL, terminal_at DATETIME)`,
 		`CREATE INDEX idx_spend_ledger_open ON spend_ledger(state, created_at)`,
+		`CREATE TABLE install_category_daily (
+			install_id TEXT NOT NULL, category TEXT NOT NULL, period_day TEXT NOT NULL,
+			units INTEGER NOT NULL DEFAULT 0 CHECK(units >= 0),
+			PRIMARY KEY(install_id, category, period_day))`,
 	}
 	for _, ddl := range schema {
 		if _, err := w.Exec(ddl); err != nil {
@@ -619,5 +625,83 @@ func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.
 	}
 	if got := readMonth(t, s, "ins_open", testPeriod().Month); got != 0 {
 		t.Fatalf("fresh rollback count = %d, want 0", got)
+	}
+}
+
+// imagePlan builds a frozen one-image plan (the only category plan today).
+func imagePlan(t *testing.T) billing.Plan {
+	t.Helper()
+	p, err := billing.NewImagesPlan(billing.ProviderQwen, billing.QwenImage20, 1)
+	if err != nil {
+		t.Fatalf("images plan: %v", err)
+	}
+	return p
+}
+
+// TestReserve_ImageCategoryDailyGate proves gate 2c: image reservations consume the per-install
+// per-day image units inside the same transaction, deny with the typed sentinel at the cap, and
+// leave non-category plans entirely unaffected.
+func TestReserve_ImageCategoryDailyGate(t *testing.T) {
+	s := newTestStore(t)
+	lim := limits()
+	lim.ImageDailyLimit = 2
+
+	r1 := reserve(t, s, "ins_a", imagePlan(t), lim)
+	if r1.CategoryApplied != quota.CategoryImage || r1.CategoryUnits != 1 {
+		t.Fatalf("reservation category = %q/%d, want image/1", r1.CategoryApplied, r1.CategoryUnits)
+	}
+	reserve(t, s, "ins_a", imagePlan(t), lim)
+
+	if _, err := s.Reserve(context.Background(), "ins_a", imagePlan(t), testPeriod(), lim); !errors.Is(err, quota.ErrCategoryDailyExceeded) {
+		t.Fatalf("third image reserve err = %v, want ErrCategoryDailyExceeded", err)
+	}
+	// A different install has its own ledger; a chat plan on the capped install is untouched.
+	reserve(t, s, "ins_b", imagePlan(t), lim)
+	chat := reserve(t, s, "ins_a", mustPlan(t, billing.ProviderDeepSeek, 10, 10), lim)
+	if chat.CategoryApplied != "" || chat.CategoryUnits != 0 {
+		t.Fatalf("chat reservation carries category %q/%d, want none", chat.CategoryApplied, chat.CategoryUnits)
+	}
+}
+
+// TestRollback_ReversesCategoryUnits proves the recorded-units reversal: after a rollback the
+// freed unit is reservable again, and the reversal never re-reads live config (the cap passed at
+// rollback time is irrelevant — the Reservation snapshot rules).
+func TestRollback_ReversesCategoryUnits(t *testing.T) {
+	s := newTestStore(t)
+	lim := limits()
+	lim.ImageDailyLimit = 1
+
+	r := reserve(t, s, "ins_a", imagePlan(t), lim)
+	if _, err := s.Reserve(context.Background(), "ins_a", imagePlan(t), testPeriod(), lim); !errors.Is(err, quota.ErrCategoryDailyExceeded) {
+		t.Fatalf("cap not enforced before rollback: %v", err)
+	}
+	if err := s.Rollback(context.Background(), r); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	reserve(t, s, "ins_a", imagePlan(t), lim) // the freed unit is available again
+}
+
+// TestReserve_CategoryRecordsWhenCapDisabled proves a disabled cap (0) still RECORDS consumption:
+// enabling the cap later starts from the truthful count instead of a blank ledger.
+func TestReserve_CategoryRecordsWhenCapDisabled(t *testing.T) {
+	s := newTestStore(t)
+	lim := limits() // ImageDailyLimit zero-value = disabled
+
+	reserve(t, s, "ins_a", imagePlan(t), lim)
+	reserve(t, s, "ins_a", imagePlan(t), lim)
+
+	var units int64
+	row := s.reader.QueryRow(context.Background(),
+		`SELECT units FROM install_category_daily WHERE install_id='ins_a' AND category='image'`)
+	if err := row.Scan(&units); err != nil {
+		t.Fatalf("scan units: %v", err)
+	}
+	if units != 2 {
+		t.Fatalf("recorded units = %d, want 2 despite disabled cap", units)
+	}
+
+	lim.ImageDailyLimit = 2 // enabling now must deny immediately — history counts
+	if _, err := s.Reserve(context.Background(), "ins_a", imagePlan(t), testPeriod(), lim); !errors.Is(err, quota.ErrCategoryDailyExceeded) {
+		t.Fatalf("post-enable reserve err = %v, want ErrCategoryDailyExceeded", err)
 	}
 }

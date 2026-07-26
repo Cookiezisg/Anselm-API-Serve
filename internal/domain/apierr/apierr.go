@@ -118,6 +118,15 @@ var (
 	// configured on this gateway. It is not a malformed attachment and retrying
 	// the same bytes cannot repair it.
 	ErrMediaUnavailable = NewError(statusServiceUnavailable, "MEDIA_UNAVAILABLE", "durable media upload is not enabled on this deployment")
+	// ErrImageUnavailable — image generation is not available on this deployment
+	// (IMAGE_ENABLED off or no upstream credential). Distinct from a quota denial:
+	// retrying tomorrow cannot repair a disabled capability.
+	ErrImageUnavailable = NewError(statusServiceUnavailable, "IMAGE_UNAVAILABLE", "image generation is not available on this deployment")
+	// ErrImageQuotaExhausted — the per-install daily image-generation cap is
+	// reached (WRK-082 P8). Distinct from RATE_LIMITED (a pacing denial) and from
+	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer
+	// "try again tomorrow", not back off and retry.
+	ErrImageQuotaExhausted = NewError(statusTooManyRequests, "IMAGE_QUOTA_EXHAUSTED", "daily image generation quota reached, try again tomorrow")
 	// Media upload failures intentionally distinguish client-fixable lifecycle
 	// mistakes from a verified object whose bytes/digest do not match.
 	ErrMediaUploadInvalid   = NewError(statusBadRequest, "MEDIA_UPLOAD_INVALID", "invalid media upload request")

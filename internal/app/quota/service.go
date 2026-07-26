@@ -87,6 +87,11 @@ func mapReserveErr(err error) error {
 		return apierr.ErrRateLimited
 	case errors.Is(err, quota.ErrBudgetExceeded):
 		return apierr.ErrBudgetExhausted
+	case errors.Is(err, quota.ErrCategoryDailyExceeded):
+		// Today the image ledger is the only category (closed set); a later
+		// category maps its own sentinel here alongside its Limits field.
+		// 今天品类账本仅图像一员(封闭集);后续品类连同 Limits 字段在此映射自己的 sentinel。
+		return apierr.ErrImageQuotaExhausted
 	default:
 		return err
 	}

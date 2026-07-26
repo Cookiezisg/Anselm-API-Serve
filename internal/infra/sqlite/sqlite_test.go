@@ -94,8 +94,8 @@ func TestQwenMigrationCreatesCleanProviderAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(migs) != 5 {
-		t.Fatalf("migration count=%d want 5", len(migs))
+	if len(migs) != 6 {
+		t.Fatalf("migration count=%d want 6", len(migs))
 	}
 	for _, migration := range migs {
 		if err := applyOne(ctx, w, migration); err != nil {

@@ -32,6 +32,21 @@ var (
 	// maintenance operation waits for all settlements, keeping its boundary
 	// simple and avoiding an overlap with an unfinished accounting mutation.
 	ErrMonthlyResetBlocked = errors.New("quota: monthly reset blocked by open reservations")
+	// ErrCategoryDailyExceeded — the per-install per-category daily unit cap
+	// (image count today; speech characters in a later batch) would be exceeded
+	// (gate 2c). The category rides the plan's InputClass; the app layer maps it
+	// to the category-specific wire sentinel.
+	ErrCategoryDailyExceeded = errors.New("quota: per-category daily units exhausted")
+)
+
+// Category names the per-category daily unit ledgers (install_category_daily).
+// A closed set: every new member is legislated together with its own Limits
+// field and wire sentinel.
+//
+// Category 是品类日账本(install_category_daily)的名字。封闭集:每个新成员连同自己的
+// Limits 字段与 wire sentinel 一起立法。
+const (
+	CategoryImage = "image"
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -60,6 +75,16 @@ type Reservation struct {
 	// reserve and rollback can never make rollback reverse a count it never took
 	// (or skip one it did). Same entry-snapshot discipline as Period.
 	SublimitApplied bool
+
+	// CategoryApplied / CategoryUnits record the per-category daily units this
+	// reservation actually consumed ("" / 0 = none). Rollback reverses exactly
+	// these recorded units — the SublimitApplied discipline extended to the
+	// category ledger: never re-read live config to decide what to reverse.
+	//
+	// CategoryApplied / CategoryUnits 记录本次预留真实消耗的品类日 units(""/0=无)。
+	// rollback 恰按记录反转——SublimitApplied 纪律延伸到品类账本:绝不重读 live 配置决定反转量。
+	CategoryApplied string
+	CategoryUnits   int64
 }
 
 // Limits is the consistency snapshot of the live runtime guardrails a single
@@ -72,6 +97,7 @@ type Limits struct {
 	MonthlyQuota           int64
 	GlobalMonthlySpendPUSD int64
 	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
+	ImageDailyLimit        int64 // 0 disables the per-install daily image-count cap (WRK-082 P8: default 10).
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller

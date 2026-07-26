@@ -60,6 +60,7 @@ func (q quotaCfgSource) Limits() appquota.Limits {
 		MonthlyQuota:           c.MonthlyQuota,
 		GlobalMonthlySpendPUSD: c.GlobalMonthlySpendPUSD,
 		DailySublimit:          c.DailySublimit,
+		ImageDailyLimit:        c.ImageDailyLimit,
 	}
 }
 

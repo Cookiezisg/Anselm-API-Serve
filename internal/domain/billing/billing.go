@@ -26,6 +26,7 @@ const (
 	DeepSeekV4Flash       = "deepseek-v4-flash"
 	Qwen37Plus            = "qwen3.7-plus"
 	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
+	QwenImage20           = "qwen-image-2.0"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
@@ -34,6 +35,11 @@ const (
 	Qwen37OutputLimit     = int64(65_536)
 	QwenASRInputLimit     = int64(120) // seconds; bounded by the speech WebSocket session cap.
 	QwenASROutputLimit    = int64(0)
+	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1
+	// (WRK-082 P12); the small headroom only bounds the card, it does not widen the wire.
+	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1(P12);小余量只界卡、不放宽线缆。
+	QwenImageInputLimit   = int64(6)
+	QwenImageOutputLimit  = int64(0)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -49,12 +55,14 @@ func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 
 // InputClass is retained in the frozen Plan wire shape. Standard covers token
 // plans; AudioSeconds is used only by realtime ASR, where the provider bills
-// elapsed audio duration rather than chat tokens.
+// elapsed audio duration rather than chat tokens; Images is used only by image
+// generation, where the provider bills per successfully generated image.
 type InputClass uint8
 
 const (
 	InputStandard InputClass = iota
 	InputAudioSeconds
+	InputImages
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -145,6 +153,18 @@ var rateCards = map[Provider]map[string]RateCard{
 			// Singapore realtime ASR list price: $0.00009 / second.
 			tiers: []pricingTier{{InputUpperBound: QwenASRInputLimit, InputPUSD: 90_000_000, OutputPUSD: 0}},
 		},
+		QwenImage20: {
+			ID: "qwen-image-2.0-assumed-2026-07-27", Provider: ProviderQwen, Model: QwenImage20,
+			InputLimit: QwenImageInputLimit, OutputLimit: QwenImageOutputLimit,
+			// WORKING ASSUMPTION (WRK-082 代拍 B3): ¥0.25/image ≈ $0.035 = 35e9 pUSD. This card
+			// only budgets the operator's own wallet gate (reserve == settle, deterministic);
+			// the upstream bills its真实 list price regardless. MUST be reconciled against the
+			// official pricing page before launch — the "assumed" ID keeps that debt visible.
+			// 工作假设(代拍 B3):¥0.25/张≈$0.035=35e9 pUSD。此卡只作 operator 自家钱包预算闸
+			// (reserve==settle,确定性成本);上游按真实价目计费不受影响。上线前必须对官方价页
+			// 对账——ID 里的 "assumed" 让这笔债保持可见。
+			tiers: []pricingTier{{InputUpperBound: QwenImageInputLimit, InputPUSD: 35_000_000_000, OutputPUSD: 0}},
+		},
 	},
 }
 
@@ -234,6 +254,10 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 		if provider != ProviderQwen || model != Qwen3ASRFlashRealtime || outputBound != 0 {
 			return Plan{}, ErrUnknownRateCard
 		}
+	case InputImages:
+		if provider != ProviderQwen || model != QwenImage20 || outputBound != 0 || promptBound < 1 {
+			return Plan{}, ErrUnknownRateCard
+		}
 	default:
 		return Plan{}, ErrUnknownRateCard
 	}
@@ -282,6 +306,33 @@ func (p Plan) AudioSecondsCost(seconds int64) (int64, error) {
 		return 0, ErrUnknownRateCard
 	}
 	return checkedMul(seconds, tier.InputPUSD)
+}
+
+// NewImagesPlan prices an image-generation reservation by image count (n=1 on
+// the gateway wire, WRK-082 P12). Deterministic per-image pricing means reserve
+// equals settle for a successful generation.
+//
+// NewImagesPlan 按图张数定价图像生成预留(网关线缆 n=1,P12)。按张确定性定价意味着成功生成时
+// reserve == settle。
+func NewImagesPlan(provider Provider, model string, images int64) (Plan, error) {
+	return NewPlan(provider, model, InputImages, images, 0)
+}
+
+// ImagesCost converts an authoritative generated-image count under a frozen
+// image plan — the AudioSecondsCost twin, kept separate from token Usage so
+// image accounting cannot be mixed with chat.
+//
+// ImagesCost 在冻结的图像 plan 下换算权威已生成张数——AudioSecondsCost 的孪生,与 token Usage
+// 刻意分离,图像账不与 chat 混。
+func (p Plan) ImagesCost(images int64) (int64, error) {
+	if p.InputClass != InputImages || images < 0 || images > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(images)
+	if !ok {
+		return 0, ErrUnknownRateCard
+	}
+	return checkedMul(images, tier.InputPUSD)
 }
 
 // Cost converts an authoritative cumulative usage snapshot under the frozen
