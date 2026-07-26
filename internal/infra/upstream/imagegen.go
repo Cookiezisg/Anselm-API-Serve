@@ -124,14 +124,14 @@ func (g *ImageGen) GenerateImage(ctx context.Context, model, prompt, size string
 		}
 		return "", false, apierr.ErrUpstreamError
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", false, apierr.ErrUpstreamError
 	}
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		u, perr := parseDashScopeImageURL(body)
 		if perr != nil {
 			// A 200 without a parseable artifact is ambiguous evidence: the provider
@@ -140,13 +140,13 @@ func (g *ImageGen) GenerateImage(ctx context.Context, model, prompt, size string
 			return "", false, apierr.ErrUpstreamError
 		}
 		return u, false, nil
-	case resp.StatusCode == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return "", false, apierr.ErrUpstreamBusy
-	case resp.StatusCode == http.StatusBadRequest,
-		resp.StatusCode == http.StatusUnauthorized,
-		resp.StatusCode == http.StatusForbidden,
-		resp.StatusCode == http.StatusRequestEntityTooLarge,
-		resp.StatusCode == http.StatusUnprocessableEntity:
+	case http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity:
 		// Explicit pre-generation rejection: provably unbilled → the caller rolls
 		// back. Upstream text is discarded (redaction iron rule).
 		// 显式生成前拒绝:可证明未计费 → 调用方回滚。上游原文丢弃(脱敏铁律)。
