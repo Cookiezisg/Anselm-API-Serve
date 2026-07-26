@@ -88,7 +88,7 @@ key 仅注入 cloned request(既有铁律)。
 
 **transport `business/images/handler.go`**:`POST /v1/images/generations`(proof.Protect);
 请求 `{model?, prompt, size?, n?}`——`n>1` 422 拒(关闭联合类)、prompt 非空且 ≤2000 字符、
-`size` 为 `WxH` 形且总像素 ∈ [512², 2048²](默认 `1024*1024`);
+`size` 为 `WxH` 形且总像素在 512² 与 2048² 之间,默认 `1024*1024`;
 响应 `{created, data:[{url}]}`;journal/metrics 低基数 label 照 chat 惯例。
 
 **能力面**:`AnselmCapabilities`(version 1 增量字段)+
