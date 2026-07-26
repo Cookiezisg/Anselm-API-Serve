@@ -61,6 +61,13 @@ func (c *Catalog) List() model.ListEnvelope {
 					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
 					Available:   len(cfg.QwenAPIKeys) > 0 && cfg.MediaEnabled,
 				},
+				// Image generation follows the same whole-path rule: the flag is true only
+				// when the capability is on AND a credential exists (WRK-082 批B).
+				// 图像生成同守整条路法则:能力开 **且** 凭证在才 true(批B)。
+				ImageGeneration: &model.GenProfile{
+					Available:  cfg.ImageEnabled && len(cfg.QwenAPIKeys) > 0,
+					DailyLimit: cfg.ImageDailyLimit,
+				},
 			},
 		})
 	}

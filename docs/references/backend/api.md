@@ -25,6 +25,7 @@ audience: [human, ai]
 | `POST /v1/chat/completions` | `chat_completions` | device proof | OpenAI-compatible chat；proof 绑定 exact body；按 content capability 确定性路由 |
 | `GET /v1/speech/asr` | `speech_asr` | device proof | Realtime speech-to-text WebSocket；binary PCM 输入，Qwen ASR 事件输出；proof 绑定空 GET body |
 | `GET /v1/quota` | `quota` | device proof | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 operator 月钱包 |
+| `POST /v1/images/generations` | `images_generate` | device proof | 同步图像生成(WRK-082 批B):请求 `{model?,prompt,size?,n?}`——`model` 是逻辑别名不选上游、`prompt` 非空≤2000 字符、`size` 为 `WxH`(边 256–4096 且总像素 512²–2048²,默认 `1024x1024`)、`n` 缺席或恒 1,未知字段拒;响应 `{created,data:[{url}]}`——上游 24h OSS 产物 URL 直通(P13,GW-INV-51);上游走原生 DashScope multimodal-generation 同步形;成功即按张 settle(GW-INV-50);拒绝码 `IMAGE_UNAVAILABLE`/`IMAGE_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
 | `GET /v1/media/uploads/{uploadId}` | `media_status` | device proof | 返回 install-owned、仍 open 的权威 `offset`；仅用于 ambiguous chunk result 后安全续传 |

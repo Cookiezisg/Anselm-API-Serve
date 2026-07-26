@@ -24,14 +24,33 @@ type RouteProfile struct {
 	Available   bool  `json:"available"`
 }
 
+// GenProfile publishes one generation capability (image today; speech later).
+// It deliberately does NOT reuse RouteProfile: token limits are meaningless for
+// per-artifact generation — what a client needs is availability and the daily
+// per-install cap (0 = uncapped).
+//
+// GenProfile 发布一项生成能力(今图像;后语音)。刻意不复用 RouteProfile:token 上限对按件
+// 生成无意义——客户端要的是可用性与日 per-install 上限(0=不设)。
+type GenProfile struct {
+	Available  bool  `json:"available"`
+	DailyLimit int64 `json:"daily_limit"`
+}
+
 // AnselmCapabilities is a namespaced, backwards-compatible extension on the
 // OpenAI model object. Unknown fields are ignored by generic clients; Anselm
 // uses it to select a context budget per concrete outbound request.
+// ImageGeneration is additive (version stays 1): an old desktop ignores it, an
+// old gateway omits it and the new desktop reads nil = unavailable — rolling
+// compatibility in both directions.
+//
+// ImageGeneration 为增量字段(version 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 nil=不可用
+// ——双向滚动兼容。
 type AnselmCapabilities struct {
-	Version    int          `json:"version"`
-	Routing    string       `json:"routing"`
-	Text       RouteProfile `json:"text"`
-	Multimodal RouteProfile `json:"multimodal"`
+	Version         int          `json:"version"`
+	Routing         string       `json:"routing"`
+	Text            RouteProfile `json:"text"`
+	Multimodal      RouteProfile `json:"multimodal"`
+	ImageGeneration *GenProfile  `json:"image_generation,omitempty"`
 }
 
 // ListEnvelope is the OpenAI list wrapper: {"object":"list","data":[...]}.

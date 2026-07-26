@@ -20,6 +20,7 @@ import (
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	apphealth "github.com/sunweilin/anselm/gateway/internal/app/health"
+	appimage "github.com/sunweilin/anselm/gateway/internal/app/image"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmedia "github.com/sunweilin/anselm/gateway/internal/app/media"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
@@ -257,6 +258,25 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:   systemClock{},
 		Metrics: chatMetrics{m: mx, inflight: inflight},
 	})
+	// Image generation (WRK-082 批B): the sync native-DashScope client over ONE key —
+	// no failover pool, a deterministic reservation maps to a single upstream attempt.
+	// Constructed unconditionally; the service itself answers Available() from the
+	// live config (capability off → IMAGE_UNAVAILABLE, never a nil deref).
+	// 图像生成(批B):单 key 上的同步原生 DashScope client——无 failover 池,确定性预留对应单次
+	// 上游尝试。无条件构造;可用性由服务自己按 live 配置回答(能力关 → IMAGE_UNAVAILABLE,绝无 nil 解引用)。
+	imageKey := ""
+	if len(effective.QwenAPIKeys) > 0 {
+		imageKey = effective.QwenAPIKeys[0]
+	}
+	imageSvc := appimage.New(appimage.Deps{
+		Auth:     installSvc,
+		Quota:    quotaSvc,
+		RL:       rl,
+		Config:   cfgP,
+		Upstream: upstream.NewImageGen(effective.DashScopeNativeBase, imageKey),
+		Clock:    systemClock{},
+		Metrics:  chatMetrics{m: mx, inflight: inflight},
+	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
 	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
@@ -276,6 +296,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Quota:              quotaSvc,
 		Models:             modelCat,
 		Speech:             speechSvc,
+		Images:             imageSvc,
 		Media:              mediaSvc,
 		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
 		Mx:                 mx,

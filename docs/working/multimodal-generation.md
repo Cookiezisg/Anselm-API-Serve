@@ -112,6 +112,9 @@ e2e 假上游全链;真上游冒烟待 B2 解锁。
 1. **批B 第 0 步**:✅ 文档半已完成(2026-07-27,四家官方文档核准——DashScope 同步形/入参
    messages 形/`parameters.size,n`/2.0 系 512²–2048² 总像素/URL 24h);⏸ 真 key 线缆半待主仓
    代拍 B2 解锁(SSH 被权限闸拒、本地无 key),解锁后真出一张验 URL 无 key/时延/journal。
-2. 批B:images 端点(domain → app → infra → transport → 测试 → ref 文档,GW-INV 验收)。
+2. 批B:images 端点——✅ 已施工(2026-07-27):钱层(InputImages 卡+品类日闸 0006+IMAGE_* 配置)
+   与服务层(app/image + infra/upstream.ImageGen 同步原生 client + transport handler + 路由/装配 +
+   能力面 `image_generation` GenProfile)全落地;三层测试绿(service 桩件矩阵/假上游 wire/handler
+   校验拒绝),GW-INV-49/50/51 入册;**e2e 整栈用例与真上游冒烟待 B2 解锁后补**。
 3. 批C:speech 端点(同模子)。
 4. landed:契约入 references 四索引、不变量正式编号、URL 直通落本仓 ADR、本页填 landed-into。
