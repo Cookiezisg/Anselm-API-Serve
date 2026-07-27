@@ -136,6 +136,13 @@ e2e 假上游全链;真上游冒烟待 B2 解锁。
    钉死该值,`build_stage_test.sh` 守)。
    同批把三个能力在**部署 env** 里打开——此前 `IMAGE_ENABLED`/`SPEECH_ENABLED` 从未写进 `build-stage.sh`,
    代码再完整,生产上这两个能力也**根本不存在**。
-5. **H2**:e2e 整栈覆盖三个生成端点 + 一次请求里的混合多模态。
+5. **H2**:e2e 整栈覆盖——✅ 已施工(2026-07-27):harness 按 bootstrap 同款**无条件**构造三个生成
+   服务(能力关时走真的「能力不存在」路径、非 nil 路由),假 DashScope 原生 origin **一台**伺候四种
+   上游形状(生产上它们本就是同一 origin、只差 path)。五个用例:图+语音真栈生成且 key 零泄漏 /
+   视频提交-轮询-跨 install 拒读(含「句柄不得是裸 task id」与「异步头只属于提交」)/ **三品类账本
+   互不相干**(逐个耗尽,各以自己的 wire 码拒,钱包未动故 chat 照常)/ 能力关时逐个诚实降级 /
+   **一次请求里的混合多模态**(同一条 user 消息里 text+image+video 三 part 全活到上游)。
+   两条守卫经**变异验证**:抽掉 harness 里的 `SpeechDailyLimit` 那一行,speech 子用例立刻复现原 bug
+   的症状(第二次调用返 200 而非 429);把签名句柄换成裸 task id,归属用例立刻红。
 6. **H3**:推 main → CI → 自动部署 → 线上真端点验证。
 7. landed:契约入 references 四索引、不变量正式编号、URL 直通落本仓 ADR、本页填 landed-into。

@@ -40,14 +40,18 @@ import (
 
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
+	appimage "github.com/sunweilin/anselm/gateway/internal/app/image"
 	appinstall "github.com/sunweilin/anselm/gateway/internal/app/install"
 	appmodel "github.com/sunweilin/anselm/gateway/internal/app/model"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
+	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	domvideo "github.com/sunweilin/anselm/gateway/internal/domain/video"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
@@ -225,6 +229,33 @@ func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate f
 		BgWG:     bgWG,
 	})
 
+	// The three generation capabilities, constructed UNCONDITIONALLY exactly as
+	// bootstrap does — each answers Available() from live config, so a test that
+	// leaves the capability off still exercises the real "capability absent" path
+	// instead of a nil route. They share the Qwen key and the native origin.
+	// 三个生成能力,与 bootstrap 一样**无条件**构造——可用性由各自 Available() 按 live 配置回答,
+	// 于是一个不开该能力的用例仍然走**真的**「能力不存在」路径、而不是一条 nil 路由。三者共用
+	// Qwen key 与原生 origin。
+	genKey := ""
+	if len(cfg.QwenAPIKeys) > 0 {
+		genKey = cfg.QwenAPIKeys[0]
+	}
+	imageSvc := appimage.New(appimage.Deps{
+		Auth: installSvc, Quota: quotaSvc, RL: rl, Config: cfgP,
+		Upstream: upstream.NewImageGen(cfg.DashScopeNativeBase, genKey),
+		Clock:    sysClock{}, Metrics: chatMx{m: mx, inflight: inflight},
+	})
+	ttsSvc := apptts.New(apptts.Deps{
+		Auth: installSvc, Quota: quotaSvc, RL: rl, Config: cfgP,
+		Upstream: upstream.NewTTSGen(cfg.DashScopeNativeBase, genKey),
+		Clock:    sysClock{}, Metrics: chatMx{m: mx, inflight: inflight},
+	})
+	videoSvc := appvideo.New(appvideo.Deps{
+		Auth: installSvc, Quota: quotaSvc, RL: rl, Config: cfgP,
+		Upstream: videoUp{g: upstream.NewVideoGen(cfg.DashScopeNativeBase, genKey)},
+		Clock:    sysClock{}, Metrics: chatMx{m: mx, inflight: inflight},
+	})
+
 	// The production assembly — the SAME function main calls, so this harness tests
 	// the real routing + middleware chain (no divergent copy).
 	handler := router.BuildHandler(router.Deps{
@@ -233,6 +264,9 @@ func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate f
 		Chat:    chatSvc,
 		Quota:   quotaSvc,
 		Models:  modelCat,
+		Images:  imageSvc,
+		TTS:     ttsSvc,
+		Video:   videoSvc,
 		Mx:      mx,
 		OnPanic: mx.Panics,
 		// Mirror bootstrap: the configured body cap flows into the chain (a zero
@@ -269,11 +303,37 @@ type quotaCfg struct{ p *configprovider.Provider }
 
 func (q quotaCfg) Limits() appquota.Limits {
 	c := q.p.Load()
+	// The three category caps MUST be here. This mirror is the second copy of
+	// bootstrap's adapter, and the first copy is exactly where SPEECH_DAILY_LIMIT
+	// was silently dropped — an e2e harness missing the same line would prove a
+	// gate works while production's never fires.
+	// 三个品类上限**必须**在这里。本镜像是 bootstrap 适配器的第二份拷贝,而**第一份**正是
+	// SPEECH_DAILY_LIMIT 被静默丢掉的地方——一个漏了同一行的 e2e 会「证明」一道在生产上从未
+	// 生效过的闸是好的。
 	return appquota.Limits{
 		MonthlyQuota:           c.MonthlyQuota,
 		GlobalMonthlySpendPUSD: c.GlobalMonthlySpendPUSD,
 		DailySublimit:          c.DailySublimit,
+		ImageDailyLimit:        c.ImageDailyLimit,
+		SpeechDailyLimit:       c.SpeechDailyLimit,
+		VideoDailyLimit:        c.VideoDailyLimit,
 	}
+}
+
+// videoUp mirrors bootstrap's video port adapter (app names its own status type
+// so it never imports infra).
+type videoUp struct{ g *upstream.VideoGen }
+
+func (v videoUp) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
+	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+}
+
+func (v videoUp) PollVideo(ctx context.Context, taskID string) (appvideo.VideoStatus, error) {
+	st, err := v.g.PollVideo(ctx, taskID)
+	if err != nil {
+		return appvideo.VideoStatus{}, err
+	}
+	return appvideo.VideoStatus{Phase: st.Phase, URL: st.URL}, nil
 }
 func (q quotaCfg) Location() *time.Location { return q.p.Load().Location }
 
@@ -1610,3 +1670,380 @@ var (
 	_ appinstall.InstallsCreatedCounter = counterStub{}
 	_ appinstall.PoWCounter             = powStub{}
 )
+
+// --- generation capabilities: image / speech / video (WRK-082 H2) -------------
+
+// fakeDashScopeNative stands in for the NATIVE DashScope origin all three
+// generation routes call. One server serves all four upstream shapes because in
+// production they ARE one origin differing only by path — splitting them in the
+// harness would hide a path mistake that production would suffer.
+//
+// fakeDashScopeNative 扮演三条生成路由共同调用的**原生** DashScope origin。一台服务器伺候全部四种
+// 上游形状,因为在生产上它们**本就是**同一个 origin、只在 path 上不同——在测试里把它们拆开,会藏住
+// 一个生产上真会犯的 path 错误。
+type fakeDashScopeNative struct {
+	srv *httptest.Server
+
+	mu        sync.Mutex
+	authSeen  []string
+	asyncSeen []string // the X-DashScope-Async header value per submit
+	bodies    []string
+	paths     []string
+	videoDone atomic.Bool // flip to make the next poll answer SUCCEEDED
+}
+
+func newFakeDashScope(t *testing.T) *fakeDashScopeNative {
+	t.Helper()
+	f := &fakeDashScopeNative{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.paths = append(f.paths, r.URL.Path)
+		f.authSeen = append(f.authSeen, r.Header.Get("Authorization"))
+		f.asyncSeen = append(f.asyncSeen, r.Header.Get("X-DashScope-Async"))
+		f.bodies = append(f.bodies, string(body))
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/services/aigc/multimodal-generation/generation":
+			// Image and speech share this endpoint; the requested model tells them apart.
+			// 图像与语音共用此端点;按请求里的 model 区分。
+			if strings.Contains(string(body), billing.Qwen3TTSFlash) {
+				_, _ = io.WriteString(w, `{"output":{"audio":{"url":"https://oss.example/a.wav"}}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"output":{"choices":[{"message":{"content":[{"image":"https://oss.example/i.png"}]}}]}}`)
+		case r.URL.Path == "/api/v1/services/aigc/video-generation/video-synthesis":
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-e2e-1"}}`)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
+			if f.videoDone.Load() {
+				_, _ = io.WriteString(w, `{"output":{"task_status":"SUCCEEDED","video_url":"https://oss.example/v.mp4"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"output":{"task_status":"RUNNING"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeDashScopeNative) seen() (paths, auths, asyncs, bodies []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.paths...), append([]string(nil), f.authSeen...),
+		append([]string(nil), f.asyncSeen...), append([]string(nil), f.bodies...)
+}
+
+// generationEnabled turns all three capabilities on against the fake native origin
+// and installs the derived handle key, mirroring a production deployment.
+func generationEnabled(native string) func(*config.Config) {
+	return func(c *config.Config) {
+		c.DashScopeNativeBase = strings.TrimRight(native, "/")
+		c.ImageEnabled, c.ImageUpstreamModel, c.ImageDailyLimit = true, billing.QwenImage20, 10
+		c.SpeechEnabled, c.TTSUpstreamModel, c.TTSDefaultVoice, c.SpeechDailyLimit = true, billing.Qwen3TTSFlash, "Cherry", 50_000
+		c.VideoEnabled, c.VideoUpstreamModel, c.VideoDailyLimit = true, billing.Wan27T2V, 10
+		c.MediaSigningSecret = []byte("e2e-media-signing-secret-32-bytes!!")
+		c.VideoHandleKey = domvideo.DeriveKey(c.MediaSigningSecret)
+	}
+}
+
+func postJSON(t *testing.T, client *http.Client, url, installID, body string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	req.Header.Set("X-Anselm-Install-ID", installID)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out
+}
+
+func getJSON(t *testing.T, client *http.Client, url, installID string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("X-Anselm-Install-ID", installID)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out
+}
+
+func errorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	var e struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		t.Fatalf("not an error envelope: %s", body)
+	}
+	return e.Error.Code
+}
+
+// TestE2EImageAndSpeechGenerateOverTheRealStack drives both synchronous
+// generation routes through the production chain and proves the two things that
+// only a full-stack run can: the upstream key never reaches the client, and the
+// artifact URL is relayed verbatim (P13 URL 直通).
+func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
+	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	defer deepSeek.Close()
+	native := newFakeDashScope(t)
+	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
+
+	code, body := postJSON(t, client, srv.URL+"/v1/images/generations", installID, `{"prompt":"a cat","size":"1024x1024"}`)
+	if code != http.StatusOK || !strings.Contains(string(body), "https://oss.example/i.png") {
+		t.Fatalf("image generate → %d %s", code, body)
+	}
+	code, body = postJSON(t, client, srv.URL+"/v1/audio/speech", installID, `{"input":"hello there"}`)
+	if code != http.StatusOK || !strings.Contains(string(body), "https://oss.example/a.wav") {
+		t.Fatalf("speech generate → %d %s", code, body)
+	}
+
+	paths, auths, _, _ := native.seen()
+	if len(paths) != 2 {
+		t.Fatalf("upstream calls = %v, want two", paths)
+	}
+	for _, a := range auths {
+		if a != "Bearer qwen-test-key-never-leaks" {
+			t.Fatalf("upstream auth = %q", a)
+		}
+	}
+	// The key must not appear in ANY client-visible byte (GW-INV-51).
+	// key 不得出现在**任何**客户端可见字节里(GW-INV-51)。
+	if strings.Contains(string(body), "qwen-test-key-never-leaks") {
+		t.Fatalf("upstream key leaked to the client: %s", body)
+	}
+}
+
+// TestE2EVideoSubmitPollAndOwnership is the H1 contract end to end: 202 + a
+// signed handle, polling that reports phases without moving money, and a second
+// install being unable to read the first one's task.
+func TestE2EVideoSubmitPollAndOwnership(t *testing.T) {
+	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	defer deepSeek.Close()
+	native := newFakeDashScope(t)
+	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
+
+	code, body := postJSON(t, client, srv.URL+"/v1/videos/generations", installID, `{"prompt":"a cat walking","seconds":5}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("video submit → %d %s (want 202)", code, body)
+	}
+	var submitted struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Object string `json:"object"`
+	}
+	if err := json.Unmarshal(body, &submitted); err != nil || submitted.Status != "pending" || submitted.Object != "video.generation" {
+		t.Fatalf("submit body = %s (%v)", body, err)
+	}
+	// The handle must NOT be the raw upstream task id — that is the whole point.
+	// 句柄**不得**是裸的上游 task id——这正是全部的意义所在。
+	if submitted.ID == "task-e2e-1" || strings.Contains(submitted.ID, "task-e2e-1") {
+		t.Fatalf("raw upstream task id handed to the client: %q", submitted.ID)
+	}
+	// The async header is mandatory on submit and must NOT appear on the poll.
+	// 异步头在提交时是强制的,在轮询时**不得**出现。
+	_, _, asyncs, _ := native.seen()
+	if len(asyncs) != 1 || asyncs[0] != "enable" {
+		t.Fatalf("submit async header = %v, want [enable]", asyncs)
+	}
+
+	code, body = getJSON(t, client, srv.URL+"/v1/videos/"+submitted.ID, installID)
+	if code != http.StatusOK || !strings.Contains(string(body), `"status":"running"`) {
+		t.Fatalf("poll(running) → %d %s", code, body)
+	}
+	if strings.Contains(string(body), "oss.example") {
+		t.Fatalf("a running task must not carry an artifact url: %s", body)
+	}
+	native.videoDone.Store(true)
+	code, body = getJSON(t, client, srv.URL+"/v1/videos/"+submitted.ID, installID)
+	if code != http.StatusOK || !strings.Contains(string(body), `"status":"succeeded"`) ||
+		!strings.Contains(string(body), "https://oss.example/v.mp4") {
+		t.Fatalf("poll(succeeded) → %d %s", code, body)
+	}
+	_, _, asyncs, _ = native.seen()
+	for i, a := range asyncs[1:] {
+		if a != "" {
+			t.Fatalf("poll %d carried the async header %q", i, a)
+		}
+	}
+
+	// A SECOND install holding the first one's handle verbatim must be refused,
+	// and the refusal must not be distinguishable from a forgotten task.
+	// **第二个** install 拿着第一个的句柄原文必须被拒,且该拒绝与「任务已忘掉」不可区分。
+	otherClient := newProofClient(t, srv.Client())
+	otherID := registerInstall(t, srv, otherClient)
+	code, body = getJSON(t, otherClient, srv.URL+"/v1/videos/"+submitted.ID, otherID)
+	if code != http.StatusNotFound || errorCode(t, body) != "VIDEO_TASK_NOT_FOUND" {
+		t.Fatalf("cross-install poll → %d %s, want 404 VIDEO_TASK_NOT_FOUND", code, body)
+	}
+	code, body = getJSON(t, otherClient, srv.URL+"/v1/videos/bm9wZQ.bm9wZQ", otherID)
+	if code != http.StatusNotFound || errorCode(t, body) != "VIDEO_TASK_NOT_FOUND" {
+		t.Fatalf("garbage handle → %d %s", code, body)
+	}
+}
+
+// TestE2ECategoryLedgersAreIndependent is the guard the SPEECH_DAILY_LIMIT bug
+// would have failed: it exhausts ONE category over the socket and proves the
+// other two still work, each denying with its OWN wire code.
+//
+// 这条守卫正是 SPEECH_DAILY_LIMIT 那个 bug 会挂在上面的:它经真 socket 耗尽**一个**品类,并证明另外
+// 两个照常工作、且各自以**自己的** wire 码拒绝。
+func TestE2ECategoryLedgersAreIndependent(t *testing.T) {
+	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	defer deepSeek.Close()
+	native := newFakeDashScope(t)
+	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", func(c *config.Config) {
+		generationEnabled(native.srv.URL)(c)
+		// One of each: the smallest cap that still admits exactly one call.
+		// 各留一发:恰好放行一次调用的最小上限。
+		c.ImageDailyLimit = 1
+		c.SpeechDailyLimit = 11 // "hello there" is 11 runes
+		c.VideoDailyLimit = 1
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
+
+	for _, tc := range []struct {
+		name, url, body, wantCode string
+	}{
+		{"image", "/v1/images/generations", `{"prompt":"a cat"}`, "IMAGE_QUOTA_EXHAUSTED"},
+		{"speech", "/v1/audio/speech", `{"input":"hello there"}`, "TTS_QUOTA_EXHAUSTED"},
+		{"video", "/v1/videos/generations", `{"prompt":"a cat","seconds":5}`, "VIDEO_QUOTA_EXHAUSTED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// First call consumes the whole cap.
+			if code, body := postJSON(t, client, srv.URL+tc.url, installID, tc.body); code >= 400 {
+				t.Fatalf("first %s call → %d %s", tc.name, code, body)
+			}
+			// Second is denied — with this category's own code, not a neighbour's.
+			code, body := postJSON(t, client, srv.URL+tc.url, installID, tc.body)
+			if code != http.StatusTooManyRequests || errorCode(t, body) != tc.wantCode {
+				t.Fatalf("second %s call → %d %s, want 429 %s", tc.name, code, body, tc.wantCode)
+			}
+		})
+	}
+
+	// Every category is now exhausted but the WALLET is untouched: plain chat must
+	// still work. A shared counter would have killed it.
+	// 三个品类都已耗尽,但**钱包**没被动:普通 chat 必须照常。共用计数器会把它一起弄死。
+	code, body := postJSON(t, client, srv.URL+"/v1/chat/completions", installID,
+		`{"model":"anselm-auto","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("chat after category exhaustion → %d %s", code, body)
+	}
+}
+
+// TestE2ECapabilitiesOffDegradeHonestly proves each capability answers with its
+// OWN unavailable code when its switch is off, and that turning one off does not
+// take the others down.
+func TestE2ECapabilitiesOffDegradeHonestly(t *testing.T) {
+	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	defer deepSeek.Close()
+	native := newFakeDashScope(t)
+	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", func(c *config.Config) {
+		generationEnabled(native.srv.URL)(c)
+		c.ImageEnabled = false
+		// Video keeps its switch but loses the handle key — the third half.
+		// 视频开关还在,但丢了句柄密钥——那第三半。
+		c.VideoHandleKey = nil
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
+
+	code, body := postJSON(t, client, srv.URL+"/v1/images/generations", installID, `{"prompt":"a cat"}`)
+	if code != http.StatusServiceUnavailable || errorCode(t, body) != "IMAGE_UNAVAILABLE" {
+		t.Fatalf("image off → %d %s", code, body)
+	}
+	code, body = postJSON(t, client, srv.URL+"/v1/videos/generations", installID, `{"prompt":"a cat"}`)
+	if code != http.StatusServiceUnavailable || errorCode(t, body) != "VIDEO_UNAVAILABLE" {
+		t.Fatalf("video without a handle key → %d %s", code, body)
+	}
+	// Speech is untouched and must still work.
+	if code, body := postJSON(t, client, srv.URL+"/v1/audio/speech", installID, `{"input":"hi"}`); code != http.StatusOK {
+		t.Fatalf("speech should be unaffected → %d %s", code, body)
+	}
+	// And nothing was spent on the two refused routes.
+	if paths, _, _, _ := native.seen(); len(paths) != 1 {
+		t.Fatalf("refused capabilities reached upstream: %v", paths)
+	}
+}
+
+// TestE2EMixedModalitiesInOneRequest answers the question directly: can ONE chat
+// request carry more than one KIND of media? It sends an image and a video part
+// in the same user message and proves both survive to the upstream verbatim.
+//
+// This is structural, not incidental: the gateway's media admission is per-PART
+// (each part is validated and counted on its own) with no rule anywhere that a
+// message may only contain one modality. Until this test existed that was an
+// unverified belief.
+//
+// 本测试直接回答那个问题:**一次** chat 请求能不能带**多种**媒体?它在同一条 user 消息里送一张图与
+// 一段视频,并证明两者都原样活到上游。
+//
+// 这是**结构性**的、不是碰巧:网关的媒体准入是**逐 part** 的(每个 part 各自校验、各自计数),
+// 任何地方都没有「一条消息只能有一种模态」的规则。在这个测试存在之前,那只是一个未经验证的信念。
+func TestE2EMixedModalitiesInOneRequest(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamBody string
+	qwen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		upstreamBody = string(b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"`+billing.Qwen37Plus+`","choices":[{"message":{"role":"assistant","content":"both seen"}}],`+
+			`"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`)
+	}))
+	defer qwen.Close()
+	deepSeek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer deepSeek.Close()
+
+	s := buildStackWithProviders(t, deepSeek.URL, qwen.URL, nil)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+	installID := registerInstall(t, srv, client)
+
+	png := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	mp4 := base64.StdEncoding.EncodeToString([]byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'})
+	body := `{"model":"anselm-auto","stream":false,"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"compare these"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,` + png + `"}},` +
+		`{"type":"video_url","video_url":{"url":"data:video/mp4;base64,` + mp4 + `"}}` +
+		`]}]}`
+	code, out := postJSON(t, client, srv.URL+"/v1/chat/completions", installID, body)
+	if code != http.StatusOK {
+		t.Fatalf("mixed-modality chat → %d %s", code, out)
+	}
+	mu.Lock()
+	got := upstreamBody
+	mu.Unlock()
+	for _, want := range []string{`"type":"text"`, `"type":"image_url"`, `"type":"video_url"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("upstream payload lost %s: %s", want, got)
+		}
+	}
+}
