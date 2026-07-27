@@ -49,6 +49,13 @@ for pair in \
 	'MEDIA_CHUNK_MAX_BYTES="4194304"' \
 	'MEDIA_UPLOAD_TTL_SEC="3600"' \
 	'MEDIA_LEASE_TTL_SEC="3600"' \
+	'IMAGE_ENABLED="true"' \
+	'IMAGE_DAILY_LIMIT="10"' \
+	'SPEECH_ENABLED="true"' \
+	'SPEECH_DAILY_LIMIT="50000"' \
+	'TTS_DEFAULT_VOICE="Cherry"' \
+	'VIDEO_ENABLED="true"' \
+	'VIDEO_DAILY_LIMIT="10"' \
 	'RATE_PER_MIN="0"' \
 	'DAILY_SUBLIMIT="0"' \
 	'INSTALL_GLOBAL_DAILY_CAP="0"' \
@@ -58,6 +65,14 @@ for pair in \
 	'TOKEN_ANOMALY_RPM="0"'; do
 	grep -Fqx "${pair}" "${STAGE}/gateway.env" || fail "missing production config: ${pair}"
 done
+# The generation origin must stay DERIVED from the credential. Pinning a region in
+# the deploy env is how a Singapore workspace key ends up asking Beijing and getting
+# 401 — the bundle must not carry that decision at all.
+# 生成 origin 必须保持**从凭证派生**。在部署 env 里钉死区域,正是一把新加坡 workspace key 去问北京
+# 拿 401 的成因——bundle 里根本不该带这个决定。
+if grep -q '^DASHSCOPE_NATIVE_BASE=' "${STAGE}/gateway.env"; then
+	fail "deploy env must not pin DASHSCOPE_NATIVE_BASE (it derives from the credential)"
+fi
 if grep -q '^DASHBOARD_USER=' "${STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${STAGE}/gateway.env"; then
 	fail "disabled dashboard mode must not materialise builtin credentials"
 fi

@@ -27,6 +27,7 @@ import (
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
+	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
@@ -292,6 +293,20 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:    systemClock{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
+	// Video generation (WRK-082 H1): the async sibling. Same key, same native origin,
+	// its own capability switch — and the only one whose client comes BACK, which is
+	// why its handle is signed. Unconditional construction like the other two.
+	// 视频生成(H1):异步的那个兄弟。同一把 key、同一个原生 origin、自己的能力开关——也是唯一一个
+	// 客户端**会回来**的能力,故它的句柄要签名。与另两个一样无条件构造。
+	videoSvc := appvideo.New(appvideo.Deps{
+		Auth:     installSvc,
+		Quota:    quotaSvc,
+		RL:       rl,
+		Config:   cfgP,
+		Upstream: videoUpstream{g: upstream.NewVideoGen(effective.DashScopeNativeBase, imageKey)},
+		Clock:    systemClock{},
+		Metrics:  chatMetrics{m: mx, inflight: inflight},
+	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
 	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
@@ -313,6 +328,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Speech:             speechSvc,
 		Images:             imageSvc,
 		TTS:                ttsSvc,
+		Video:              videoSvc,
 		Media:              mediaSvc,
 		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
 		Mx:                 mx,

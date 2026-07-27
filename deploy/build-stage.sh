@@ -174,6 +174,25 @@ write_env MEDIA_UPLOAD_MAX_BYTES "104857600"
 write_env MEDIA_CHUNK_MAX_BYTES "4194304"
 write_env MEDIA_UPLOAD_TTL_SEC "3600"
 write_env MEDIA_LEASE_TTL_SEC "3600"
+# The three generation capabilities (WRK-082). They ship DEFAULT-OFF in code — a
+# capability, not a birthright — which means an unlisted one is simply absent in
+# production no matter how complete its code is. Each carries its own daily cap in
+# its own unit: images per PICTURE, speech per CHARACTER, video per CLIP.
+# 三个生成能力(WRK-082)。代码里默认**关**——能力非天赋——也就是说没在这里列出的那个,无论代码写得
+# 多完整,在生产上**根本不存在**。各自带自己的日上限、各自的单位:图像按**张**、语音按**字符**、
+# 视频按**条**。
+write_env IMAGE_ENABLED "true"
+write_env IMAGE_DAILY_LIMIT "10"
+write_env SPEECH_ENABLED "true"
+write_env SPEECH_DAILY_LIMIT "50000"
+write_env TTS_DEFAULT_VOICE "Cherry"
+write_env VIDEO_ENABLED "true"
+write_env VIDEO_DAILY_LIMIT "10"
+# DASHSCOPE_NATIVE_BASE is deliberately NOT written: it derives from the workspace
+# credential, and pinning a region here is exactly how a Singapore key ends up
+# asking Beijing and getting 401 "Incorrect API key provided".
+# DASHSCOPE_NATIVE_BASE 刻意**不写**:它从 workspace 凭证派生,而在这里钉一个区域,正是一把新加坡
+# key 去问北京、拿回 401 "Incorrect API key provided" 的成因。
 # 由已校验的 GATEWAY_DOMAIN 派生,不新增部署输入——保证网关自报的公开 origin 与它实际被服务的域名
 # 恒一致。它是 chat 把**相对** lease 引用绝对化后交给上游 provider 的前缀(ADR 0011)。
 write_env N_GLOBAL_CONCURRENCY "16"

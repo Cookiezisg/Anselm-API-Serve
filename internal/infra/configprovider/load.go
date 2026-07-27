@@ -25,6 +25,7 @@ import (
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
+	domvideo "github.com/sunweilin/anselm/gateway/internal/domain/video"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
 
@@ -74,12 +75,19 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
 	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
 	c.ImageUpstreamModel = g.str("IMAGE_UPSTREAM_MODEL", billing.QwenImage20)
-	// The image route calls the NATIVE DashScope API (multimodal-generation), which lives on a
-	// different origin than the OpenAI compatible-mode QwenBaseURL — never derive one from the other.
-	// 图像路由打**原生** DashScope API(multimodal-generation),与 compatible-mode 的 QwenBaseURL
-	// 不同 origin——绝不互相推导。
-	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", "https://dashscope.aliyuncs.com")
+	// The generation routes call the NATIVE DashScope API, which shares the credential's HOST and
+	// differs only by PATH. The default therefore DERIVES from QwenBaseURL rather than naming a
+	// region: a Singapore workspace key sent to dashscope.aliyuncs.com (Beijing) answers 401
+	// "Incorrect API key provided" — the same key, 200 in one region and 401 in the other. That is
+	// a real 401 observed on the desktop side of this campaign, and hardcoding a region is exactly
+	// how it happened. An explicit DASHSCOPE_NATIVE_BASE still wins.
+	// 生成路由打**原生** DashScope API,与凭证共享 **host**、只在 **path** 上不同。故默认值从
+	// QwenBaseURL **派生**、而不是写死一个区域:一把新加坡 workspace key 打到 dashscope.aliyuncs.com
+	// (北京)会答 401 "Incorrect API key provided"——同一把 key,一个区域 200、另一个区域 401。那是
+	// 本战役桌面侧实测到的真 401,而写死区域正是它发生的方式。显式配的 DASHSCOPE_NATIVE_BASE 仍然优先。
+	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", nativeBaseFrom(c.QwenBaseURL))
 	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.Qwen3TTSFlash)
+	c.VideoUpstreamModel = g.str("VIDEO_UPSTREAM_MODEL", billing.Wan27T2V)
 	// Cherry is the cross-generation default voice (WRK-082 P10: the parameter stays on the wire,
 	// the desktop settings page does not expose it — one good default beats a picker nobody tunes).
 	// Cherry 是跨代默认音色(P10:参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。
@@ -117,6 +125,11 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// 语音是自己的开关、自己的单位:5 万字符/天(P8),不是十个什么东西。
 	c.SpeechEnabled = g.boolean("SPEECH_ENABLED", false)
 	c.SpeechDailyLimit = g.boundedInt64("SPEECH_DAILY_LIMIT", 50_000, 0, config.MaxSpeechDailyLimit)
+	// Video is the third switch, its own unit again: 10 CLIPS a day (WRK-082 H1, 用户拍板).
+	// Not seconds — the thing a person rations is whole videos.
+	// 视频是第三个开关,又是自己的单位:一天 10 **条**(H1,用户拍板)。不是秒——人配给的是**整条**片子。
+	c.VideoEnabled = g.boolean("VIDEO_ENABLED", false)
+	c.VideoDailyLimit = g.boundedInt64("VIDEO_DAILY_LIMIT", 10, 0, config.MaxVideoDailyLimit)
 	c.MediaUploadMaxBytes = g.boundedInt64("MEDIA_UPLOAD_MAX_BYTES", 100*1024*1024, 1, config.MaxMediaUploadBytes)
 	defaultChunkBytes := min(int64(4*1024*1024), c.MaxBodyBytes)
 	c.MediaChunkMaxBytes = g.boundedInt64("MEDIA_CHUNK_MAX_BYTES", defaultChunkBytes, 1, c.MaxBodyBytes)
@@ -228,6 +241,15 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	if secret := strings.TrimSpace(getenv("MEDIA_SIGNING_SECRET")); secret != "" {
 		c.MediaSigningSecret = []byte(secret)
 		c.MediaSigningSecretSource = "configured"
+		// The video handle key is DERIVED from the same material, with domain
+		// separation — never read from its own env var. Enabling video therefore
+		// costs the operator no new secret to place, rotate and leak, while a
+		// compromise of one key still cannot forge the other. It is deliberately
+		// not stored anywhere: it is recomputed on every load from the secret.
+		// 视频句柄密钥由**同一份**材料**域分离**派生——绝不读自己的 env。于是开视频不必让运营者
+		// 再放一个要轮换、要防泄的 secret,而其中一把被攻破仍伪造不出另一把。它刻意不落任何地方:
+		// 每次 load 都从 secret 重算。
+		c.VideoHandleKey = domvideo.DeriveKey(c.MediaSigningSecret)
 	} else {
 		c.MediaSigningSecretSource = "disabled"
 	}
@@ -427,4 +449,33 @@ func (r *envReader) boundedInt64(key string, def, min, max int64) int64 {
 	n := r.int64(key, def)
 	r.bound64(key, n, min, max)
 	return n
+}
+
+// nativeBaseFrom derives the native DashScope origin from the credential's own
+// compatible-mode base URL. Both APIs live on the SAME host and differ only by
+// path, so the region is a property of the credential — never of a constant in
+// this file. Hardcoding one produced a real 401 on the desktop side of WRK-082:
+// a Singapore workspace key answered 200 in Singapore and "Incorrect API key
+// provided" in Beijing, with nothing in the message hinting at geography.
+//
+// With no credential configured the fallback is the international host, because
+// the only base URL this gateway can derive on its own (the DASHSCOPE_WORKSPACE_ID
+// form) is itself an ap-southeast-1 endpoint — a Beijing fallback would contradict
+// the very default it sits next to.
+//
+// nativeBaseFrom 从凭证自己的 compatible-mode base URL 派生原生 DashScope origin。两套 API 在
+// **同一个 host** 上、只在 path 上不同,故区域是**凭证的属性**——绝不是本文件里一个常量的属性。
+// 写死一个区域在 WRK-082 桌面侧造成过一次真 401:一把新加坡 workspace key 在新加坡答 200、在北京答
+// "Incorrect API key provided",而报文里没有任何一个字暗示这跟地理有关。
+//
+// 没配凭证时兜底取国际 host,因为本网关唯一能自行派生的 base URL(DASHSCOPE_WORKSPACE_ID 那一形)
+// 本身就是 ap-southeast-1 端点——一个北京兜底会与它紧挨着的那个默认值自相矛盾。
+func nativeBaseFrom(qwenBase string) string {
+	u := strings.TrimRight(strings.TrimSpace(qwenBase), "/")
+	u = strings.TrimSuffix(u, "/compatible-mode/v1")
+	u = strings.TrimRight(u, "/")
+	if u == "" {
+		return "https://dashscope-intl.aliyuncs.com"
+	}
+	return u
 }

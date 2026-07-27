@@ -84,6 +84,9 @@ audience: [human, ai]
 | GW-INV-52 | 品类日账本**逐品类独立**:`install_category_daily` 按 `(install, category, day)` 分行,图像按张、语音按**输入字符**各记各账;任一品类耗尽绝不影响另一品类;`planCategory`/`categoryCap` 是封闭 switch,新品类连同自己的 `Limits` 字段与 wire 码一起立法 | 共用计数器 = 图像用尽把语音一起关掉(反之亦然),用户被告知一个自己根本没碰过的能力没了 |
 | GW-INV-53 | 品类日闸的拒绝**自带品类名**(`*quota.CategoryDailyExceededError`,并满足 `errors.Is(ErrCategoryDailyExceeded)`);app 层按品类映射 wire 码(image→`IMAGE_QUOTA_EXHAUSTED` / speech→`TTS_QUOTA_EXHAUSTED`),未知品类**不兜底**、原样上抛 | 光有伞 sentinel 会逼 app 层拿某一个品类的码代表全部(已实际发生过);兜底 default 则会对着用户没碰过的能力说「明天再试」 |
 | GW-INV-54 | 语音合成按**输入字符数**(rune,非 byte)预留并 settle——字符数在调用前精确已知,故 reserve==settle 且无需上游 usage 回报;`voice` 缺席时由 `TTS_DEFAULT_VOICE` 填入而非空串上线缆;直通的产物 URL 归一到 `https`(上游可能返 `http` 的 OSS 结果 URL,而本系统两端都拒绝明文取产物;OSS 预签名覆盖 path/query 不覆盖 scheme——真钱冒烟里出 403 即此假设被推翻) | 按 byte 计费把每条中文请求静默乘三;空 voice 上线缆 = 上游 400;明文产物 URL = 桌面下载器按铁律拒收,能力在真机上等于不存在 |
+| GW-INV-55 | 视频句柄是**签名**的:`GET /v1/videos/{id}` 只对签发给**同一个 install** 的句柄作答,常数时间比较;签名验不过与上游已忘掉该任务**同答** `VIDEO_TASK_NOT_FOUND`,且被拒句柄**绝不到达上游**。句柄密钥由 `MEDIA_SIGNING_SECRET` **域分离**派生(`HMAC(secret,"anselm-gateway-video-handle-v1")`),`VIDEO_ENABLED` 而 secret 缺席则启动即失败 | 裸转发上游 task id = 任一 install 可枚举并读走**别人**的视频 URL;两种拒绝分开答 = 确认「有别人拥有它」;空 key 会让每个句柄对每个 install 都验得过 |
+| GW-INV-56 | 视频的钱**落在提交**:受理成功即按冻结卡全额 settle(reserve==settle,确定性按秒成本),**轮询绝不动钱**——成功不动、失败也不动、重复轮询也不动;上游生成失败**照样付费**,唯一会退的仍是可证明未计费的显式拒绝(GW-INV-50) | 「只在客户端回来轮询时退款」= 走开的人白拿视频、等着的人付钱;轮询动钱 = 一个等三分钟问十几次的客户端会被自己的耐心罚款 |
+| GW-INV-57 | 品类账本与钱账本**允许数不同的单位**:视频钱按**秒**(`InputVideoSeconds`)、`video` 品类按**条**(恒 1)。`planCategory` 是这条分歧唯一的立法处,新品类连同 `Limits` 字段、`categoryCap` 分支与 wire 码一起在此立法;**且必须活着穿过 bootstrap 适配器**(`quotaCfgSource.Limits`)——`SPEECH_DAILY_LIMIT` 曾集齐配置、宣告、账本、分支与 wire 码却漏了那一行,于是 store 读到的上限恒为 0、闸一次都没生效过,而没有任何测试是红的 | 按秒配给只会让用户写更短的提示词而不是少生成视频;一个没穿过适配器的上限是一句谎——每层各自都对,中间那根线根本不存在 |
 
 ## E. 跨切配置 / 可观测
 

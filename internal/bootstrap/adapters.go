@@ -14,6 +14,7 @@ import (
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
+	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
@@ -61,6 +62,16 @@ func (q quotaCfgSource) Limits() appquota.Limits {
 		GlobalMonthlySpendPUSD: c.GlobalMonthlySpendPUSD,
 		DailySublimit:          c.DailySublimit,
 		ImageDailyLimit:        c.ImageDailyLimit,
+		// SPEECH was configured, advertised in /v1/models, and given both a category
+		// ledger and a categoryCap case — but it was never copied here, so the store
+		// read a zero cap and the daily character gate has never once fired. Nothing
+		// was red: every layer was individually correct and the wire between two of
+		// them was simply absent (WRK-082 H1 找到的真 bug).
+		// SPEECH 有配置、在 /v1/models 里对外宣告、有品类账本、也有 categoryCap 分支——**唯独没有
+		// 被抄到这里**,于是 store 读到的上限恒为 0,那道日字符闸**一次都没生效过**。没有任何东西
+		// 是红的:每一层各自都对,只是其中两层之间的那根线**根本不存在**(H1 找到的真 bug)。
+		SpeechDailyLimit: c.SpeechDailyLimit,
+		VideoDailyLimit:  c.VideoDailyLimit,
 	}
 }
 
@@ -197,3 +208,25 @@ func (c installsCreatedCounter) Inc() { c.m.InstallsCreated.Inc() }
 type powCounter struct{ m *metrics.Metrics }
 
 func (c powCounter) Inc(result string) { c.m.InstallPoW.WithLabelValues(result).Inc() }
+
+// videoUpstream adapts the infra video client's own status struct into the app
+// port's. The two are field-identical on purpose and stay separate on purpose:
+// the app layer must be able to name its port types without importing infra, and
+// a shared struct would be exactly that import (S3 依赖单向).
+//
+// videoUpstream 把 infra 视频 client 自己的状态结构适配成 app 端口的。两者刻意逐字段相同、也刻意
+// 保持分离:app 层必须能在不 import infra 的前提下给自己的端口类型起名,而共用一个 struct 恰恰
+// 就是那个 import(依赖单向)。
+type videoUpstream struct{ g *upstream.VideoGen }
+
+func (v videoUpstream) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
+	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+}
+
+func (v videoUpstream) PollVideo(ctx context.Context, taskID string) (appvideo.VideoStatus, error) {
+	st, err := v.g.PollVideo(ctx, taskID)
+	if err != nil {
+		return appvideo.VideoStatus{}, err
+	}
+	return appvideo.VideoStatus{Phase: st.Phase, URL: st.URL}, nil
+}

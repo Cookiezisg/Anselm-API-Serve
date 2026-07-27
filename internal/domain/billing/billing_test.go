@@ -356,3 +356,50 @@ func TestCharactersPlanAndCost(t *testing.T) {
 		t.Fatal("an images plan must refuse CharactersCost (unit crossover)")
 	}
 }
+
+func TestVideoSecondsPlanAndCost(t *testing.T) {
+	p, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, 5)
+	if err != nil {
+		t.Fatalf("video plan: %v", err)
+	}
+	if p.InputClass != InputVideoSeconds || p.ReservedPUSD != 5*83_000_000_000 {
+		t.Fatalf("plan = class %d reserved %d, want video-seconds/415e9", p.InputClass, p.ReservedPUSD)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
+	}
+	cost, err := p.VideoSecondsCost(5)
+	if err != nil || cost != p.ReservedPUSD {
+		t.Fatalf("VideoSecondsCost(5) = %d,%v — want reserve==settle", cost, err)
+	}
+	if _, err := NewVideoSecondsPlan(ProviderQwen, QwenImage20, 5); err == nil {
+		t.Fatal("video plan on the image card must fail closed")
+	}
+	if _, err := NewVideoSecondsPlan(ProviderDeepSeek, DeepSeekV4Flash, 5); err == nil {
+		t.Fatal("video plan on a text card must fail closed")
+	}
+	if _, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, 0); err == nil {
+		t.Fatal("zero-second plan must fail closed")
+	}
+	if _, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, QwenVideoInputLimit+1); err == nil {
+		t.Fatal("over-card duration must fail closed")
+	}
+	// Unit crossover in BOTH directions: a per-second plan must never be settled
+	// as if its quantity were characters or images, and vice versa. Video is the
+	// most expensive card here, so a crossover mistake is also the costliest.
+	// **两个方向**的单位穿越:按秒的 plan 绝不能被当成字符或张来结算,反之亦然。视频是这里最贵的
+	// 卡,故穿越错得也最贵。
+	if _, err := p.CharactersCost(5); err == nil {
+		t.Fatal("a video plan must refuse CharactersCost")
+	}
+	if _, err := p.ImagesCost(1); err == nil {
+		t.Fatal("a video plan must refuse ImagesCost")
+	}
+	tts, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 100)
+	if err != nil {
+		t.Fatalf("characters plan: %v", err)
+	}
+	if _, err := tts.VideoSecondsCost(5); err == nil {
+		t.Fatal("a characters plan must refuse VideoSecondsCost")
+	}
+}

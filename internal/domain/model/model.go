@@ -55,6 +55,7 @@ type AnselmCapabilities struct {
 	Multimodal       RouteProfile `json:"multimodal"`
 	ImageGeneration  *GenProfile  `json:"image_generation,omitempty"`
 	SpeechGeneration *GenProfile  `json:"speech_generation,omitempty"`
+	VideoGeneration  *GenProfile  `json:"video_generation,omitempty"`
 }
 
 // ListEnvelope is the OpenAI list wrapper: {"object":"list","data":[...]}.

@@ -10,7 +10,7 @@ audience: [human, ai]
 landed-into:
 ---
 
-# 生成能力(图 / TTS):网关侧工单 —— 对应主仓 WRK-082 批B/批C
+# 生成能力(图 / 语音 / 视频):网关侧工单 —— 对应主仓 WRK-082 批B/批C/H1
 
 > **主战役文档在 Anselm 主仓** `docs/working/multimodal-output/README.md`(WRK-082,P1–P19 已拍板)。
 > 本页只承载**网关侧**的契约草案与不变量草案;施工时按本仓纪律走(GW-INV 当验收、doc-code parity、
@@ -25,8 +25,16 @@ landed-into:
 |---|---|---|---|
 | `POST /v1/images/generations` | DashScope **同步形**(主仓代拍 B1,官方推荐):`POST https://{DASHSCOPE_WORKSPACE_ID}.<region>.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`,qwen-image-2.0 系,直接返 **24h OSS URL**——免任务轮询层;上游连接持有几十秒,该路由单独设宽上游超时 | 10 张/天/install | 按张(照 `InputAudioSeconds` 非 token 单位先例) |
 | `POST /v1/audio/speech` | DashScope qwen3-tts-instruct-flash(HTTP 非实时) | 5 万字符/天/install | 按字符 |
+| `POST /v1/videos/generations` + `GET /v1/videos/{id}` | DashScope **异步形**:`POST …/api/v1/services/aigc/video-generation/video-synthesis`(强制 `X-DashScope-Async: enable`)提交拿 task id,`GET …/api/v1/tasks/{id}` 轮询;wan2.7 系 | **10 条/天/install**(用户拍板) | 按**秒** |
 
-视频**不进免费档**(P8):网关不开视频路由,零改动。
+**P8 已被用户推翻(2026-07-27)**。原文写的是「视频不进免费档,网关不开视频路由,零改动」——
+那句话**没有任何用户原话依据,是我自己的决定**,却被记进了一张标题为「用户已拍板」的表。用户读到后
+直接推翻:「视频要进免费档的。我们要的是一个端到端的完整多模态」,并定额度「一人一天 10 条」。
+本节现在陈述的是**用户的**决定。
+
+**视频是唯一的两次请求能力**,故它比另两个多两样东西:签名句柄(把任务绑到付过钱的那个 install)
+与「钱落提交、轮询不动钱」的钱形。两者的理由都写在 `references/backend/api.md` §1.3 与
+GW-INV-55/56/57,不在这里重复。
 
 **一个原则(P13,URL 直通)**:请求取 OpenAI-compat 形;**响应主形是上游 OSS 签名 URL 直通**
 (b64 兜底)。理由:本机公网出方向 1Mbps,1–3MiB base64 内联 = 11–30s/张;DashScope 生成结果
@@ -116,5 +124,18 @@ e2e 假上游全链;真上游冒烟待 B2 解锁。
    与服务层(app/image + infra/upstream.ImageGen 同步原生 client + transport handler + 路由/装配 +
    能力面 `image_generation` GenProfile)全落地;三层测试绿(service 桩件矩阵/假上游 wire/handler
    校验拒绝),GW-INV-49/50/51 入册;**e2e 整栈用例与真上游冒烟待 B2 解锁后补**。
-3. 批C:speech 端点(同模子)。
-4. landed:契约入 references 四索引、不变量正式编号、URL 直通落本仓 ADR、本页填 landed-into。
+3. 批C:speech 端点(同模子)——✅ 已施工。
+4. **H1**:videos 两端点——✅ 已施工(2026-07-27):钱层(`InputVideoSeconds` 按秒卡 + `video` 品类
+   按**条**记账 + `VIDEO_*` 配置)、域层(`domain/video` 签名句柄文法,密钥由 `MEDIA_SIGNING_SECRET`
+   域分离派生)、服务层(`app/video` 提交即结算 + 轮询零动钱)、infra(`upstream.VideoGen` 两动词)、
+   transport(两路由 + 形状闸)全落地;四层测试绿,GW-INV-55/56/57 入册;覆盖率地板把三个生成 app 包
+   与 `domain/video` 一并纳入 CI。
+   同批修掉两个**真 bug**:①`SPEECH_DAILY_LIMIT` 从未穿过 bootstrap 适配器,语音日闸一次都没生效过
+   (守卫 `TestQuotaLimitsCarryEveryCategoryCap` 钉死整条链);②`DASHSCOPE_NATIVE_BASE` 默认写死北京,
+   而凭证是新加坡 workspace——同一把 key 一个区域 200、另一个 401(改为从凭证派生;部署 env 里禁止
+   钉死该值,`build_stage_test.sh` 守)。
+   同批把三个能力在**部署 env** 里打开——此前 `IMAGE_ENABLED`/`SPEECH_ENABLED` 从未写进 `build-stage.sh`,
+   代码再完整,生产上这两个能力也**根本不存在**。
+5. **H2**:e2e 整栈覆盖三个生成端点 + 一次请求里的混合多模态。
+6. **H3**:推 main → CI → 自动部署 → 线上真端点验证。
+7. landed:契约入 references 四索引、不变量正式编号、URL 直通落本仓 ADR、本页填 landed-into。

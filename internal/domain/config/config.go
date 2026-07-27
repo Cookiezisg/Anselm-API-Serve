@@ -61,6 +61,7 @@ const (
 	MaxDailySublimit            int64 = 1_000_000_000
 	MaxImageDailyLimit          int64 = 100_000
 	MaxSpeechDailyLimit         int64 = 100_000_000
+	MaxVideoDailyLimit          int64 = 10_000
 	MaxInstallPerIPHour         int   = 1_000_000
 	MaxInstallGlobalDailyCap    int64 = 100_000_000
 	MaxInstallPerFPDaily        int64 = 1_000_000
@@ -178,6 +179,22 @@ type Config struct {
 	TTSUpstreamModel string // TTS_UPSTREAM_MODEL(exact priced DashScope TTS model id)
 	SpeechDailyLimit int64  // SPEECH_DAILY_LIMIT(per-install per-day characters;0=off)
 	TTSDefaultVoice  string // TTS_DEFAULT_VOICE(used when the request omits voice)
+
+	// Video generation is the third generation capability and the only ASYNC one
+	// (WRK-082 H1): submit returns a handle, the desktop polls minutes later. It
+	// therefore needs one thing the others do not — VideoHandleKey, the derived
+	// secret that binds a task to the install that paid for it. That key is NOT an
+	// env var: it is derived (with domain separation) from media signing material
+	// the deployment already has, so enabling video costs the operator no new
+	// secret and a leak of one key still cannot forge the other.
+	// 视频生成是第三个生成能力,也是唯一**异步**的那个(H1):提交返回句柄,桌面端几分钟后轮询。
+	// 故它需要一样别的能力不需要的东西——VideoHandleKey,把任务绑到**付过钱的那个 install** 上的
+	// 派生密钥。这把 key **不是** env:它由本部署已有的 media 签名材料**域分离**派生,于是开视频
+	// 不必新配 secret,而其中一把泄露仍伪造不出另一把。
+	VideoEnabled       bool   // VIDEO_ENABLED
+	VideoUpstreamModel string // VIDEO_UPSTREAM_MODEL(exact priced DashScope video model id)
+	VideoDailyLimit    int64  // VIDEO_DAILY_LIMIT(per-install per-day CLIP count;0=off)
+	VideoHandleKey     []byte // derived, never read from env; empty => video unavailable
 
 	// Durable media staging is an explicit capability. Keeping it off until its
 	// signing secret and persistent directory are configured prevents a partial
@@ -375,6 +392,25 @@ func (c *Config) ValidateSemantics() error {
 		}
 		if strings.TrimSpace(c.TTSDefaultVoice) == "" {
 			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires TTS_DEFAULT_VOICE")
+		}
+	}
+	if c.VideoEnabled {
+		// Same fail-fast reasoning as images and speech, plus one more half: without
+		// handle-signing material a submission could never be polled, so the route
+		// would spend a user's daily allowance on a video they can never reach.
+		// 与图像、语音同款 fail-fast,外加一半:没有句柄签名材料,提交出去的任务永远轮询不到,
+		// 那条路由会花掉用户当天的额度去换一条他拿不到的片子。
+		if len(c.QwenAPIKeys) == 0 {
+			return fmt.Errorf("SEC-2 config: VIDEO_ENABLED requires DASHSCOPE_API_KEY")
+		}
+		if _, err := billing.NewVideoSecondsPlan(billing.ProviderQwen, c.VideoUpstreamModel, 1); err != nil {
+			return fmt.Errorf("SEC-2 config: VIDEO_UPSTREAM_MODEL has no exact rate card: %w", err)
+		}
+		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
+			return fmt.Errorf("SEC-2 config: VIDEO_ENABLED requires DASHSCOPE_NATIVE_BASE")
+		}
+		if len(c.VideoHandleKey) == 0 {
+			return fmt.Errorf("CONFIG_VIDEO_HANDLE_KEY_REQUIRED: VIDEO_ENABLED requires MEDIA_SIGNING_SECRET (the video handle key is derived from it)")
 		}
 	}
 	if c.MediaEnabled {

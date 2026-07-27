@@ -77,6 +77,17 @@ func (c *Catalog) List() model.ListEnvelope {
 					Available:  cfg.SpeechEnabled && len(cfg.QwenAPIKeys) > 0,
 					DailyLimit: cfg.SpeechDailyLimit,
 				},
+				// Video is the third generation capability, same whole-path rule with one
+				// extra half: the handle-signing key. A gateway that could submit but never
+				// let the caller poll would advertise a feature that eats a daily clip and
+				// returns nothing (WRK-082 H1). DailyLimit here is CLIPS.
+				// 视频是第三个生成能力,同守整条路法则、外加一半:句柄签名密钥。一个「提交得了、却
+				// 永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能(H1)。
+				// 此处 DailyLimit 的单位是**条**。
+				VideoGeneration: &model.GenProfile{
+					Available:  cfg.VideoEnabled && len(cfg.QwenAPIKeys) > 0 && len(cfg.VideoHandleKey) > 0,
+					DailyLimit: cfg.VideoDailyLimit,
+				},
 			},
 		})
 	}

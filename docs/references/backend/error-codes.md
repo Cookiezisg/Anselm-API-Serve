@@ -46,6 +46,9 @@ audience: [human, ai]
 | `IMAGE_QUOTA_EXHAUSTED` | 429 | daily image generation quota reached, try again tomorrow | 品类日闸(`IMAGE_DAILY_LIMIT`)拒;区别于 RATE_LIMITED(节流)与 QUOTA_EXHAUSTED(月请求额) |
 | `TTS_UNAVAILABLE` | **503** | speech synthesis is not available on this deployment | `SPEECH_ENABLED=false` 或无 Qwen 凭证。**刻意不叫 `SPEECH_UNAVAILABLE`**——那个码是实时 ASR(语音→**文本**)的拒绝,一个码答两个方向会让「麦克风没了」与「读不出这条消息」在线缆上无从区分 |
 | `TTS_QUOTA_EXHAUSTED` | 429 | daily speech synthesis quota reached, try again tomorrow | 品类日闸(`SPEECH_DAILY_LIMIT`,单位**字符**)拒;与 IMAGE_QUOTA_EXHAUSTED 同理但各记各账 |
+| `VIDEO_UNAVAILABLE` | **503** | video generation is not available on this deployment | `VIDEO_ENABLED=false`、无 Qwen 凭证、或无句柄签名材料(三半缺一)。自己的码而非复用 `IMAGE_UNAVAILABLE`——运营者可能只开图像与语音,而一个要视频的客户端被告知「图像不可用」会降级错误的功能 |
+| `VIDEO_QUOTA_EXHAUSTED` | 429 | daily video generation quota reached, try again tomorrow | 品类日闸(`VIDEO_DAILY_LIMIT`,单位**条**非秒)拒;诚实的客户端文案是「今天的 10 条用完了」,不是一个时长预算 |
+| `VIDEO_TASK_NOT_FOUND` | 404 | video task was not found | 被轮询的句柄指不出任何本 install 读得到的任务。**同时**回答「签名验不过」与「上游已忘掉此任务」——区分两者等于向调用方确认「它刚猜中的那个句柄属于**别的** install」 |
 | `MEDIA_UPLOAD_INVALID` | 400 | invalid media upload request | create JSON/sha/MIME/长度、offset、chunk/body 形状非法 |
 | `MEDIA_UPLOAD_NOT_FOUND` | 404 | media upload was not found | 未知或非本 install 的 upload；故意不暴露存在性 |
 | `MEDIA_UPLOAD_CONFLICT` | 409 | media upload is not writable in its current state | stale offset、完成前字节未满、已完成/已过期/replay |

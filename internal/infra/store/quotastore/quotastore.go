@@ -222,6 +222,12 @@ func planCategory(plan billing.Plan) (category string, units int64) {
 		return quota.CategoryImage, plan.PromptQuote
 	case billing.InputCharacters:
 		return quota.CategorySpeech, plan.PromptQuote
+	case billing.InputVideoSeconds:
+		// ONE clip, whatever its length. The money plan quotes seconds; this ledger rations whole
+		// videos, because that is the unit a person understands being out of.
+		// **一条**,不论多长。钱按秒报价;本账本配给的是**整条片子**,因为那才是人能理解自己「用完了」
+		// 的单位。
+		return quota.CategoryVideo, 1
 	default:
 		return "", 0
 	}
@@ -236,6 +242,8 @@ func categoryCap(category string, lim quota.Limits) int64 {
 		return lim.ImageDailyLimit
 	case quota.CategorySpeech:
 		return lim.SpeechDailyLimit
+	case quota.CategoryVideo:
+		return lim.VideoDailyLimit
 	default:
 		return 0
 	}

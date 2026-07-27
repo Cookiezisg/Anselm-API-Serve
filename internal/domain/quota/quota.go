@@ -76,6 +76,7 @@ func (e *CategoryDailyExceededError) Is(target error) bool {
 const (
 	CategoryImage  = "image"
 	CategorySpeech = "speech"
+	CategoryVideo  = "video"
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -128,6 +129,12 @@ type Limits struct {
 	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
 	ImageDailyLimit        int64 // 0 disables the per-install daily image-count cap (WRK-082 P8: default 10).
 	SpeechDailyLimit       int64 // 0 disables the per-install daily speech-character cap (WRK-082 P8: default 50000).
+	// VideoDailyLimit counts CLIPS, not seconds — the user's cap is 一人一天 10 条 (WRK-082 H1).
+	// Billing quotes video by the second, but the thing a person rations is whole videos, so the
+	// category ledger and the money ledger deliberately count different units here.
+	// VideoDailyLimit 数的是**条**、不是秒——用户定的额度是「一人一天 10 条」(H1)。计费按秒报价,
+	// 但人心里配给的是**整条片子**,故品类账本与钱账本在此刻意数不同的单位。
+	VideoDailyLimit int64 // 0 disables the per-install daily video-clip cap (default 10).
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller

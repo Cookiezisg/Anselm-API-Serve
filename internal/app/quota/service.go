@@ -98,6 +98,8 @@ func mapReserveErr(err error) error {
 		switch catErr.Category {
 		case quota.CategoryImage:
 			return apierr.ErrImageQuotaExhausted
+		case quota.CategoryVideo:
+			return apierr.ErrVideoQuotaExhausted
 		case quota.CategorySpeech:
 			return apierr.ErrTTSQuotaExhausted
 		}

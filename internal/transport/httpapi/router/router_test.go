@@ -35,6 +35,8 @@ func testRoutes() routes {
 		speechASR:      echoHandler("speech_asr"),
 		imagesGenerate: echoHandler("images_generate"),
 		audioSpeech:    echoHandler("audio_speech"),
+		videosGenerate: echoHandler("videos_generate"),
+		videoStatus:    echoHandler("video_status"),
 		mediaCreate:    echoHandler("media_create"),
 		mediaStatus:    echoHandler("media_status"),
 		mediaCancel:    echoHandler("media_cancel"),
@@ -61,6 +63,8 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 		{"GET", "/v1/speech/asr", "speech_asr"},
 		{"POST", "/v1/images/generations", "images_generate"},
 		{"POST", "/v1/audio/speech", "audio_speech"},
+		{"POST", "/v1/videos/generations", "videos_generate"},
+		{"GET", "/v1/videos/abc.def", "video_status"},
 		{"POST", "/v1/media/uploads", "media_create"},
 		{"GET", "/v1/media/uploads/mup_test", "media_status"},
 		{"DELETE", "/v1/media/uploads/mup_test", "media_cancel"},
@@ -79,7 +83,7 @@ func TestRouter_DispatchAndLabels(t *testing.T) {
 	}
 
 	// Exactly the five business routes are RED-labeled; /healthz is NOT.
-	want := []string{"install", "install_challenge", "proof_challenge", "chat_completions", "quota", "models", "speech_asr", "images_generate", "audio_speech", "media_create", "media_status", "media_cancel", "media_append", "media_complete", "media_fetch"}
+	want := []string{"install", "install_challenge", "proof_challenge", "chat_completions", "quota", "models", "speech_asr", "images_generate", "audio_speech", "videos_generate", "video_status", "media_create", "media_status", "media_cancel", "media_append", "media_complete", "media_fetch"}
 	if strings.Join(mx.labels, ",") != strings.Join(want, ",") {
 		t.Fatalf("RED labels = %v, want %v", mx.labels, want)
 	}

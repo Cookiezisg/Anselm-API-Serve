@@ -44,6 +44,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `DAILY_SUBLIMIT` | 0 | 0 | 1,000,000,000 | 否 | per-install 日请求次数子限；0=禁用 |
 | `IMAGE_DAILY_LIMIT` | 10 | 0 | 100,000 | 否 | per-install 日图像生成张数上限(品类日闸,WRK-082 批B);0=禁用(仍记账) |
 | `SPEECH_DAILY_LIMIT` | 50,000 | 0 | 100,000,000 | 否 | per-install 日语音合成**字符数**上限(品类日闸,WRK-082 批C);0=禁用(仍记账) |
+| `VIDEO_DAILY_LIMIT` | 10 | 0 | 10,000 | 否 | per-install 日视频**条数**上限(品类日闸,WRK-082 H1,用户拍板);**不是秒**——钱按秒报价,人配给的是整条片子;0=禁用(仍记账) |
 | `INSTALL_PER_IP_HOUR` | 0 | 0 | 1,000,000 | 否 | `/install` per-IP 小时上限；0=禁用 |
 | `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100,000,000 | 否 | 全局日领号 cap；0=禁用 |
 | `INSTALL_PER_FP_DAILY` | 0 | 0 | 1,000,000 | 否 | per-fingerprint 日领号；0=禁用 |
@@ -72,8 +73,10 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `IMAGE_UPSTREAM_MODEL` | `qwen-image-2.0` | 必须是精确已编译 DashScope 图像 rate card;按张计价(reserve==settle) |
 | `SPEECH_ENABLED` | `false` | 语音**合成**能力开关(WRK-082 批C),与图像各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译 TTS rate card + `DASHSCOPE_NATIVE_BASE` + `TTS_DEFAULT_VOICE`,缺一启动 fail-fast |
 | `TTS_UPSTREAM_MODEL` | `qwen3-tts-flash` | 必须是精确已编译 DashScope TTS rate card;按**输入字符**计价(reserve==settle——字符数在调用前即精确已知) |
+| `VIDEO_ENABLED` | `false` | 视频生成能力开关(WRK-082 H1),与图像、语音各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译视频 rate card + `DASHSCOPE_NATIVE_BASE` + **`MEDIA_SIGNING_SECRET`**(句柄签名密钥由它域分离派生),缺一启动 fail-fast |
+| `VIDEO_UPSTREAM_MODEL` | `wan2.7-t2v` | 必须是精确已编译 DashScope 视频 rate card;按**秒**计价(reserve==settle——请求的时长**就是**计费量) |
 | `TTS_DEFAULT_VOICE` | `Cherry` | 请求未带 `voice` 时用的音色(P10:参数留在线缆上,桌面设置页不开) |
-| `DASHSCOPE_NATIVE_BASE` | `https://dashscope.aliyuncs.com` | **原生** DashScope API origin(multimodal-generation);与 compatible-mode 的 `DASHSCOPE_BASE_URL` 不同 origin,绝不互相推导 |
+| `DASHSCOPE_NATIVE_BASE` | 由 `DASHSCOPE_BASE_URL`/workspace 派生(剥掉 `/compatible-mode/v1`);无凭证时兜底 `https://dashscope-intl.aliyuncs.com` | **原生** DashScope API origin(multimodal-generation、video-synthesis、tasks)。它与凭证**共享 host、只在 path 上不同**,故默认值**从凭证派生**而不是写死一个区域:一把新加坡 workspace key 打到 `dashscope.aliyuncs.com`(北京)会答 401 `Incorrect API key provided`——同一把 key,一个区域 200、另一个 401,而报文里没有一个字暗示这跟地理有关(WRK-082 桌面侧实测到的真 401)。显式配置仍然优先 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
 | `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen3-asr-flash-realtime` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |

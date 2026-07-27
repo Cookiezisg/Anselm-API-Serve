@@ -27,6 +27,8 @@ audience: [human, ai]
 | `GET /v1/quota` | `quota` | device proof | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 operator 月钱包 |
 | `POST /v1/images/generations` | `images_generate` | device proof | 同步图像生成(WRK-082 批B):请求 `{model?,prompt,size?,n?}`——`model` 是逻辑别名不选上游、`prompt` 非空≤2000 字符、`size` 为 `WxH`(边 256–4096 且总像素 512²–2048²,默认 `1024x1024`)、`n` 缺席或恒 1,未知字段拒;响应 `{created,data:[{url}]}`——上游 24h OSS 产物 URL 直通(P13,GW-INV-51);上游走原生 DashScope multimodal-generation 同步形;成功即按张 settle(GW-INV-50);拒绝码 `IMAGE_UNAVAILABLE`/`IMAGE_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
 | `POST /v1/audio/speech` | `audio_speech` | device proof | 同步语音合成(WRK-082 批C):请求 `{model?,input,voice?}`——`model` 是逻辑别名不选上游、`input` 非空≤500 **字符**(按 rune 计;更长文本由桌面端按句读切块,网关恒守「一请求=一预留=一结算」,代拍 C5)、`voice` ≤64 字符(网关**不**校验音色目录,未知名字由上游拒回)、**无 `format` 字段**(上游恒返 24kHz/16bit/mono WAV,收下它等于许一个兑现不了的诺,代拍 C3),未知字段拒;响应 `{created,data:[{url}]}`——与图像同形,上游 24h OSS 产物 URL 直通(P13,GW-INV-51、URL 归一到 https 见 GW-INV-54);上游走原生 DashScope multimodal-generation(**无** OpenAI 兼容 TTS 端点,调研实证);成功即按**输入字符数**全额 settle(GW-INV-50);拒绝码 `TTS_UNAVAILABLE`/`TTS_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
+| `POST /v1/videos/generations` | `videos_generate` | device proof | **异步**视频生成提交(WRK-082 H1):请求 `{model?,prompt,seconds?,aspect?,resolution?}`——`model` 是逻辑别名不选上游、`prompt` 非空≤2000 字符、`seconds` 缺席=5 且必须落在 2–15、`aspect` ∈ `landscape`(默认)/`portrait`/`square`(线缆收**形状词**而非 `16:9`,故换一家比例不同的上游时客户端不必改)、`resolution` ∈ `720p`(默认)/`1080p`,未知字段拒;响应 **202** `{id,object:"video.generation",status:"pending",created}`——`id` 是**签名句柄**(见 §1.3),不是上游 task id;钱在**提交处**落定(见 §1.3 钱的形状);拒绝码 `VIDEO_UNAVAILABLE`/`VIDEO_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
+| `GET /v1/videos/{videoId}` | `video_status` | device proof | 轮询一个签名句柄:响应 `{id,object:"video.generation",status,url?}`——`status` ∈ `pending`/`running`/`succeeded`/`failed`(网关**自己的**封闭词表、非上游六态),`url` 仅 `succeeded` 时出现且是裸预签名 OSS 链接(取它时**不带**任何 Authorization 头);**完全不动钱**——不碰钱包、不碰品类账本,唯一的闸是限流器;签名验不过与上游已忘掉该任务**同答** `VIDEO_TASK_NOT_FOUND`(区分两者等于确认「有别的 install 拥有它」) |
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
 | `GET /v1/media/uploads/{uploadId}` | `media_status` | device proof | 返回 install-owned、仍 open 的权威 `offset`；仅用于 ambiguous chunk result 后安全续传 |
@@ -64,6 +66,20 @@ audience: [human, ai]
 真实上游验收入口为 `make qwen-asr-evals`。它只在显式 `EVALS_QWEN_ASR=1` 下运行，要求
 `DASHSCOPE_API_KEY`/`EVALS_KEY` 加 `DASHSCOPE_WORKSPACE_ID`/`EVALS_BASE_URL`；可选
 `EVALS_ASR_WAV=/path/to/pcm16-mono-16k.wav` 时会要求真实转写文本，否则只做 live protocol/connect smoke。
+
+### 1.3 Asynchronous video generation
+
+视频是本网关**唯一的两次请求**能力。chat / image / speech 都在一次 HTTP 请求里开始并结束,故「谁有权读这个结果」从来不必问;视频先提交、桌面端几分钟后才轮询,而这两次请求之间那个答案必须由**某个东西**带着。
+
+**签名句柄**。提交返回的 `id` 不是上游 task id,而是 `base64url(taskId).base64url(HMAC-SHA256(key, installId ‖ 0x00 ‖ body)[:16])`。install id 在 MAC **之内**却不在句柄之内——桌面端本来就知道自己是哪个 install,把它放上线缆只是白白公开它。验证用常数时间比较(这是一次鉴权检查,tag 上的时序侧信道会把伪造一个字节一个字节地送出去)。
+
+**句柄密钥不是 env**。它由 `MEDIA_SIGNING_SECRET` **域分离**派生(`HMAC(secret, "anselm-gateway-video-handle-v1")`),每次 config load 重算、不落任何地方。于是开视频不必让运营者再放一个要轮换、要防泄的 secret,而其中一把被攻破仍伪造不出另一把。`VIDEO_ENABLED=true` 而 secret 缺席时**启动即失败**(`CONFIG_VIDEO_HANDLE_KEY_REQUIRED`)——一次「提交得了却永远轮询不到」的生成,会花掉用户当天的一条额度去换一条他拿不到的片子,比根本不提供更糟。
+
+**钱的形状(与其余能力都不同,故在此明说)**:**费用落在提交,轮询绝不动钱**。一次在上游失败的生成**照样付费**。这是刻意的——另一条路是「只有客户端肯回来轮询时才跑」的退款路径,那意味着**走开的人白拿视频、等着的人付钱**。免费档的钱绝不能取决于有没有人回来看。唯一会退的路径仍是可证明未计费的显式上游拒绝(GW-INV-50);超时、5xx、200 却没有 task id 一律保留全额。
+
+**两个账本数不同的单位**。钱按**秒**报价(`InputVideoSeconds`,wan 720P 每秒一张卡);`install_category_daily` 的 `video` 品类按**条**配给(`VIDEO_DAILY_LIMIT`,默认 **10**)。人心里配给的是整条片子,而不是秒数——按秒配给只会让用户写更短的提示词、而不是少生成视频。
+
+**不可能的时长在预留之前被拒**。`seconds` 越界返 400 且分文未付,而不是把当天的一条额度花在一个上游 400 上。
 
 ## 2. `POST /v1/chat/completions`
 
@@ -164,10 +180,12 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool_calls`。`GET /v1/models` 在标准 model object 上追加：
 
 ```json
-{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true}}}
+{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true},"image_generation":{"available":true,"daily_limit":10},"speech_generation":{"available":true,"daily_limit":50000},"video_generation":{"available":true,"daily_limit":10}}}
 ```
 
-`output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值；`available` 取对应 key pool 是否已配置。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：DeepSeek 的 byte estimate 只参与 quote 并在模型 input limit 处 clamp；Qwen 用完整模型 input/output hard limits后按自洽 usage 退款。
+`output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值。
+
+`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：DeepSeek 的 byte estimate 只参与 quote 并在模型 input limit 处 clamp；Qwen 用完整模型 input/output hard limits后按自洽 usage 退款。
 
 `DASHSCOPE_API_KEY` 与 Qwen endpoint/workspace 是启动期必需配置；缺失会 fail-fast，绝不以“纯文本照常”静默降级。音频不依赖 Qwen 视觉配置，始终先返回 `503 AUDIO_UNAVAILABLE`；未来音频 route 只能经新 capability 决策启用。Qwen 故障同样只返回自身归一错误，不跨 provider。
 

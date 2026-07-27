@@ -143,6 +143,24 @@ var (
 	// RATE_LIMITED (pacing) and QUOTA_EXHAUSTED (the monthly entitlement)
 	// because the honest client action is "try again tomorrow".
 	ErrTTSQuotaExhausted = NewError(statusTooManyRequests, "TTS_QUOTA_EXHAUSTED", "daily speech synthesis quota reached, try again tomorrow")
+	// ErrVideoUnavailable — video generation is not available on this deployment
+	// (VIDEO_ENABLED off, no upstream credential, or no handle-signing material).
+	// Its own code, not IMAGE_UNAVAILABLE: an operator may run image and speech
+	// without video, and a client told "image is unavailable" when it asked for a
+	// video would degrade the wrong feature.
+	ErrVideoUnavailable = NewError(statusServiceUnavailable, "VIDEO_UNAVAILABLE", "video generation is not available on this deployment")
+	// ErrVideoQuotaExhausted — the per-install daily video-CLIP cap is reached
+	// (WRK-082 H1, 用户拍板 10/day). The unit is clips, not seconds: the honest
+	// client message is "you have used today's 10 videos", not a duration budget.
+	ErrVideoQuotaExhausted = NewError(statusTooManyRequests, "VIDEO_QUOTA_EXHAUSTED", "daily video generation quota reached, try again tomorrow")
+	// ErrVideoTaskNotFound — the polled handle names no task this install can
+	// read. It answers BOTH "the signature does not verify" and "the provider has
+	// forgotten this task": distinguishing them would confirm to a caller that
+	// some OTHER install owns the handle it just guessed.
+	//
+	// ErrVideoTaskNotFound —— 被轮询的句柄指不出任何本 install 读得到的任务。它同时回答「签名验不过」
+	// 与「上游已忘掉此任务」:区分两者等于向调用方确认「它刚猜中的那个句柄属于**别的** install」。
+	ErrVideoTaskNotFound = NewError(statusNotFound, "VIDEO_TASK_NOT_FOUND", "video task was not found")
 	// Media upload failures intentionally distinguish client-fixable lifecycle
 	// mistakes from a verified object whose bytes/digest do not match.
 	ErrMediaUploadInvalid   = NewError(statusBadRequest, "MEDIA_UPLOAD_INVALID", "invalid media upload request")

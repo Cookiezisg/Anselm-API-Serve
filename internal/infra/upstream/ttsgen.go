@@ -67,8 +67,8 @@ func NewTTSGen(nativeBase, apiKey string) *TTSGen {
 // qwen3-tts 恒返 24kHz/16bit/mono WAV。故网关线缆上放一个 `format` 等于许一个上游兑现不了的诺
 // (代拍 C3)。
 type dashScopeTTSReq struct {
-	Model string             `json:"model"`
-	Input dashScopeTTSInput  `json:"input"`
+	Model string            `json:"model"`
+	Input dashScopeTTSInput `json:"input"`
 }
 
 type dashScopeTTSInput struct {

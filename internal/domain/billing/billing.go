@@ -28,6 +28,7 @@ const (
 	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
 	QwenImage20           = "qwen-image-2.0"
 	Qwen3TTSFlash         = "qwen3-tts-flash"
+	Wan27T2V              = "wan2.7-t2v"
 	PicoUSDPerMicroUSD    = int64(1_000_000)
 	PicoUSDPerUSD         = int64(1_000_000_000_000)
 	DeepSeekInputLimit    = int64(1_000_000)
@@ -46,8 +47,13 @@ const (
 	// request = one reservation = one settle); the headroom only bounds the card.
 	// QwenTTSInputLimit 界定单次预留的字符数。网关线缆单请求上限为 maxInputChars(代拍 C5:长文本由
 	// 桌面端切块,网关恒守「一请求=一预留=一结算」);余量只界卡。
-	QwenTTSInputLimit     = int64(4_000)
-	QwenTTSOutputLimit    = int64(0)
+	QwenTTSInputLimit  = int64(4_000)
+	QwenTTSOutputLimit = int64(0)
+	// QwenVideoInputLimit bounds SECONDS per reservation. The wire caps one clip at
+	// maxDurationSec; the headroom only bounds the card.
+	// QwenVideoInputLimit 界定单次预留的**秒数**。线缆把单条封在 maxDurationSec;余量只界卡。
+	QwenVideoInputLimit   = int64(15)
+	QwenVideoOutputLimit  = int64(0)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -74,6 +80,7 @@ const (
 	InputAudioSeconds
 	InputImages
 	InputCharacters
+	InputVideoSeconds
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -191,6 +198,18 @@ var rateCards = map[Provider]map[string]RateCard{
 			// 笔对账债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenTTSInputLimit, InputPUSD: 14_000_000, OutputPUSD: 0}},
 		},
+		Wan27T2V: {
+			ID: "wan2.7-t2v-assumed-2026-07-27", Provider: ProviderQwen, Model: Wan27T2V,
+			InputLimit: QwenVideoInputLimit, OutputLimit: QwenVideoOutputLimit,
+			// WORKING ASSUMPTION (WRK-082 H1): ¥0.6 per second at 720P ≈ $0.083 = 83e9 pUSD.
+			// Video is the most expensive thing this gateway can be asked to do — a single 5-second
+			// clip costs more than a whole day's image allowance — so this card is also the one
+			// whose reconciliation matters most. The "assumed" ID keeps that debt visible.
+			// 工作假设(H1):720P ¥0.6/秒 ≈ $0.083 = 83e9 pUSD。视频是本网关能被要求做的最贵的事——
+			// 一条 5 秒片子比一整天的图像额度还贵——故这张卡也是最该对账的一张。ID 里的 "assumed" 让
+			// 这笔债保持可见。
+			tiers: []pricingTier{{InputUpperBound: QwenVideoInputLimit, InputPUSD: 83_000_000_000, OutputPUSD: 0}},
+		},
 	},
 }
 
@@ -286,6 +305,10 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 		}
 	case InputCharacters:
 		if provider != ProviderQwen || model != Qwen3TTSFlash || outputBound != 0 || promptBound < 1 {
+			return Plan{}, ErrUnknownRateCard
+		}
+	case InputVideoSeconds:
+		if provider != ProviderQwen || model != Wan27T2V || outputBound != 0 || promptBound < 1 {
 			return Plan{}, ErrUnknownRateCard
 		}
 	default:
@@ -527,4 +550,29 @@ func nonNegative(v int64) int64 {
 		return 0
 	}
 	return v
+}
+
+// NewVideoSecondsPlan prices a video reservation by clip SECONDS. Like images and characters the
+// cost is deterministic before the call (the requested duration IS the billed quantity), so
+// reserve equals settle for a successful generation — even though the generation itself is
+// asynchronous and minutes long.
+//
+// NewVideoSecondsPlan 按片长**秒数**定价视频预留。与图像、字符一样,成本在调用前即确定(请求的时长
+// **就是**计费量),故成功生成时 reserve == settle——尽管生成本身是异步且分钟级的。
+func NewVideoSecondsPlan(provider Provider, model string, seconds int64) (Plan, error) {
+	return NewPlan(provider, model, InputVideoSeconds, seconds, 0)
+}
+
+// VideoSecondsCost converts an authoritative clip length under a frozen video plan.
+//
+// VideoSecondsCost 在冻结的视频 plan 下换算权威片长。
+func (p Plan) VideoSecondsCost(seconds int64) (int64, error) {
+	if p.InputClass != InputVideoSeconds || seconds < 0 || seconds > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(seconds)
+	if !ok {
+		return 0, ErrUnknownRateCard
+	}
+	return checkedMul(seconds, tier.InputPUSD)
 }

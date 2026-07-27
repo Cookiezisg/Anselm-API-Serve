@@ -132,6 +132,15 @@ jobs:
           }
           check ./internal/app/quota/... 70
           check ./internal/app/chat/...  65
+          # The three generation capabilities spend money on the same wallet and
+          # each owns its own reserve/settle/rollback decision, so they are money
+          # packages too (WRK-082 H1). domain/video is here because a bug in the
+          # handle signature is an AUTHORIZATION bug, not a billing one — it would
+          # let one install read another's video.
+          check ./internal/app/image/...   70
+          check ./internal/app/tts/...     70
+          check ./internal/app/video/...   70
+          check ./internal/domain/video/... 90
 
   # Frontend drift-guard (B0): the dashboard SPA dist is committed under
   # internal/infra/webassets/ui/dist and Go-embedded into the binary, so deploy

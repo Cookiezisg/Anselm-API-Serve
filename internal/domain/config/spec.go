@@ -198,6 +198,15 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.SpeechDailyLimit, 10) }},
+		{Key: "VIDEO_DAILY_LIMIT", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxVideoDailyLimit,
+			apply: func(c *Config, raw string) error {
+				n, err := reqInt64("VIDEO_DAILY_LIMIT", raw, 0, MaxVideoDailyLimit)
+				if err == nil {
+					c.VideoDailyLimit = n
+				}
+				return err
+			},
+			get: func(c *Config) string { return strconv.FormatInt(c.VideoDailyLimit, 10) }},
 		{Key: "INSTALL_PER_IP_HOUR", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: int64(MaxInstallPerIPHour),
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt("INSTALL_PER_IP_HOUR", raw, 0, MaxInstallPerIPHour)
@@ -336,6 +345,8 @@ func Specs() []Spec {
 		{Key: "SPEECH_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.SpeechEnabled) }},
 		{Key: "TTS_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSUpstreamModel }},
 		{Key: "TTS_DEFAULT_VOICE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSDefaultVoice }},
+		{Key: "VIDEO_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.VideoEnabled) }},
+		{Key: "VIDEO_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.VideoUpstreamModel }},
 		{Key: "DASHSCOPE_NATIVE_BASE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DashScopeNativeBase }},
 		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
 		{Key: "DASHSCOPE_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.QwenBaseURL }},
