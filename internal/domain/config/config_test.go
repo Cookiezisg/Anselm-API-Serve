@@ -581,3 +581,189 @@ func TestValidatePowMode(t *testing.T) {
 		t.Fatal("bogus mode should be rejected")
 	}
 }
+
+// --- GATEWAY_MODE rationing mask (debug vs production) -----------------------
+
+// hardened returns validBase with every rationing knob set to a DISTINCT non-zero
+// production value, so a mask test can tell "was masked" from "was already zero"
+// — the failure mode a fixture of zeros would hide completely.
+//
+// hardened = validBase + 每个配额旋钮都设成**互不相同的非零**生产值,于是掩码测试能分辨
+// 「被掩掉了」与「本来就是 0」——一个全零 fixture 会把这个失败模式完全盖住。
+func hardened() Config {
+	c := validBase()
+	c.MonthlyQuota = 5000
+	c.GlobalMonthlySpendPUSD = 420 * billing.PicoUSDPerUSD
+	c.RatePerMin = 8
+	c.DailySublimit = 100
+	c.TokenAnomalyRPM = 9
+	c.ImageDailyLimit = 10
+	c.SpeechDailyLimit = 50_000
+	c.VideoDailyLimit = 10
+	c.InstallPerIPHour = 5
+	c.InstallGlobalDailyCap = 100
+	c.InstallPerFPDaily = 3
+	c.InstallPerFPCooldownSec = 3600
+	c.InstallPowMode = PowModeEnforce
+	c.InstallPowSecret = []byte("pow-secret")
+	return c
+}
+
+func TestDebugModeOnlyMatchesTheExactLiteral(t *testing.T) {
+	// The zero value and every near-miss must ENFORCE; only "debug" opens the gates.
+	for _, mode := range []string{"", "production", "Debug", "DEBUG", "dbg", "debug "} {
+		c := validBase()
+		c.RuntimeMode = mode
+		if c.DebugMode() {
+			t.Fatalf("RuntimeMode %q must not enable the mask", mode)
+		}
+	}
+	c := validBase()
+	c.RuntimeMode = RuntimeModeDebug
+	if !c.DebugMode() {
+		t.Fatal("RuntimeMode debug must enable the mask")
+	}
+}
+
+func TestEffectiveLimitsProductionIsIdentity(t *testing.T) {
+	for _, mode := range []string{"", RuntimeModeProduction} {
+		c := hardened()
+		c.RuntimeMode = mode
+		if got := c.EffectiveLimits(); got.RuntimeMode != mode ||
+			got.MonthlyQuota != c.MonthlyQuota ||
+			got.GlobalMonthlySpendPUSD != c.GlobalMonthlySpendPUSD ||
+			got.RatePerMin != c.RatePerMin ||
+			got.DailySublimit != c.DailySublimit ||
+			got.ImageDailyLimit != c.ImageDailyLimit ||
+			got.InstallPowMode != c.InstallPowMode {
+			t.Fatalf("mode %q must be identity, got %+v", mode, got)
+		}
+	}
+}
+
+func TestEffectiveLimitsDebugOpensEveryRationingGate(t *testing.T) {
+	c := hardened()
+	c.RuntimeMode = RuntimeModeDebug
+	m := c.EffectiveLimits()
+
+	// Money gates raised to the registry ceilings (never denied).
+	if m.MonthlyQuota != MaxMonthlyQuota {
+		t.Fatalf("MonthlyQuota = %d, want ceiling %d", m.MonthlyQuota, MaxMonthlyQuota)
+	}
+	if want := MaxMonthlySpendMicroUSD * billing.PicoUSDPerMicroUSD; m.GlobalMonthlySpendPUSD != want {
+		t.Fatalf("GlobalMonthlySpendPUSD = %d, want ceiling %d", m.GlobalMonthlySpendPUSD, want)
+	}
+	// Every 0-disables gate actually zeroed.
+	zeroed := map[string]int64{
+		"RatePerMin":              int64(m.RatePerMin),
+		"DailySublimit":           m.DailySublimit,
+		"TokenAnomalyRPM":         int64(m.TokenAnomalyRPM),
+		"ImageDailyLimit":         m.ImageDailyLimit,
+		"SpeechDailyLimit":        m.SpeechDailyLimit,
+		"VideoDailyLimit":         m.VideoDailyLimit,
+		"InstallPerIPHour":        int64(m.InstallPerIPHour),
+		"InstallGlobalDailyCap":   m.InstallGlobalDailyCap,
+		"InstallPerFPDaily":       m.InstallPerFPDaily,
+		"InstallPerFPCooldownSec": int64(m.InstallPerFPCooldownSec),
+	}
+	for name, v := range zeroed {
+		if v != 0 {
+			t.Fatalf("%s = %d under debug, want 0 (disabled)", name, v)
+		}
+	}
+	if m.InstallPowMode != PowModeOff {
+		t.Fatalf("InstallPowMode = %q under debug, want off", m.InstallPowMode)
+	}
+	// Non-destructive: the receiver still carries the operator's real values, so
+	// flipping back to production restores them with nothing to re-enter.
+	if c.RatePerMin != 8 || c.MonthlyQuota != 5000 || c.InstallPowMode != PowModeEnforce {
+		t.Fatalf("EffectiveLimits mutated the configured values: %+v", c)
+	}
+}
+
+func TestEffectiveLimitsLeavesProcessProtectionAlone(t *testing.T) {
+	// Debug must never be a route to OOM the box: shape/memory/concurrency caps
+	// protect the PROCESS, they do not ration a user, so the mask must not touch them.
+	c := hardened()
+	c.RuntimeMode = RuntimeModeDebug
+	m := c.EffectiveLimits()
+	if m.MaxTokensCap != c.MaxTokensCap || m.MaxMessages != c.MaxMessages ||
+		m.MaxMessageChars != c.MaxMessageChars || m.MaxMediaParts != c.MaxMediaParts ||
+		m.MaxMediaDecodedBytes != c.MaxMediaDecodedBytes || m.MaxBodyBytes != c.MaxBodyBytes ||
+		m.NGlobalConcurrency != c.NGlobalConcurrency || m.QueueWait != c.QueueWait ||
+		m.DiskMinMB != c.DiskMinMB || m.GoMemLimitMiB != c.GoMemLimitMiB ||
+		m.UpstreamHeaderTimeout != c.UpstreamHeaderTimeout {
+		t.Fatalf("debug mask must not touch process-protection knobs: %+v", m)
+	}
+}
+
+func TestEffectiveLimitsMaskStaysWithinRegistryBoundsAndSemantics(t *testing.T) {
+	// The masked config must itself be a legal config: it is what every
+	// enforcement site reads, and an out-of-bounds mask would be a guardrail
+	// bypass wearing a config's clothes.
+	c := hardened()
+	c.RuntimeMode = RuntimeModeDebug
+	m := c.EffectiveLimits()
+	if err := m.ValidateSemantics(); err != nil {
+		t.Fatalf("masked config must pass ValidateSemantics: %v", err)
+	}
+	for _, s := range Specs() {
+		if !s.Bounded || s.Tier != TierRuntimeHot {
+			continue
+		}
+		raw := s.get(&m)
+		probe := m.Clone()
+		if err := s.apply(probe, raw); err != nil {
+			t.Fatalf("masked %s = %s is out of its own registry bounds: %v", s.Key, raw, err)
+		}
+	}
+}
+
+func TestValidateRuntimeModeClosedEnum(t *testing.T) {
+	for _, ok := range []string{RuntimeModeDebug, RuntimeModeProduction} {
+		if err := ValidateRuntimeMode(ok); err != nil {
+			t.Fatalf("ValidateRuntimeMode(%q) = %v", ok, err)
+		}
+	}
+	// Both near-miss directions are rejected: a "prod" that silently meant debug
+	// would leave a public gateway wide open.
+	for _, bad := range []string{"", "prod", "PRODUCTION", "dev", "off", "true"} {
+		if err := ValidateRuntimeMode(bad); err == nil {
+			t.Fatalf("ValidateRuntimeMode(%q) must reject", bad)
+		}
+	}
+}
+
+func TestApplyOverrideGatewayModeFlipsAndRejectsTypo(t *testing.T) {
+	base := hardened()
+	base.RuntimeMode = RuntimeModeDebug
+
+	got, err := ApplyOverrides(base, map[string]string{"GATEWAY_MODE": "production"})
+	if err != nil {
+		t.Fatalf("flip to production: %v", err)
+	}
+	if got.RuntimeMode != RuntimeModeProduction {
+		t.Fatalf("RuntimeMode = %q, want production", got.RuntimeMode)
+	}
+	// The flip alone must arm the configured values — nothing else was overridden.
+	if got.RatePerMin != 8 || got.MonthlyQuota != 5000 {
+		t.Fatalf("flip must preserve configured knobs, got rate=%d quota=%d", got.RatePerMin, got.MonthlyQuota)
+	}
+
+	if _, err := ApplyOverrides(base, map[string]string{"GATEWAY_MODE": "prod"}); err == nil {
+		t.Fatal("typo GATEWAY_MODE must be rejected by name")
+	}
+}
+
+func TestValidateSemanticsRejectsNonEmptyBadRuntimeMode(t *testing.T) {
+	c := validBase()
+	c.RuntimeMode = "prod"
+	if err := c.ValidateSemantics(); err == nil {
+		t.Fatal("non-empty invalid GATEWAY_MODE must fail semantics")
+	}
+	// The empty zero value stays legal (it is the enforcing default).
+	c.RuntimeMode = ""
+	if err := c.ValidateSemantics(); err != nil {
+		t.Fatalf("empty RuntimeMode must stay valid: %v", err)
+	}
+}

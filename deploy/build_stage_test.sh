@@ -36,6 +36,7 @@ first_line="$(head -n 1 "${STAGE}/gateway.env")"
 	fail "systemd quoting did not preserve/escape secret bytes"
 
 for pair in \
+	'GATEWAY_MODE="debug"' \
 	'DASHBOARD_AUTH_MODE="disabled"' \
 	'GLOBAL_MONTHLY_SPEND_MICRO_USD="420000000"' \
 	'INPUT_TOKEN_CAP="0"' \

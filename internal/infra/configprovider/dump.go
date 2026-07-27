@@ -24,12 +24,22 @@ type DumpItem struct {
 	Max             *int64 `json:"max,omitempty"`
 }
 
-// Dump renders the current effective config as the dashboard's read model — every
-// runtime + restart-constraint item with its live value. SECRETS ARE NEVER
-// INCLUDED (they are absent from config.Specs). The numeric bounds are surfaced
-// only for a bounded runtime knob (the client pre-validation hint).
+// Dump renders the CONFIGURED config as the dashboard's read model — every
+// runtime + restart-constraint item with the value the operator set. SECRETS ARE
+// NEVER INCLUDED (they are absent from config.Specs). The numeric bounds are
+// surfaced only for a bounded runtime knob (the client pre-validation hint).
+//
+// It deliberately reads Configured(), not Load(): this table is an EDITOR, and an
+// editor that showed the debug mask would invite the operator to "fix" a masked 0
+// back to 8 — writing the mask into their own settings and losing the production
+// value. The GATEWAY_MODE row is right there in the same table saying which
+// posture is live.
+//
+// 刻意读 Configured() 而非 Load():这张表是**编辑器**,一个显示掩码值的编辑器会诱使运营者
+// 把被掩成 0 的值「改回」8——等于把掩码写进自己的配置、丢掉生产值。同一张表里的
+// GATEWAY_MODE 那一行会说清楚当前是哪种姿态。
 func (p *Provider) Dump() []DumpItem {
-	items := p.Load().Dump()
+	items := p.Configured().Dump()
 	out := make([]DumpItem, 0, len(items))
 	for _, it := range items {
 		d := DumpItem{
@@ -54,9 +64,18 @@ func (p *Provider) Dump() []DumpItem {
 // (configured/disabled), everything else a plain scalar. No secret byte ever
 // reaches journald (GW-INV: secret-env-only). Lives in infra (not domain) because
 // the secret VALUES live only on the env-loaded Config the provider holds.
+// Unlike Dump (the editor), this reports the EFFECTIVE config: the one question a
+// startup log line has to answer is "what is this process enforcing right now",
+// and under GATEWAY_MODE=debug that is the masked set. gateway_mode leads the
+// line so the masked zeros are never read as a misconfiguration.
+//
+// 与 Dump(编辑器)相反,这里报**生效**配置:启动日志唯一要回答的问题是「这个进程此刻在执行
+// 什么」,而 debug 下那就是掩码后的那一套。gateway_mode 排在最前,免得那些被掩成 0 的值
+// 被误读成配置错误。
 func (p *Provider) Snapshot() []any {
 	c := p.Load()
 	return []any{
+		"gateway_mode", c.RuntimeMode,
 		"deepseek_keys", fmt.Sprintf("sk-*** (%d configured)", len(c.DeepSeekAPIKeys)),
 		"deepseek_base_url", c.DeepSeekBaseURL,
 		"qwen_keys", fmt.Sprintf("*** (%d configured)", len(c.QwenAPIKeys)),

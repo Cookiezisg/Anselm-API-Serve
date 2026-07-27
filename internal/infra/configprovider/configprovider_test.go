@@ -26,6 +26,21 @@ func minimalEnv() map[string]string {
 	}
 }
 
+// productionEnv is minimalEnv with the GATEWAY_MODE rationing mask OFF. The
+// tests that assert a knob's value reaches the live config VERBATIM need it:
+// under the default debug mode those knobs are masked open on purpose, which
+// would fail a swap-mechanics test for a reason that has nothing to do with
+// swapping. Tests about the mask itself use minimalEnv (the real default).
+//
+// productionEnv = minimalEnv + 关掉掩码。凡断言某旋钮**逐字**到达生效配置的测试都要用它:
+// 默认 debug 下那些旋钮是**故意**被掩开的,拿它测 swap 会因为与 swap 无关的原因挂掉。
+// 测掩码本身的用例则用 minimalEnv(即真实默认)。
+func productionEnv() map[string]string {
+	m := minimalEnv()
+	m["GATEWAY_MODE"] = config.RuntimeModeProduction
+	return m
+}
+
 // fakeStore satisfies both settingsLoader and settingsStore for the provider tests.
 type fakeStore struct {
 	mu        sync.Mutex
@@ -347,7 +362,7 @@ func TestLoadBasePowSecretConfigured(t *testing.T) {
 }
 
 func TestLoadLockFreeReturnsLatestAfterSwap(t *testing.T) {
-	p := New(mustLoad(t, minimalEnv()))
+	p := New(mustLoad(t, productionEnv()))
 	ss := newFakeStore()
 	before := p.Load()
 	if before.RatePerMin != 0 {
@@ -367,7 +382,7 @@ func TestLoadLockFreeReturnsLatestAfterSwap(t *testing.T) {
 }
 
 func TestApplyOverridesPersistsThenSwaps(t *testing.T) {
-	p := New(mustLoad(t, minimalEnv()))
+	p := New(mustLoad(t, productionEnv()))
 	ss := newFakeStore()
 	_, err := p.ApplyOverrides(context.Background(), map[string]string{
 		"RATE_PER_MIN":  "33",
@@ -582,7 +597,7 @@ func valStr(v any) string {
 }
 
 func TestConcurrentLoadUnderRace(t *testing.T) {
-	p := New(mustLoad(t, minimalEnv()))
+	p := New(mustLoad(t, productionEnv()))
 	ss := newFakeStore()
 	var wg sync.WaitGroup
 
@@ -611,5 +626,150 @@ func TestConcurrentLoadUnderRace(t *testing.T) {
 	wg.Wait()
 	if p.Load().RatePerMin != 50 {
 		t.Fatalf("final RatePerMin = %d, want 50", p.Load().RatePerMin)
+	}
+}
+
+// --- GATEWAY_MODE: default, mask, and the non-destructive round trip ----------
+
+func TestLoadBaseGatewayModeDefaultsToDebug(t *testing.T) {
+	// A fresh deployment that names no mode is a DEVELOPMENT deployment. This is
+	// the one default whose direction is deliberately permissive, so it is pinned.
+	if c := mustLoad(t, minimalEnv()); c.RuntimeMode != config.RuntimeModeDebug || !c.DebugMode() {
+		t.Fatalf("default GATEWAY_MODE = %q, want debug", c.RuntimeMode)
+	}
+	env := minimalEnv()
+	env["GATEWAY_MODE"] = "production"
+	if c := mustLoad(t, env); c.RuntimeMode != config.RuntimeModeProduction || c.DebugMode() {
+		t.Fatalf("explicit production not honored: %q", c.RuntimeMode)
+	}
+	env["GATEWAY_MODE"] = "prod"
+	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "GATEWAY_MODE") {
+		t.Fatalf("typo GATEWAY_MODE must fail fast, got %v", err)
+	}
+}
+
+func TestProviderDebugMasksLoadButNotConfigured(t *testing.T) {
+	env := minimalEnv() // GATEWAY_MODE unset → debug
+	env["RATE_PER_MIN"] = "8"
+	env["DAILY_SUBLIMIT"] = "100"
+	env["MONTHLY_QUOTA"] = "5000"
+	p := New(mustLoad(t, env))
+
+	// Enforcement reads the mask...
+	eff := p.Load()
+	if eff.RatePerMin != 0 || eff.DailySublimit != 0 {
+		t.Fatalf("debug must open the gates: rate=%d sublimit=%d", eff.RatePerMin, eff.DailySublimit)
+	}
+	if eff.MonthlyQuota != config.MaxMonthlyQuota {
+		t.Fatalf("debug MonthlyQuota = %d, want ceiling", eff.MonthlyQuota)
+	}
+	// ...while the operator's real numbers survive untouched behind it.
+	cfgd := p.Configured()
+	if cfgd.RatePerMin != 8 || cfgd.DailySublimit != 100 || cfgd.MonthlyQuota != 5000 {
+		t.Fatalf("configured values corrupted by the mask: %+v", cfgd)
+	}
+}
+
+func TestDumpShowsConfiguredValuesWhileDebugMasks(t *testing.T) {
+	// The dashboard config table is an EDITOR: showing the mask would invite the
+	// operator to "correct" a masked 0 back to 8 and thereby persist the mask.
+	env := minimalEnv() // debug
+	env["RATE_PER_MIN"] = "8"
+	p := New(mustLoad(t, env))
+
+	got := map[string]string{}
+	for _, it := range p.Dump() {
+		got[it.Key] = it.Value
+	}
+	if got["RATE_PER_MIN"] != "8" {
+		t.Fatalf("Dump RATE_PER_MIN = %q, want the configured 8", got["RATE_PER_MIN"])
+	}
+	if got["GATEWAY_MODE"] != "debug" {
+		t.Fatalf("Dump must surface GATEWAY_MODE=debug, got %q", got["GATEWAY_MODE"])
+	}
+}
+
+func TestHotFlipToProductionArmsConfiguredValuesAndBack(t *testing.T) {
+	// The whole point of a mode: one runtime-hot key, no restart, and the
+	// production numbers are never re-entered.
+	env := minimalEnv() // debug
+	env["RATE_PER_MIN"] = "8"
+	env["DAILY_SUBLIMIT"] = "100"
+	p := New(mustLoad(t, env))
+	ss := newFakeStore()
+
+	if _, err := p.ApplyOverrides(context.Background(),
+		map[string]string{"GATEWAY_MODE": "production"}, ss); err != nil {
+		t.Fatalf("flip to production: %v", err)
+	}
+	if c := p.Load(); c.RatePerMin != 8 || c.DailySublimit != 100 {
+		t.Fatalf("production must arm configured values: rate=%d sublimit=%d", c.RatePerMin, c.DailySublimit)
+	}
+	if ss.data["GATEWAY_MODE"] != "production" {
+		t.Fatalf("mode not persisted: %v", ss.data)
+	}
+
+	// ...and back, still without losing anything.
+	if _, err := p.ApplyOverrides(context.Background(),
+		map[string]string{"GATEWAY_MODE": "debug"}, ss); err != nil {
+		t.Fatalf("flip back to debug: %v", err)
+	}
+	if c := p.Load(); c.RatePerMin != 0 || c.DailySublimit != 0 {
+		t.Fatalf("debug must re-open the gates: rate=%d sublimit=%d", c.RatePerMin, c.DailySublimit)
+	}
+	if c := p.Configured(); c.RatePerMin != 8 || c.DailySublimit != 100 {
+		t.Fatalf("round trip lost the configured values: %+v", c)
+	}
+}
+
+func TestOverrideDuringDebugDoesNotPersistTheMask(t *testing.T) {
+	// The regression this design exists to prevent: an UNRELATED dashboard edit
+	// made while debug is live must not bake the masked zeros into settings.
+	env := minimalEnv() // debug
+	env["RATE_PER_MIN"] = "8"
+	env["DAILY_SUBLIMIT"] = "100"
+	p := New(mustLoad(t, env))
+	ss := newFakeStore()
+
+	if _, err := p.ApplyOverrides(context.Background(),
+		map[string]string{"PUBLIC_MODEL_ID": "anselm-next"}, ss); err != nil {
+		t.Fatalf("unrelated override: %v", err)
+	}
+	if c := p.Configured(); c.RatePerMin != 8 || c.DailySublimit != 100 {
+		t.Fatalf("unrelated edit destroyed configured limits: rate=%d sublimit=%d", c.RatePerMin, c.DailySublimit)
+	}
+	if _, ok := ss.data["RATE_PER_MIN"]; ok {
+		t.Fatalf("mask leaked into the persisted overlay: %v", ss.data)
+	}
+	// The mask is still live and the unrelated edit still took effect.
+	if c := p.Load(); c.RatePerMin != 0 || c.PublicModelID != "anselm-next" {
+		t.Fatalf("post-override state wrong: rate=%d model=%q", c.RatePerMin, c.PublicModelID)
+	}
+}
+
+func TestSnapshotReportsEffectiveModeAndValues(t *testing.T) {
+	// The startup line answers "what is this process enforcing", so it reports the
+	// mask — and leads with gateway_mode so masked zeros are never misread.
+	env := minimalEnv() // debug
+	env["RATE_PER_MIN"] = "8"
+	p := New(mustLoad(t, env))
+	snap := p.Snapshot()
+	if len(snap) < 2 || snap[0] != "gateway_mode" || valStr(snap[1]) != "debug" {
+		t.Fatalf("snapshot must lead with gateway_mode=debug, got %v %v", snap[0], snap[1])
+	}
+	// rate_per_min is logged as an int, so assert on the value, not valStr (which
+	// is deliberately string-only for the secret-masking assertions).
+	seen := false
+	for i := 0; i+1 < len(snap); i += 2 {
+		if snap[i] != "rate_per_min" {
+			continue
+		}
+		seen = true
+		if got, ok := snap[i+1].(int); !ok || got != 0 {
+			t.Fatalf("snapshot rate_per_min = %v, want the enforced 0", snap[i+1])
+		}
+	}
+	if !seen {
+		t.Fatal("snapshot missing rate_per_min")
 	}
 }

@@ -29,6 +29,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 
 | key | 默认 | Min | Max | Restart | 语义 |
 |---|---:|---:|---:|---|---|
+| `GATEWAY_MODE` | **`debug`** | — | — | 否 | 配额总闸 enum `debug\|production`；`debug` 掩开本表所有配给类闸门（见 §2.1）。拼错 fail-fast（两个方向都危险） |
 | `PUBLIC_MODEL_ID` | `anselm-auto` | — | — | 否 | 唯一 client-facing 逻辑模型 id；非空；不选择 provider |
 | `GLOBAL_MONTHLY_SPEND_MICRO_USD` | 420,000,000 | 1 | 9,000,000,000,000 | 否 | operator 全局月花费钱包（默认 $420/月） |
 | `MONTHLY_QUOTA` | 5000 | 1 | 1,000,000,000 | 否 | per-install 月请求次数 |
@@ -60,6 +61,35 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `DISK_MIN_PERCENT` | 5 | 0 | 100 | 否 | data volume 剩余百分比；0=禁用该判据 |
 
 默认 `MAX_BODY_BYTES=256KiB` 时，media decoded 默认是 `196608` bytes（base64 约占原始数据的 4/3）；operator 放大 body cap 后默认公式仍只在启动 env-load 时计算，不会随随后单键 hot edit 自动联动。
+
+## 2.1 `GATEWAY_MODE` 配额掩码（debug / production）
+
+事实源：`config.EffectiveLimits()`（纯函数掩码）+ `configprovider.Provider`（每次 swap 算一次）。
+
+`GATEWAY_MODE=production` 逐字执行下表配置值；`GATEWAY_MODE=debug` 返回一份**掩码副本**，把每一道**配给用户**的闸打开。掩码是**派生且非破坏**的：配置值仍留在 `Provider.Configured()` 上（dashboard 编辑面与 settings overlay 的基准），故 debug 期间任何一次无关的后台编辑都不会把掩码固化，切回 production 逐字节恢复、无需重填。
+
+| | 掩码集（debug 下被打开） | 掩码值 |
+|---|---|---:|
+| 钱 | `MONTHLY_QUOTA` | `1,000,000,000`（registry 天花板） |
+| 钱 | `GLOBAL_MONTHLY_SPEND_MICRO_USD` | `9,000,000,000,000`（registry 天花板） |
+| 吞吐 | `RATE_PER_MIN`、`DAILY_SUBLIMIT`、`TOKEN_ANOMALY_RPM` | `0`（各自的「禁用」值） |
+| 品类日闸 | `IMAGE_DAILY_LIMIT`、`SPEECH_DAILY_LIMIT`、`VIDEO_DAILY_LIMIT` | `0` |
+| 领号 | `INSTALL_PER_IP_HOUR`、`INSTALL_GLOBAL_DAILY_CAP`、`INSTALL_PER_FP_DAILY`、`INSTALL_PER_FP_COOLDOWN_SEC` | `0` |
+| 领号 | `INSTALL_POW_MODE` | `off` |
+
+**不在掩码集**（保护**进程**而非配给用户，两种模式一致）：`MAX_TOKENS_CAP`、`MAX_MESSAGES`、`MAX_MESSAGE_CHARS`、`MAX_MEDIA_PARTS`、`MAX_MEDIA_DECODED_BYTES`、`MAX_BODY_BYTES`、`N_GLOBAL_CONCURRENCY`、`QUEUE_WAIT_MS`、`UPSTREAM_HEADER_TIMEOUT_SEC`、`DISK_MIN_*`、PERF-2 内存预算项。debug 不是把机器 OOM 掉的路子。
+
+**记账两模式完全一致**：reserve/settle 照跑、`spend_ledger` 照记每一 pUSD、日统计表照写。debug 是「**永不拒绝**」，不是「永不记账」——GW-INV-01/06 逐字成立，后台花费视图在 debug 下依然是真相。掩码值本身仍落在各自 registry 闭区间内（有测试守卫），故掩码后的 config 自身也是一份合法 config。
+
+读/写面分工：
+
+| 面 | 读哪一份 | 为什么 |
+|---|---|---|
+| 一切执行点（quota reserve、限速、领号、能力面 `/v1/models`、`X-Quota-Limit`） | `Provider.Load()`（**掩码后**） | 掩码只算一次；分散到十几个执行点各判一次的模式，迟早会在其中一处被忘掉 |
+| dashboard 配置表 `Dump()`、override 基准 | `Provider.Configured()`（**未掩码**） | 它是**编辑器**：显示掩码值会诱使运营者把被掩成 0 的值「改回」8，等于把掩码写进自己的配置 |
+| 启动 `config_snapshot` 日志 | `Provider.Load()`（**掩码后**），`gateway_mode` 打头 | 该行唯一要回答的是「本进程此刻在执行什么」 |
+
+默认 `debug` 是本仓**唯一**方向上放宽的默认值（`deploy/build-stage.sh` 显式写 `GATEWAY_MODE="debug"`），理由是全新部署首先面对的是运营者自己，而被自家日限挡住的开发者看不出是十几道闸里的哪一道。启动时 debug 会额外打一条 `runtime_mode_debug` WARN 列明所有被打开的闸。**对运营者以外的人开放之前必须切 production**——它是 runtime-hot，后台改一行即可，不必重启、不必重新部署。
 
 ## 3. startup-hard / env-only
 

@@ -50,6 +50,21 @@ type Spec struct {
 // are deliberately absent — env-only, never persisted, never dumped.
 func Specs() []Spec {
 	return []Spec{
+		// GATEWAY_MODE leads the registry because it reinterprets a dozen rows
+		// below it: in debug every rationing knob in this table is masked open and
+		// the values shown are what WILL apply once production is selected.
+		// GATEWAY_MODE 排在最前,因为它重新解释了它下面十几行:debug 下表里每个配额旋钮都被
+		// 掩开,显示的值是**切回 production 后**才生效的那个值。
+		{Key: "GATEWAY_MODE", Tier: TierRuntimeHot,
+			apply: func(c *Config, raw string) error {
+				m := strings.TrimSpace(raw)
+				if err := ValidateRuntimeMode(m); err != nil {
+					return err
+				}
+				c.RuntimeMode = m
+				return nil
+			},
+			get: func(c *Config) string { return c.RuntimeMode }},
 		{Key: "PUBLIC_MODEL_ID", Tier: TierRuntimeHot,
 			apply: func(c *Config, raw string) error {
 				id := strings.TrimSpace(raw)

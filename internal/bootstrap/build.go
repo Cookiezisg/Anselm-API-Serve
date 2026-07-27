@@ -155,7 +155,19 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		return nil, fmt.Errorf("load overlay: %w", err)
 	}
 	cfgP := configprovider.New(effective)
+	// From here down `effective` must BE the effective config: GATEWAY_MODE=debug
+	// masks the rationing knobs, and the construction-time consumers below (the
+	// shared rate limiter's initial rate, the budget gauge) have to be seeded from
+	// the very same numbers the request path will enforce — otherwise a debug boot
+	// would rate-limit for the first refresh tick, then silently stop.
+	// 自此 `effective` 必须**就是**生效配置:下面按启动期取值的消费方(共享限速器的初始速率、
+	// 预算 gauge)必须与请求路径执行的是同一组数,否则 debug 启动会先限速一轮再静默停掉。
+	effective = *cfgP.Load()
 	log.Info("config_snapshot", cfgP.Snapshot()...)
+	if effective.DebugMode() {
+		log.Warn("runtime_mode_debug",
+			"detail", "GATEWAY_MODE=debug — every rationing gate is OPEN: monthly request quota, operator spend wallet, rate limit, daily sublimit, image/speech/video daily caps, install issuance gates, PoW. Spend is still recorded in full. Set GATEWAY_MODE=production before exposing this gateway to anyone else.")
+	}
 
 	// 5) Stores.
 	quotaStore := quotastore.New(db.Writer, db.Reader)

@@ -89,6 +89,25 @@ const (
 	PowModeEnforce = "enforce"
 )
 
+// Runtime mode enum (GATEWAY_MODE). production enforces every configured
+// rationing knob; debug opens all of them so the operator can develop the client
+// against their own gateway without being stopped by their own guardrails.
+//
+// The mask is DERIVED, never destructive: the configured numbers stay on the
+// Config the dashboard edits and persists, so flipping back to production
+// restores them byte-for-byte with nothing to re-enter (EffectiveLimits). That is
+// the whole reason this is a mode and not "go set twelve knobs to zero" — the
+// latter loses the production values the moment it is used.
+//
+// 运行模式二元枚举(GATEWAY_MODE)。production 执行全部已配置的配额闸;debug 全开,
+// 让运营者开发客户端时不被自家护栏挡住。掩码是**派生**的、绝不破坏原值:配置值仍留在
+// dashboard 编辑/持久化的那份 Config 上,切回 production 逐字节恢复、无需重填。这正是
+// 它做成「模式」而不是「把十二个旋钮手动改成 0」的理由——后者一用就丢掉了生产值。
+const (
+	RuntimeModeDebug      = "debug"
+	RuntimeModeProduction = "production"
+)
+
 // Config is the immutable, validated runtime configuration. Client-facing model
 // identity, provider targets, and fixed-point spend wallets are explicit facts;
 // there are no token-budget or model-allowlist compatibility mirrors.
@@ -107,6 +126,12 @@ type Config struct {
 	PublicModelID           string // PUBLIC_MODEL_ID(default anselm-auto)
 	TextUpstreamModel       string // TEXT_UPSTREAM_MODEL(exact priced DeepSeek id)
 	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Qwen id)
+
+	// RuntimeMode selects whether the rationing knobs below are enforced
+	// (production) or masked open (debug). See EffectiveLimits for the exact
+	// masked set; the zero value enforces, so a hand-built Config never
+	// accidentally runs unguarded.
+	RuntimeMode string // GATEWAY_MODE(debug|production,默认 debug)
 
 	MonthlyQuota           int64 // MONTHLY_QUOTA(次数,用户可见额度)
 	GlobalMonthlySpendPUSD int64 // GLOBAL_MONTHLY_SPEND_MICRO_USD converted to pUSD
@@ -275,6 +300,83 @@ func BoundInt(name string, v, min, max int) error {
 	return nil
 }
 
+// ValidateRuntimeMode closes the GATEWAY_MODE enum. A typo must never silently
+// land in either posture, because BOTH directions are bad: "prod" quietly meaning
+// debug leaves every gate open on a public gateway, while "dbg" quietly meaning
+// production throttles a developer who has no way to tell which of a dozen knobs
+// stopped them. Exported for reuse on the env-load path.
+//
+// GATEWAY_MODE 是封闭枚举,拼错立即 fail-fast:两个方向都危险——"prod" 静默当成 debug =
+// 公网网关门户大开;"dbg" 静默当成 production = 开发者被自家闸挡住却不知道是哪一道。
+func ValidateRuntimeMode(m string) error {
+	switch m {
+	case RuntimeModeDebug, RuntimeModeProduction:
+		return nil
+	default:
+		return fmt.Errorf("GATEWAY_MODE %q invalid: must be one of debug|production", m)
+	}
+}
+
+// DebugMode reports whether the rationing mask is active. It is true ONLY for the
+// exact literal "debug": every other value — including the zero value of a Config
+// built in a test — enforces the configured limits. The asymmetry is deliberate;
+// the failure direction of an unset mode must be "guardrails on".
+//
+// 只有恰好等于 "debug" 才开掩码;其余值(含零值 Config)一律执行限额。这个不对称是故意的:
+// 模式没设时的失败方向必须是「护栏在」。
+func (c *Config) DebugMode() bool { return c.RuntimeMode == RuntimeModeDebug }
+
+// EffectiveLimits returns the config the ENFORCEMENT path must read: c unchanged
+// in production, or a copy with every rationing knob opened in debug. It is pure
+// and non-destructive — the receiver keeps the operator's configured numbers, and
+// only the returned copy is masked, so the dashboard still edits (and settings
+// still persists) real production values while debug is live.
+//
+// Masked = everything that RATIONS a user: the money gates (per-install monthly
+// request entitlement, the operator monthly pUSD wallet), the throughput gates
+// (rate bucket, daily request sublimit, anomaly auto-throttle), the per-category
+// daily caps (image/speech/video), and the install-issuance gates (per-IP, global
+// daily, per-fingerprint daily + cooldown, PoW).
+//
+// NOT masked = everything that protects the PROCESS rather than rationing a user:
+// body/message/media shape caps, MAX_TOKENS_CAP, N_GLOBAL_CONCURRENCY, queue wait,
+// disk floors and the memory budget. Debug mode must not be a way to OOM the box,
+// and lifting those would change what the gateway can survive, not what it allows.
+// Accounting itself is untouched in both modes: reserve/settle still run and
+// spend_ledger still records every pUSD, so debug is "never denied", never
+// "never counted" (GW-INV-01/06 hold verbatim).
+//
+// 掩码集 = 一切**配给用户**的闸:钱(月请求额度、operator 月钱包)、吞吐(令牌桶、日次数子限、
+// 异常降速)、品类日闸(图/语音/视频)、领号闸(per-IP、全局日、per-fp 日 + 冷却、PoW)。
+// **不**掩码 = 一切保护**进程**而非配给用户的东西:body/message/media 形状上限、MAX_TOKENS_CAP、
+// N_GLOBAL_CONCURRENCY、排队窗口、磁盘下限、内存预算——debug 不该是把机器 OOM 掉的路子。
+// 记账两种模式下都不变:reserve/settle 照跑、spend_ledger 照记每一 pUSD,所以 debug 是
+// 「永不拒绝」,不是「永不记账」(GW-INV-01/06 逐字成立)。
+func (c Config) EffectiveLimits() Config {
+	if !c.DebugMode() {
+		return c
+	}
+	m := c
+	// Money: raised to the registry ceilings rather than to a sentinel, so every
+	// gate keeps its ordinary "reserve against a limit" shape and no store needs a
+	// second, untested "unlimited" code path.
+	m.MonthlyQuota = MaxMonthlyQuota
+	m.GlobalMonthlySpendPUSD = MaxMonthlySpendMicroUSD * billing.PicoUSDPerMicroUSD
+	// Throughput + category + install gates: 0 is each one's documented "disabled".
+	m.RatePerMin = 0
+	m.DailySublimit = 0
+	m.TokenAnomalyRPM = 0
+	m.ImageDailyLimit = 0
+	m.SpeechDailyLimit = 0
+	m.VideoDailyLimit = 0
+	m.InstallPerIPHour = 0
+	m.InstallGlobalDailyCap = 0
+	m.InstallPerFPDaily = 0
+	m.InstallPerFPCooldownSec = 0
+	m.InstallPowMode = PowModeOff
+	return m
+}
+
 // ValidatePowMode fail-fasts on an INSTALL_POW_MODE outside the closed enum so a
 // typo (e.g. "enabled") can never silently land in an unintended state. Exported
 // for reuse on the env-load path.
@@ -432,6 +534,15 @@ func (c *Config) ValidateSemantics() error {
 	}
 	if err := validatePowSecretPresent(c.InstallPowMode, c.InstallPowSecret); err != nil {
 		return err
+	}
+	// An empty RuntimeMode is the enforcing zero value (see DebugMode) and stays
+	// legal so a hand-built Config need not name a mode; a NON-empty typo is not,
+	// because it is someone trying to select a posture and missing.
+	// 空值是「执行限额」的零值,合法;非空拼错则不合法——那是有人想选一个姿态却选错了。
+	if c.RuntimeMode != "" {
+		if err := ValidateRuntimeMode(c.RuntimeMode); err != nil {
+			return err
+		}
 	}
 	return nil
 }

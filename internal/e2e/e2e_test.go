@@ -2047,3 +2047,69 @@ func TestE2EMixedModalitiesInOneRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestE2EDebugModeOpensTheQuotaGateButStillBills is TestE2EQuotaExhaustion with
+// GATEWAY_MODE=debug: the SAME MONTHLY_QUOTA=1 that denies the second request in
+// production must not deny it here, because Provider.Load() hands the reserve gate
+// the masked ceiling. It then asserts the other half of the contract over the real
+// store — spend_ledger still moved for BOTH requests. debug means "never denied",
+// never "never counted"; a debug mode that also stopped billing would make the
+// operator's own spend view lie to them for the entire development phase.
+//
+// 本用例是 TestE2EQuotaExhaustion 的 debug 版:同一个 MONTHLY_QUOTA=1,在 production 下拒第二条,
+// 在这里必须放行(Provider.Load() 交给 reserve 闸的是掩码后的天花板)。随后经真实 store 断言契约的
+// 另一半——两条请求都照样进了账。debug 是「永不拒绝」,绝不是「永不记账」:一个顺手停掉记账的
+// debug 模式,会让运营者自己的花费视图在整个开发期都在骗他。
+func TestE2EDebugModeOpensTheQuotaGateButStillBills(t *testing.T) {
+	up, _ := fakeDeepSeek(t)
+	s := buildStackWith(t, up.URL, func(c *config.Config) {
+		c.MonthlyQuota = 1
+		c.RuntimeMode = config.RuntimeModeDebug
+	})
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+	client := newProofClient(t, srv.Client())
+
+	installID := registerInstall(t, srv, client)
+	chat := func() int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+		req.Header.Set("X-Anselm-Install-ID", installID)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := chat(); code != http.StatusOK {
+		t.Fatalf("first chat want 200 got %d", code)
+	}
+	// The one that 429s under production.
+	if code := chat(); code != http.StatusOK {
+		t.Fatalf("debug mode must not deny past MONTHLY_QUOTA: got %d", code)
+	}
+
+	s.bgWG.Wait() // let the detached settles land before reading the ledger.
+	// The period MUST be snapshotted in the stack's own RESET_TZ: reading the
+	// ledger in UTC lands on the previous day's row for 8 hours out of every 24
+	// and would report a spend of 0 that never happened (GW-INV-05's rule, applied
+	// to the reader). 必须按栈自己的 RESET_TZ 取周期,否则每天有 8 小时会读到前一天的行。
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := domquota.SnapshotPeriod(time.Now(), loc)
+	used, installSpend, globalSpend, err := s.qstore.View(context.Background(), installID, p)
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	if used != 2 {
+		t.Fatalf("both requests must be counted, used = %d", used)
+	}
+	if installSpend <= 0 || globalSpend <= 0 {
+		t.Fatalf("debug must still bill: installSpend=%d globalSpend=%d", installSpend, globalSpend)
+	}
+}

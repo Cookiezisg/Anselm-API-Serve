@@ -94,6 +94,20 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.TTSDefaultVoice = g.str("TTS_DEFAULT_VOICE", "Cherry")
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
+	// GATEWAY_MODE governs every rationing knob in this block (config.EffectiveLimits).
+	// It defaults to DEBUG because this gateway meets its own operator first: a fresh
+	// install exists to build the client against, and a developer blocked by their own
+	// daily caps has no way to tell which of a dozen gates stopped them. The numbers
+	// below are still parsed, bounded and persisted exactly as configured — debug only
+	// masks what is ENFORCED — so flipping GATEWAY_MODE=production (env or dashboard)
+	// arms them immediately with nothing to re-enter.
+	// GATEWAY_MODE 统管本段所有配额旋钮。默认 **debug**:全新部署首先面对的是运营者自己,
+	// 而被自家日限挡住的开发者根本看不出是十几道闸里的哪一道。下面的数值照常解析、限界、持久化
+	// ——debug 只掩**执行**——所以切成 production(env 或后台)即刻上膛,无需重填任何值。
+	c.RuntimeMode = g.str("GATEWAY_MODE", config.RuntimeModeDebug)
+	if err := config.ValidateRuntimeMode(c.RuntimeMode); err != nil {
+		g.failErr(err)
+	}
 	c.MonthlyQuota = g.boundedInt64("MONTHLY_QUOTA", 5000, 1, config.MaxMonthlyQuota)
 
 	monthlySpendMicro := g.boundedInt64("GLOBAL_MONTHLY_SPEND_MICRO_USD", 420_000_000, 1, config.MaxMonthlySpendMicroUSD)

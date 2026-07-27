@@ -156,6 +156,28 @@ fi
 # Production-operable defaults. Runtime-editable values can still be overlaid
 # from SQLite, but a fresh install is safe to expose without a later hardening
 # pass.
+#
+# GATEWAY_MODE is the rationing master switch (config.EffectiveLimits). debug opens
+# EVERY per-user gate — monthly request quota, operator spend wallet, rate bucket,
+# daily sublimit, image/speech/video daily caps, install-issuance gates, PoW — while
+# leaving body/media/memory protection and full spend accounting in place. It ships
+# debug because this gateway is still being developed against; flip it to production
+# (this file, or live from the dashboard — it is runtime-hot, no restart) before the
+# gateway serves anyone but its operator.
+#
+# NOTE the values below are the CURRENT posture, most of them 0 = off from the dev
+# phase. Selecting production arms them AS WRITTEN, so it is only a hardening if they
+# hold hardened numbers. The set recorded in cde6b91 ("deploy: tighten public API
+# abuse controls") was: RATE_PER_MIN=8, DAILY_SUBLIMIT=100, INSTALL_GLOBAL_DAILY_CAP=100,
+# INSTALL_PER_FP_DAILY=3, INSTALL_PER_FP_COOLDOWN_SEC=3600, TOKEN_ANOMALY_RPM=8.
+#
+# GATEWAY_MODE 是配额总闸(config.EffectiveLimits)。debug 打开**每一道**面向用户的闸——月请求额度、
+# operator 花费钱包、令牌桶、日次数子限、图/语音/视频日闸、领号闸、PoW——同时保留 body/media/内存
+# 保护与**完整记账**。默认发 debug 是因为本网关仍在自研阶段;在它开始服务运营者以外的人之前,
+# 把它切成 production(改本文件,或后台热切——它是 runtime-hot、不必重启)。
+# 注意下面这些值是**当前**姿态、多数是开发期留下的 0=关。选 production 是**照写下的值**上膛,
+# 所以只有当它们是收紧后的数字时才算收紧。cde6b91 记录的那套值见上方英文注释。
+write_env GATEWAY_MODE "debug"
 write_env DEEPSEEK_BASE_URL "https://api.deepseek.com"
 write_env PUBLIC_MODEL_ID "anselm-auto"
 write_env TEXT_UPSTREAM_MODEL "deepseek-v4-flash"

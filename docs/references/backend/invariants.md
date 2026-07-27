@@ -95,6 +95,7 @@ audience: [human, ai]
 | GW-INV-38 | `RESET_TZ` 内嵌 tzdata 且 `LoadLocation` 失败 panic，period 统一在 `cfg.Location` 算，绝无 UTC fallback | 月/日额度边界静默偏移 |
 | GW-INV-39 | 每个 runtime 数值 knob 在 env 与 overlay 共用 floor/ceiling；multi-key hot apply 先 clone→全量语义校验→单 tx persist→atomic swap；startup-hard/secret 指名拒绝 | 热改绕过 rate card、钱包、媒体或 OOM 护栏 |
 | GW-INV-40 | SQLite 写池单连接 + `_txlock=immediate`，读池有界；两池 WAL/foreign_keys/synchronous 与 PERF-2 pragma 一致；最坏 RSS 超预算时按 GOMEMLIMIT 规则 warn/fail-fast | 丢写序列化破坏 atomic reserve，或 per-conn cache 使进程 OOM |
+| GW-INV-58 | `GATEWAY_MODE∈{debug,production}`（拼错 fail-fast，空值=执行）是配给类闸门的唯一总开关：掩码在 `Provider` 每次 swap 由纯函数 `EffectiveLimits()` 算**一次**，`Load()` 恒返掩码后配置、`Configured()` 恒返未掩码配置（override 基准 + dashboard `Dump`）；掩码集仅限**配给用户**的闸（月请求额度、operator 月钱包、`RATE_PER_MIN`/`DAILY_SUBLIMIT`/`TOKEN_ANOMALY_RPM`、图/语音/视频日闸、四道领号闸 + PoW），且掩码值必须仍在各自 registry 闭区间内；body/media/`MAX_TOKENS_CAP`/`N_GLOBAL_CONCURRENCY`/磁盘/内存等**进程保护**项与 reserve/settle/`spend_ledger` 记账两模式**逐字不变** | 掩码若在各执行点分别判断，迟早漏掉一处而使某道闸在 production 下静默失效；若 override/Dump 以掩码为基准，debug 期间任一次无关后台编辑都会把「全开」固化进 settings、永久摧毁生产值；若掩码触及进程保护或记账，debug 就成了 OOM 与「花了钱没有账」的路子 |
 
 ## 备注
 
