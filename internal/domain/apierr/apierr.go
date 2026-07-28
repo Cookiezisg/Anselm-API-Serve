@@ -122,6 +122,15 @@ var (
 	// (IMAGE_ENABLED off or no upstream credential). Distinct from a quota denial:
 	// retrying tomorrow cannot repair a disabled capability.
 	ErrImageUnavailable = NewError(statusServiceUnavailable, "IMAGE_UNAVAILABLE", "image generation is not available on this deployment")
+	// ErrImageSourceInvalid — the edit source is not a base64 data URL (WRK-082 H9). It is a SHAPE
+	// refusal, not a validation nicety: ADR 0011 forbids a managed media input carrying a scheme or
+	// a host, because an address this gateway would fetch is an SSRF primitive aimed at our own
+	// network. Requiring `data:` IS the mitigation — a data URL cannot be fetched, it is the bytes.
+	//
+	// ErrImageSourceInvalid——改图的源不是 base64 data URL(H9)。这是一次**形状**拒绝、不是校验的
+	// 客套:ADR 0011 禁止带 scheme 或 host 的受管媒体输入,因为一个本网关会去取的地址,是指向**我们自己
+	// 网络**的 SSRF 原语。要求 `data:` **就是**那个缓解——data URL 取不了,它就是字节本身。
+	ErrImageSourceInvalid = NewError(statusBadRequest, "IMAGE_SOURCE_INVALID", "the edit source must be a base64 data URL, not an address")
 	// ErrImageQuotaExhausted — the per-install daily image-generation cap is
 	// reached (WRK-082 P8). Distinct from RATE_LIMITED (a pacing denial) and from
 	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer

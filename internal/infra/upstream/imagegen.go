@@ -71,7 +71,13 @@ type dashScopeImageMsg struct {
 }
 
 type dashScopeImageMsgChunk struct {
-	Text string `json:"text"`
+	// Both fields are omitempty because a chunk carries exactly ONE of them: DashScope's content
+	// array is a list of single-kind chunks, and emitting `"image":""` on a text-only generation
+	// would make every existing call newly malformed.
+	// 两个字段都 omitempty,因为一个块**恰好**携带其中一个:DashScope 的 content 数组是「单一种类的块」
+	// 的列表,而在纯文本生成上吐出 `"image":""`,会让**每一次既有调用**平白变成畸形请求。
+	Text  string `json:"text,omitempty"`
+	Image string `json:"image,omitempty"`
 }
 
 type dashScopeImageParams struct {
@@ -86,14 +92,30 @@ type dashScopeImageParams struct {
 // GenerateImage 跑一次同步生成。size 以网关线缆 WxH 形到达,在此译成 DashScope 的 W*H 拼法
 // (方言边界)。
 func (g *ImageGen) GenerateImage(ctx context.Context, model, prompt, size string) (string, bool, error) {
+	return g.imageCall(ctx, model, prompt, size, "")
+}
+
+// EditImage is GenerateImage with the source image as one more content chunk — literally the same
+// endpoint (官方文档核准 WRK-082 H9). The source arrives already validated as a data URL by the app
+// layer; this file only puts it on the wire in the documented order (image first, then text).
+//
+// EditImage 是「多一个 content 块」的 GenerateImage——**字面意义上的同一条端点**(H9 官方文档核准)。
+// 源图抵达时已由 app 层验过是 data URL;本文件只负责按文档给的顺序把它放上线缆(先图后文)。
+func (g *ImageGen) EditImage(ctx context.Context, model, prompt, size, sourceDataURL string) (string, bool, error) {
+	return g.imageCall(ctx, model, prompt, size, sourceDataURL)
+}
+
+func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDataURL string) (string, bool, error) {
 	if g == nil || g.base == "" || g.apiKey == "" {
 		return "", false, apierr.ErrImageUnavailable
 	}
 	reqBody := dashScopeImageReq{Model: model}
-	reqBody.Input.Messages = []dashScopeImageMsg{{
-		Role:    "user",
-		Content: []dashScopeImageMsgChunk{{Text: prompt}},
-	}}
+	content := make([]dashScopeImageMsgChunk, 0, 2)
+	if sourceDataURL != "" {
+		content = append(content, dashScopeImageMsgChunk{Image: sourceDataURL})
+	}
+	content = append(content, dashScopeImageMsgChunk{Text: prompt})
+	reqBody.Input.Messages = []dashScopeImageMsg{{Role: "user", Content: content}}
 	reqBody.Parameters = dashScopeImageParams{
 		Size:      strings.ReplaceAll(size, "x", "*"),
 		N:         1,

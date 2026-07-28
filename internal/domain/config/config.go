@@ -187,10 +187,16 @@ type Config struct {
 	// Image generation is an explicit capability (WRK-082 批B): off until the
 	// operator enables it against a priced upstream model. The daily limit is the
 	// per-install image-count cap (P8: default 10; 0 disables the gate).
-	ImageEnabled        bool   // IMAGE_ENABLED
-	ImageUpstreamModel  string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
-	ImageDailyLimit     int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
-	DashScopeNativeBase string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
+	ImageEnabled       bool   // IMAGE_ENABLED
+	ImageUpstreamModel string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
+	// ImageEditUpstreamModel is the EDITING sibling of the generation model — a different model id
+	// on the same endpoint (官方文档核准 WRK-082 H9). Reusing the generation id would post an edit
+	// payload to a model that cannot read the image chunk.
+	// ImageEditUpstreamModel 是生成模型的**改图**兄弟——同一条端点上的**不同** model id(H9 官方文档
+	// 核准)。沿用生成 id 会把改图载荷投给一个读不了图像块的模型。
+	ImageEditUpstreamModel string // IMAGE_EDIT_UPSTREAM_MODEL
+	ImageDailyLimit        int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
+	DashScopeNativeBase    string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
 
 	// Speech synthesis is its own explicit capability (WRK-082 批C), separate from
 	// image generation: an operator may want one and not the other, and they bill in

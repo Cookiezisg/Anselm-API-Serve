@@ -117,6 +117,7 @@ func BuildHandler(d Deps) http.Handler {
 		models:         proof.Protect(d.Proof, models.New(d.Install, d.Models)),
 		speechASR:      proof.Protect(d.Proof, speech.New(d.Speech)),
 		imagesGenerate: proof.Protect(d.Proof, images.New(d.Images)),
+		imagesEdit:     proof.Protect(d.Proof, images.NewEdit(d.Images)),
 		audioSpeech:    proof.Protect(d.Proof, audio.New(d.TTS)),
 		videosGenerate: proof.Protect(d.Proof, http.HandlerFunc(videoHandler.Generate)),
 		videoStatus:    proof.Protect(d.Proof, http.HandlerFunc(videoHandler.Status)),
@@ -143,6 +144,7 @@ type routes struct {
 	models         http.Handler
 	speechASR      http.Handler
 	imagesGenerate http.Handler
+	imagesEdit     http.Handler
 	audioSpeech    http.Handler
 	videosGenerate http.Handler
 	videoStatus    http.Handler
@@ -179,6 +181,7 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("GET /v1/models", wrap("models", rt.models))
 	mux.Handle("GET /v1/speech/asr", wrap("speech_asr", rt.speechASR))
 	mux.Handle("POST /v1/images/generations", wrap("images_generate", rt.imagesGenerate))
+	mux.Handle("POST /v1/images/edits", wrap("images_edit", rt.imagesEdit))
 	mux.Handle("POST /v1/audio/speech", wrap("audio_speech", rt.audioSpeech))
 	mux.Handle("POST /v1/videos/generations", wrap("videos_generate", rt.videosGenerate))
 	mux.Handle("GET /v1/videos/{videoId}", wrap("video_status", rt.videoStatus))

@@ -62,9 +62,20 @@ type fakeUpstream struct {
 	url      string
 	unbilled bool
 	err      error
+	// gotSource records what the edit path handed the upstream, so a test can assert the source
+	// actually travelled rather than that the call merely happened.
+	// gotSource 记下改图路径递给上游的东西,使测试断言的是「源图真的走到了」、而不只是「调用发生过」。
+	gotSource *string
 }
 
 func (f fakeUpstream) GenerateImage(context.Context, string, string, string) (string, bool, error) {
+	return f.url, f.unbilled, f.err
+}
+
+func (f fakeUpstream) EditImage(_ context.Context, _, _, _, source string) (string, bool, error) {
+	if f.gotSource != nil {
+		*f.gotSource = source
+	}
 	return f.url, f.unbilled, f.err
 }
 
@@ -171,3 +182,50 @@ func TestGenerate_BannedInstall(t *testing.T) {
 }
 
 var _ = errors.Is // keep errors imported if assertions change shape
+
+// TestEdit_RefusesAnAddressShapedSource is the SSRF mitigation's test, and it is deliberately at the
+// service layer rather than the handler: the shape guard is a security boundary, and a boundary
+// that only holds when one particular caller is well-behaved is not a boundary. ADR 0011 forbids a
+// managed media input carrying a scheme or a host because an address this gateway would fetch is an
+// SSRF primitive aimed at our own network — including the addresses that look most innocent.
+//
+// TestEdit_RefusesAnAddressShapedSource 是那条 SSRF 缓解的测试,且**刻意**放在 service 层而非 handler:
+// 形状闸是一条**安全边界**,而一条「只在某个特定调用方守规矩时才成立」的边界不是边界。ADR 0011 禁止带
+// scheme 或 host 的受管媒体输入,因为一个本网关会去取的地址,是指向**我们自己网络**的 SSRF 原语——
+// 包括那些看起来最人畜无害的地址。
+func TestEdit_RefusesAnAddressShapedSource(t *testing.T) {
+	for _, src := range []string{
+		"https://example.com/cat.png",
+		"http://169.254.169.254/latest/meta-data/", // the cloud metadata endpoint 云元数据端点
+		"file:///etc/passwd",
+		"//example.com/cat.png",
+		"", // absent is not a source either 缺席同样不是源
+	} {
+		svc := newSvc(enabledCfg(), &fakeQuota{}, fakeUpstream{url: "https://cdn/x.png"})
+		_, ae := svc.Edit(context.Background(), "ins_1", "make it night", "1024x1024", src)
+		if ae == nil || ae.Code != "IMAGE_SOURCE_INVALID" {
+			t.Fatalf("source %q: err = %v, want IMAGE_SOURCE_INVALID", src, ae)
+		}
+	}
+}
+
+// TestEdit_PassesTheDataURLThrough: the happy path, asserting the bytes reach the upstream. Without
+// this the refusal test above could pass against a service that refuses everything.
+//
+// TestEdit_PassesTheDataURLThrough:顺利路径,断言字节抵达上游。少了它,上面那条拒绝测试在一个「拒绝
+// 一切」的 service 上同样会绿。
+func TestEdit_PassesTheDataURLThrough(t *testing.T) {
+	var got string
+	svc := newSvc(enabledCfg(), &fakeQuota{}, fakeUpstream{url: "https://cdn/edited.png", gotSource: &got})
+	const src = "data:image/png;base64,iVBORw0KGgo="
+	url, ae := svc.Edit(context.Background(), "ins_1", "make it night", "1024x1024", src)
+	if ae != nil {
+		t.Fatalf("edit failed: %v", ae)
+	}
+	if url != "https://cdn/edited.png" {
+		t.Fatalf("url = %q, want the edited artifact", url)
+	}
+	if got != src {
+		t.Fatalf("upstream received %q, want the data URL unchanged", got)
+	}
+}

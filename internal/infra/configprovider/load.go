@@ -75,6 +75,11 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
 	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
 	c.ImageUpstreamModel = g.str("IMAGE_UPSTREAM_MODEL", billing.QwenImage20)
+	// The editing sibling defaults to qwen-image-edit — a DIFFERENT model id on the same endpoint
+	// (官方文档核准 H9). It is priced on the same image card, so it needs no rate card of its own.
+	// 改图兄弟默认 qwen-image-edit——同一条端点上的**不同** model id(H9 官方文档核准)。它按同一张图像
+	// 价格卡计价,故不需要自己的费率卡。
+	c.ImageEditUpstreamModel = g.str("IMAGE_EDIT_UPSTREAM_MODEL", "qwen-image-edit")
 	// The generation routes call the NATIVE DashScope API, which shares the credential's HOST and
 	// differs only by PATH. The default therefore DERIVES from QwenBaseURL rather than naming a
 	// region: a Singapore workspace key sent to dashscope.aliyuncs.com (Beijing) answers 401

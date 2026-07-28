@@ -47,6 +47,11 @@ type Quota interface {
 // full quote settle(GW-INV-50)。
 type Upstream interface {
 	GenerateImage(ctx context.Context, model, prompt, size string) (imageURL string, unbilled bool, err error)
+	// EditImage is generation with a source. The source is a base64 data URL, never an address —
+	// see Service.Edit for why that is enforced HERE rather than trusted from the caller.
+	// EditImage 是「带源的生成」。源是 base64 data URL、绝不是地址——为什么这条在**这里**执行而不是
+	// 信任调用方,见 Service.Edit。
+	EditImage(ctx context.Context, model, prompt, size, sourceDataURL string) (imageURL string, unbilled bool, err error)
 }
 
 type Clock interface {
@@ -105,6 +110,37 @@ func (s *Service) Available() bool {
 // Generate 跑完整用例,返回上游产物 URL(URL 直通,P13)。按张确定性 plan 使成功时
 // settle == reserve;可证明未计费的上游拒绝回滚预留。
 func (s *Service) Generate(ctx context.Context, installID, prompt, size string) (string, *apierr.APIError) {
+	return s.run(ctx, installID, prompt, size, "")
+}
+
+// Edit is Generate with a source image (WRK-082 H9). It shares every gate — auth, ban, rate limit,
+// reserve, settle, rollback — because an edit costs an image and IS an image: splitting it into a
+// second service would have duplicated the whole GW-INV-50 settlement dance to express one extra
+// upstream field.
+//
+// **The shape guard is the security decision, and it lives here.** ADR 0011 forbids a managed media
+// input that carries a scheme or a host: an address the gateway would fetch is an SSRF primitive
+// pointed at our own network. A data URL cannot be fetched — it IS the bytes — so requiring that
+// shape is not a formality, it is the entire mitigation. Enforced at the trust boundary rather than
+// trusted from the desktop, because "our client always sends data URLs" is a statement about our
+// client, not about whoever is actually calling.
+//
+// Edit 是「带源图的 Generate」(H9)。它共用**每一道**闸——鉴权、封禁、限流、预留、结算、回滚——因为
+// 一次改图**花的是一张图的钱、产出的也是一张图**:另起一个服务,等于把整套 GW-INV-50 结算舞步复制
+// 一遍,只为表达上游多一个字段。
+//
+// **形状闸就是那个安全决定,而它住在这里。** ADR 0011 禁止带 scheme 或 host 的受管媒体输入:一个网关
+// 会去取的地址,是一个指向**我们自己网络**的 SSRF 原语。data URL **取不了**——它**就是**字节——故要求
+// 这个形状不是形式主义,它**就是**全部的缓解措施。在**信任边界**上执行、而不是信任桌面端,因为「我们的
+// 客户端总是发 data URL」说的是**我们的客户端**,不是实际在调用的那一位。
+func (s *Service) Edit(ctx context.Context, installID, prompt, size, source string) (string, *apierr.APIError) {
+	if !strings.HasPrefix(source, "data:") || strings.Contains(source, "://") {
+		return "", apierr.ErrImageSourceInvalid
+	}
+	return s.run(ctx, installID, prompt, size, source)
+}
+
+func (s *Service) run(ctx context.Context, installID, prompt, size, source string) (string, *apierr.APIError) {
 	if s == nil || s.auth == nil || s.cfg == nil || s.quota == nil || s.upstream == nil || s.clock == nil {
 		return "", apierr.Internal()
 	}
@@ -142,7 +178,15 @@ func (s *Service) Generate(ctx context.Context, installID, prompt, size string) 
 		return "", apierr.Internal()
 	}
 
-	imageURL, unbilled, err := s.upstream.GenerateImage(ctx, model, prompt, size)
+	var (
+		imageURL string
+		unbilled bool
+	)
+	if source == "" {
+		imageURL, unbilled, err = s.upstream.GenerateImage(ctx, model, prompt, size)
+	} else {
+		imageURL, unbilled, err = s.upstream.EditImage(ctx, c.ImageEditUpstreamModel, prompt, size, source)
+	}
 	if err != nil {
 		if unbilled {
 			if rbErr := s.quota.Rollback(ctx, reservation); rbErr != nil {

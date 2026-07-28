@@ -50,6 +50,13 @@ func (u okUpstream) GenerateImage(_ context.Context, _, _, size string) (string,
 	return "https://oss.example/i.png", false, nil
 }
 
+func (u okUpstream) EditImage(_ context.Context, _, _, size, _ string) (string, bool, error) {
+	if u.sizeSeen != nil {
+		*u.sizeSeen = size
+	}
+	return "https://oss.example/edited.png", false, nil
+}
+
 type nowClock struct{}
 
 func (nowClock) Now() time.Time { return time.Unix(1_800_000_000, 0) }
