@@ -366,13 +366,31 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	s.forward(ctx, sink, provider, model, out, cfg, resv)
 }
 
-// routeFor is the entire model-routing policy. It is intentionally a closed,
-// deterministic two-way mapping and never accepts the client's model field.
+// routeFor is the entire model-routing policy. It is intentionally closed, deterministic, and
+// never accepts the client's model field.
+//
+// **One model now serves both modalities (WRK-082 H9).** The multimodal flagship reads text at
+// least as well as the text-only model did, so keeping a second provider bought nothing but a
+// second rate card, a second failure mode, and a second thing to keep current — and the text model
+// we were pointed at is itself marked 即将部分下线. Convergence here is about what the FREE TIER
+// operates and pays for; direct-connect users keep whatever their own credential names.
+//
+// The signature keeps `modality` because the closed mapping is the policy's shape, not an
+// implementation detail: a future split (cheap text tier, cheaper vision tier) belongs here and
+// nowhere else, and deleting the parameter would scatter that decision back into callers.
+//
+// routeFor 是模型路由策略的**全部**。它刻意封闭、确定,且**从不**接受客户端的 model 字段。
+//
+// **现在一个模型服务两种模态(H9)。** 多模态旗舰读文本至少不输给原来那个纯文本模型,故留着第二家
+// provider 换来的只有第二张费率卡、第二种失败形态、第二样要跟进的东西——而我们指着的那个文本模型
+// 自己还标着「即将部分下线」。这里的收敛针对的是**免费档运营并付钱**的那一半;直连用户仍然用他们
+// 自己凭证里的名字。
+//
+// 签名保留 `modality`,因为那个封闭映射**就是**策略的形状、不是实现细节:将来若要再分档(便宜的文本
+// 档、更便宜的视觉档),它属于这里、不属于别处;删掉这个参数等于把那个决定撒回调用方。
 func routeFor(modality domchat.Modality, cfg *config.Config) (billing.Provider, string, int64) {
-	if modality == domchat.ModalityMultimodal {
-		return billing.ProviderQwen, cfg.MultimodalUpstreamModel, billing.Qwen37OutputLimit
-	}
-	return billing.ProviderDeepSeek, cfg.TextUpstreamModel, billing.DeepSeekOutputLimit
+	_ = modality
+	return billing.ProviderQwen, cfg.MultimodalUpstreamModel, billing.Qwen37OutputLimit
 }
 
 func billingPlan(provider billing.Provider, model string, req domchat.InboundRequest, promptEst, maxTok int64) (billing.Plan, *apierr.APIError) {

@@ -17,6 +17,19 @@ import (
 
 func ptrInt64(v int64) *int64 { return &v }
 
+// qwenInPUSD / qwenOutPUSD are the first-tier rates of the model every chat request now routes to
+// (WRK-082 H9 收敛到一个模型). They are named rather than inlined so a card change fails these tests
+// with a number the reader can trace, instead of a bare mismatch.
+//
+// qwenInPUSD / qwenOutPUSD 是**现在每一次 chat 都路由过去的那个模型**的第一档费率(H9 收敛到一个
+// 模型)。写成具名常量而不是内联数字,使换卡时这些测试报出的是一个**读者追得回去**的数,而不是一次
+// 光秃秃的不匹配。
+const (
+	qwenInPUSD       = 1_600_000
+	qwenOutPUSD      = 1_600_000
+	qwenCacheHitPUSD = 320_000
+)
+
 // okAuth is an authenticated active install.
 func okAuth() fakeAuth { return fakeAuth{id: "inst1", status: dominstall.StatusActive, found: true} }
 
@@ -41,14 +54,14 @@ func TestStreaming_RelayAndSettleOnUsage(t *testing.T) {
 	if !strings.Contains(sink.bodyString(), "[DONE]") {
 		t.Fatalf("frames not relayed: %q", sink.bodyString())
 	}
-	want := int64(20*140_000 + 13*280_000)
+	want := int64(20*qwenInPUSD + 13*qwenOutPUSD)
 	if got := q.settles(); len(got) != 1 || got[0] != want {
 		t.Fatalf("expected provider-priced settle %d, got %v", want, got)
 	}
 	if q.rollbacks() != 0 {
 		t.Fatalf("no rollback on success, got %d", q.rollbacks())
 	}
-	if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 1 {
+	if got := mx.upstreamCount(billing.ProviderQwen, "success"); got != 1 {
 		t.Fatalf("valid stream outcome success=%d want 1", got)
 	}
 }
@@ -79,7 +92,7 @@ func TestNonStream_RelayAndSettle(t *testing.T) {
 	if got := sink.bodyString(); got != upstreamBody {
 		t.Fatalf("valid model-free object must pass byte-for-byte: got=%q want=%q", got, upstreamBody)
 	}
-	want := int64(7*140_000 + 5*280_000)
+	want := int64(7*qwenInPUSD + 5*qwenOutPUSD)
 	if got := q.settles(); len(got) != 1 || got[0] != want {
 		t.Fatalf("expected provider-priced settle %d, got %v", want, got)
 	}
@@ -141,7 +154,7 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 			if sink.header("Content-Type") != "application/json" || !strings.Contains(sink.bodyString(), `"code":"UPSTREAM_ERROR"`) {
 				t.Fatalf("want normalized JSON 502 envelope, headers/body=%q/%q", sink.header("Content-Type"), sink.bodyString())
 			}
-			for _, providerModel := range []string{billing.DeepSeekV4Flash, billing.Qwen37Plus, "provider-debug"} {
+			for _, providerModel := range []string{billing.Qwen37Plus, "provider-debug"} {
 				if strings.Contains(sink.bodyString(), providerModel) {
 					t.Fatalf("provider payload leaked through normalized failure: %q", sink.bodyString())
 				}
@@ -152,10 +165,10 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 				t.Fatalf("malformed body must retain full quote %d, got %v", q.reservedPUSD, got)
 			}
-			if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 1 {
+			if got := mx.upstreamCount(billing.ProviderQwen, "error"); got != 1 {
 				t.Fatalf("malformed body outcome error=%d want 1", got)
 			}
-			if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 0 {
+			if got := mx.upstreamCount(billing.ProviderQwen, "success"); got != 0 {
 				t.Fatalf("malformed body must not count success, got %d", got)
 			}
 		})
@@ -183,7 +196,7 @@ func TestStreamingMalformedDataFrameIsSuppressedAndKeepsFullQuote(t *testing.T) 
 	if got := sink.bodyString(); got != want {
 		t.Fatalf("malformed frame or tail crossed public boundary\n got: %q\nwant: %q", got, want)
 	}
-	if strings.Contains(sink.bodyString(), billing.DeepSeekV4Flash) || strings.Contains(sink.bodyString(), "must-not-pass") {
+	if strings.Contains(sink.bodyString(), billing.Qwen37Plus) || strings.Contains(sink.bodyString(), "must-not-pass") {
 		t.Fatalf("provider-owned bytes leaked: %q", sink.bodyString())
 	}
 	if q.rollbacks() != 0 {
@@ -192,8 +205,8 @@ func TestStreamingMalformedDataFrameIsSuppressedAndKeepsFullQuote(t *testing.T) 
 	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 		t.Fatalf("malformed frame must override earlier usage and retain full quote %d, got %v", q.reservedPUSD, got)
 	}
-	if mx.upstreamCount(billing.ProviderDeepSeek, "error") != 1 || mx.upstreamCount(billing.ProviderDeepSeek, "success") != 0 {
-		t.Fatalf("malformed frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderDeepSeek, "error"), mx.upstreamCount(billing.ProviderDeepSeek, "success"))
+	if mx.upstreamCount(billing.ProviderQwen, "error") != 1 || mx.upstreamCount(billing.ProviderQwen, "success") != 0 {
+		t.Fatalf("malformed frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderQwen, "error"), mx.upstreamCount(billing.ProviderQwen, "success"))
 	}
 }
 
@@ -201,7 +214,7 @@ func TestStreamingOversizedFrameIsNeverPartiallyRelayedAndKeepsFullQuote(t *test
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
 	up := &fakeUpstream{body: `data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n" +
-		"data: {\"model\":\"" + billing.DeepSeekV4Flash + `","padding":"` + strings.Repeat("x", 1024*1024) + `"}` + "\n"}
+		"data: {\"model\":\"" + billing.Qwen37Plus + `","padding":"` + strings.Repeat("x", 1024*1024) + `"}` + "\n"}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
@@ -210,14 +223,14 @@ func TestStreamingOversizedFrameIsNeverPartiallyRelayedAndKeepsFullQuote(t *test
 	if got := sink.bodyString(); got != `data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n" {
 		t.Fatalf("oversized frame was partially relayed: len=%d tail=%q", len(got), got[max(0, len(got)-64):])
 	}
-	if strings.Contains(sink.bodyString(), billing.DeepSeekV4Flash) {
+	if strings.Contains(sink.bodyString(), billing.Qwen37Plus) {
 		t.Fatalf("oversized provider model leaked: %q", sink.bodyString())
 	}
 	if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 		t.Fatalf("scanner failure must retain full quote %d, got %v", q.reservedPUSD, got)
 	}
-	if mx.upstreamCount(billing.ProviderDeepSeek, "error") != 1 || mx.upstreamCount(billing.ProviderDeepSeek, "success") != 0 {
-		t.Fatalf("oversized frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderDeepSeek, "error"), mx.upstreamCount(billing.ProviderDeepSeek, "success"))
+	if mx.upstreamCount(billing.ProviderQwen, "error") != 1 || mx.upstreamCount(billing.ProviderQwen, "success") != 0 {
+		t.Fatalf("oversized frame outcomes: error=%d success=%d", mx.upstreamCount(billing.ProviderQwen, "error"), mx.upstreamCount(billing.ProviderQwen, "success"))
 	}
 }
 
@@ -314,7 +327,7 @@ func TestStreamingUsageBeforeDONECannotRefundOnEOFOrDisconnect(t *testing.T) {
 			if got := q.settles(); len(got) != 1 || got[0] != q.reservedPUSD {
 				t.Fatalf("non-terminal usage must retain full quote %d, got %v", q.reservedPUSD, got)
 			}
-			if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 1 {
+			if got := mx.upstreamCount(billing.ProviderQwen, "error"); got != 1 {
 				t.Fatalf("incomplete stream outcome error=%d want 1", got)
 			}
 		})
@@ -333,11 +346,11 @@ func TestStreamingDONEReadBeforeClientWriteFailureAllowsUsageSettle(t *testing.T
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink.appSink())
 	wg.Wait()
 
-	want := int64(10*140_000 + 2*280_000)
+	want := int64(10*qwenInPUSD + 2*qwenOutPUSD)
 	if got := q.settles(); len(got) != 1 || got[0] != want {
 		t.Fatalf("terminal usage settle=%v want %d", got, want)
 	}
-	if got := mx.upstreamCount(billing.ProviderDeepSeek, "success"); got != 1 {
+	if got := mx.upstreamCount(billing.ProviderQwen, "success"); got != 1 {
 		t.Fatalf("fully read provider stream outcome success=%d want 1", got)
 	}
 }
@@ -345,7 +358,7 @@ func TestStreamingDONEReadBeforeClientWriteFailureAllowsUsageSettle(t *testing.T
 func TestBreakerOpen_ShedsWithoutSlot(t *testing.T) {
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
-	up := &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderDeepSeek: true}}
+	up := &fakeUpstream{breakers: map[billing.Provider]bool{billing.ProviderQwen: true}}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
@@ -554,7 +567,7 @@ func TestDeepSeekOverLimitByteEstimateIsClampedForReserveAndForwarded(t *testing
 		t.Fatal(derr)
 	}
 	plan, ae := billingPlan(
-		billing.ProviderDeepSeek, billing.DeepSeekV4Flash, req,
+		billing.ProviderQwen, billing.Qwen37Plus, req,
 		billing.DeepSeekInputLimit+500_000, 16_384,
 	)
 	if ae != nil {
@@ -623,10 +636,10 @@ func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 	if len(q.settles()) != 0 {
 		t.Fatalf("no settle on a rejection, got %v", q.settles())
 	}
-	if got := mx.upstreamCount(billing.ProviderDeepSeek, "rejected"); got != 1 {
+	if got := mx.upstreamCount(billing.ProviderQwen, "rejected"); got != 1 {
 		t.Fatalf("metric label: upstream{rejected}=%d want 1", got)
 	}
-	if got := mx.upstreamCount(billing.ProviderDeepSeek, "error"); got != 0 {
+	if got := mx.upstreamCount(billing.ProviderQwen, "error"); got != 0 {
 		t.Fatalf("a rejection must not count as upstream{error}, got %d", got)
 	}
 }
@@ -646,7 +659,7 @@ func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
 		wantModel    string
 	}{
 		{"text", `{"model":"qwen3.7-plus","messages":[{"role":"user","content":"hello"}]}`,
-			billing.ProviderDeepSeek, billing.DeepSeekV4Flash},
+			billing.ProviderQwen, billing.Qwen37Plus},
 		{"media anywhere in history", mediaBody, billing.ProviderQwen, billing.Qwen37Plus},
 	}
 	for _, tc := range tests {
@@ -697,8 +710,8 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 		provider      billing.Provider
 		upstreamModel string
 	}{
-		{name: "DeepSeek non-stream", provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
-		{name: "DeepSeek stream", stream: true, provider: billing.ProviderDeepSeek, upstreamModel: billing.DeepSeekV4Flash},
+		{name: "text non-stream", provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
+		{name: "text stream", stream: true, provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
 		{name: "Qwen non-stream", media: true, provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
 		{name: "Qwen stream", media: true, stream: true, provider: billing.ProviderQwen, upstreamModel: billing.Qwen37Plus},
 	}
@@ -747,9 +760,15 @@ func TestQwenUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	q := &fakeQuota{}
+	// Once there is only one provider, "never falls back" is stronger than a policy — there is
+	// nothing left to fall back TO. The assertion that still earns its keep is that the refusal is
+	// EXPLICIT: the caller learns the capability is unavailable rather than silently getting a
+	// text-only answer to a request that carried an image.
+	// 只剩一家 provider 之后,「绝不回退」比一条策略更强——**根本没有可回退的对象了**。仍然值得留着的
+	// 断言是**拒绝是显式的**:调用方得知的是「这个能力不可用」,而不是对一个带着图的请求静默收到一个
+	// 纯文本答案。
 	up := &fakeUpstream{available: map[billing.Provider]bool{
-		billing.ProviderDeepSeek: true,
-		billing.ProviderQwen:     false,
+		billing.ProviderQwen: false,
 	}, body: `{}`}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 	sink := newFakeSink()
@@ -763,18 +782,32 @@ func TestQwenUnavailableIsExplicitAndNeverFallsBack(t *testing.T) {
 		t.Fatalf("unavailable route must reject before reserve/open: reserved=%d calls=%+v", q.reservedPUSD, up.callSnapshot())
 	}
 
-	// The absent Qwen credential is isolated: text remains on DeepSeek.
+	// **Text no longer survives this outage, and that is the price of converging to one provider.**
+	// It used to route to a second vendor, so a Qwen outage cost only multimodal. With one model
+	// serving both modalities, one outage takes the whole chat surface — the tradeoff bought a
+	// smaller model surface, one rate card and one dialect, and this test states the cost plainly
+	// rather than letting a future reader discover it during an incident.
+	//
+	// What still must hold: the refusal is EXPLICIT and nothing is reserved or opened.
+	//
+	// **文本不再能挺过这次故障,而这正是收敛到一家 provider 的代价。** 它此前路由到第二家厂商,故 Qwen
+	// 故障只损失多模态。现在一个模型服务两种模态,**一次故障带走整个 chat 面**——这笔交易换来的是更小的
+	// 模型面、一张费率卡、一套方言,而这个测试把代价**明说**,不让将来的读者在一次事故里才发现它。
+	//
+	// 仍然必须成立的是:拒绝是**显式**的,且什么也没预留、没打开。
 	textQ := &fakeQuota{}
 	textSvc, textWG := build(Deps{Auth: okAuth(), Quota: textQ, Upstream: up, RL: &fakeRL{allow: true}})
 	textSink := newFakeSink()
 	textSvc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, textSink)
 	textWG.Wait()
-	if textSink.statusCode() != 200 {
-		t.Fatalf("text must remain available, status=%d body=%s", textSink.statusCode(), textSink.bodyString())
+	if textSink.statusCode() == 200 {
+		t.Fatal("one provider serves both modalities now; a Qwen outage cannot leave text working")
 	}
-	calls := up.callSnapshot()
-	if len(calls) != 1 || calls[0].Provider != billing.ProviderDeepSeek {
-		t.Fatalf("text route calls=%+v", calls)
+	if textQ.reservedPUSD != 0 {
+		t.Fatalf("an unavailable route must refuse before reserving: %d", textQ.reservedPUSD)
+	}
+	if calls := up.callSnapshot(); len(calls) != 0 {
+		t.Fatalf("nothing may reach the upstream when it is unavailable: %+v", calls)
 	}
 }
 
@@ -805,10 +838,17 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 		name        string
 		body        string
 		openBreaker billing.Provider
-		wantRoute   billing.Provider
 	}{
-		{"DeepSeek open does not block Qwen", mediaBody, billing.ProviderDeepSeek, billing.ProviderQwen},
-		{"Qwen open does not block DeepSeek", goodBody, billing.ProviderQwen, billing.ProviderDeepSeek},
+		// **Cross-provider isolation is no longer observable — there is one provider.** The rows
+		// below therefore assert the surviving half: an open breaker refuses the route it belongs
+		// to, for both request shapes, rather than leaking into a success. Keeping the test (with
+		// its premise stated) beats deleting it, because a future second provider must find the
+		// isolation contract still written down.
+		// **跨 provider 的隔离已经观察不到了——只剩一家。** 故下面这两行断言的是活下来的那一半:一条
+		// 打开的熔断器会拒掉它所属的那条路由(两种请求形状都是),而不是漏成一次成功。把测试**连同它的
+		// 前提一起留着**,好过删掉它——将来真加第二家 provider 时,那份隔离契约必须还写在这儿。
+		{"an open breaker refuses a media request", mediaBody, billing.ProviderQwen},
+		{"an open breaker refuses a text request", goodBody, billing.ProviderQwen},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -821,12 +861,11 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 			sink := newFakeSink()
 			svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(tc.body)}, sink)
 			wg.Wait()
-			if sink.statusCode() != 200 {
-				t.Fatalf("status=%d body=%s", sink.statusCode(), sink.bodyString())
+			if sink.statusCode() == 200 {
+				t.Fatalf("an open breaker must refuse, got 200: %s", sink.bodyString())
 			}
-			calls := up.callSnapshot()
-			if len(calls) != 1 || calls[0].Provider != tc.wantRoute {
-				t.Fatalf("calls=%+v want=%s", calls, tc.wantRoute)
+			if calls := up.callSnapshot(); len(calls) != 0 {
+				t.Fatalf("an open breaker must not reach the upstream: %+v", calls)
 			}
 		})
 	}
@@ -870,14 +909,22 @@ func TestQwenFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 }
 
 func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
-	t.Run("DeepSeek cache dimensions", func(t *testing.T) {
+	// The two providers report cache dimensions in DIFFERENT fields — DeepSeek in
+	// `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`, Qwen in
+	// `prompt_tokens_details.cached_tokens`. Now that every request routes to Qwen, feeding the
+	// DeepSeek shape would leave the discount silently unexercised and the test asserting nothing.
+	//
+	// 两家在**不同字段**里报缓存维度——DeepSeek 在 `prompt_cache_hit_tokens`/`..._miss_tokens`,
+	// Qwen 在 `prompt_tokens_details.cached_tokens`。既然现在每个请求都路由到 Qwen,喂 DeepSeek 那个
+	// 形状会让折扣**静默地没有被走到**,而测试断言不了任何东西。
+	t.Run("cache dimensions", func(t *testing.T) {
 		q := &fakeQuota{}
-		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}}`}
+		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}`}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 		sink := newFakeSink()
 		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 		wg.Wait()
-		want := int64(4*2_800 + 6*140_000 + 2*280_000)
+		want := int64(4*qwenCacheHitPUSD + 6*qwenInPUSD + 2*qwenOutPUSD)
 		if got := q.settles(); len(got) != 1 || got[0] != want {
 			t.Fatalf("settles=%v want=%d", got, want)
 		}
@@ -892,15 +939,22 @@ func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
 		sink := newFakeSink()
 		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodStreamBody)}, sink)
 		wg.Wait()
-		want := int64(12*140_000 + 3*280_000)
+		want := int64(12*qwenInPUSD + 3*qwenOutPUSD)
 		if got := q.settles(); len(got) != 1 || got[0] != want {
 			t.Fatalf("snapshots were summed or mispriced: settles=%v want=%d", got, want)
 		}
 	})
 
+	// **What counts as "contradictory" is provider-specific.** Under Qwen a total larger than
+	// prompt+completion is not nonsense — that is how thinking tokens surface, and the service
+	// derives output from total-prompt on purpose. The genuinely impossible shape is a total
+	// SMALLER than the prompt alone, which no accounting can explain.
+	// **什么算「自相矛盾」是逐 provider 的。** 在 Qwen 下,total 大于 prompt+completion **不是**胡说
+	// ——思考 token 正是这么冒出来的,而服务**刻意**用 total-prompt 推导输出。真正不可能的形状是
+	// total **小于** prompt 本身,那没有任何记账解释得通。
 	t.Run("contradictory usage keeps reservation", func(t *testing.T) {
 		q := &fakeQuota{}
-		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":99}}`}
+		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":3}}`}
 		svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}})
 		svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, newFakeSink())
 		wg.Wait()
@@ -939,7 +993,7 @@ func TestQwenHardQuoteForImages(t *testing.T) {
 	}
 }
 
-func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
+func TestBillingSettlesTruthAndDriftIsUnreachableWhileTheQuoteIsMaximal(t *testing.T) {
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
 	logger := &fakeLogger{}
@@ -951,12 +1005,48 @@ func TestBillingDriftSettlesTruthAndEmitsMetricWarn(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(body)}, sink)
 	wg.Wait()
-	want := int64(100*140_000 + 100*280_000)
-	if got := q.settles(); len(got) != 1 || got[0] != want || got[0] <= q.reservedPUSD {
-		t.Fatalf("actual top-up must settle truth: reserved=%d got=%v want=%d", q.reservedPUSD, got, want)
+	// **A top-up can no longer happen on this route, and that is a consequence of convergence.**
+	// The Qwen quote reserves the card's COMPLETE input/output limits because its compatibility
+	// usage cannot prove a thinking-token sub-cap — so actual usage is always ≤ the reservation and
+	// settle is always a refund. Now that every request routes to Qwen, drift-up is unreachable.
+	//
+	// What still must hold, and is what this test protects: settle reports the TRUTH from
+	// authoritative usage rather than the reservation, so the operator's wallet is not quietly
+	// charged the maximum for a small answer.
+	//
+	// **这条路由上已经不可能再有「补收」了,而这是收敛的后果。** Qwen 的报价预留卡的**完整**输入/输出
+	// 上限,因为它的兼容 usage 证明不了 thinking-token 的子上限——故实际用量恒 ≤ 预留,结算恒为退款。
+	// 既然现在每个请求都路由到 Qwen,**向上漂移够不着了**。
+	//
+	// 仍然必须成立、也正是本测试守着的:结算按**权威 usage 说真话**、不是按预留,故 operator 的钱包
+	// 不会为一个很短的回答被静默收走最大值。
+	want := int64(100*qwenInPUSD + 100*qwenOutPUSD)
+	if got := q.settles(); len(got) != 1 || got[0] != want {
+		t.Fatalf("settle must report truth: reserved=%d got=%v want=%d", q.reservedPUSD, got, want)
 	}
-	if mx.driftCount(billing.ProviderDeepSeek) != 1 || logger.warningCount() != 1 {
-		t.Fatalf("drift observability: metric=%d warns=%d", mx.driftCount(billing.ProviderDeepSeek), logger.warningCount())
+	if q.reservedPUSD <= want {
+		t.Fatalf("the Qwen quote reserves the card maximum, so it must exceed a small actual: reserved=%d actual=%d",
+			q.reservedPUSD, want)
+	}
+	// **The drift alarm is silent, and that is now structural rather than a bug.** It fires when
+	// authoritative usage exceeds the reservation; the Qwen quote reserves the card's complete
+	// limits, so usage cannot exceed it. Converging every request onto that card therefore took a
+	// safety net out of service.
+	//
+	// The mechanism is kept, not deleted: it is the thing that would catch a future route whose
+	// quote is an estimate again (a cheaper text tier, another provider). Asserting silence — with
+	// the reason written down — is how that stays visible instead of rotting into dead code nobody
+	// remembers is unreachable.
+	//
+	// **漂移告警是哑的,而这现在是结构性的、不是 bug。** 它在权威用量**超过**预留时响;而 Qwen 的报价
+	// 预留的是卡的完整上限,故用量不可能超。把每个请求都收敛到那张卡上,因此让一张安全网**停止服役**。
+	//
+	// 机制**保留、不删**:将来某条报价重新变成估算的路由(更便宜的文本档、另一家 provider),要靠它来
+	// 接住。**断言它沉默、并把理由写下来**,才是让这件事保持可见的方式,而不是烂成一段没人记得够不着的
+	// 死代码。
+	if mx.driftCount(billing.ProviderQwen) != 0 || logger.warningCount() != 0 {
+		t.Fatalf("drift cannot occur while the quote is the card maximum: metric=%d warns=%d",
+			mx.driftCount(billing.ProviderQwen), logger.warningCount())
 	}
 }
 
@@ -968,10 +1058,15 @@ func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 		wantWire  *int64
 		wantQuote int64
 	}{
-		{"DeepSeek absent max_tokens explicitly capped on wire and quote", `{"messages":[{"role":"user","content":"hi"}]}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
-		{"DeepSeek high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.DeepSeekOutputLimit), billing.DeepSeekOutputLimit},
-		{"DeepSeek lower client max_tokens respected", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, ptrInt64(1), 1},
-		{"Qwen high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
+		{"absent max_tokens explicitly capped on wire and quote", `{"messages":[{"role":"user","content":"hi"}]}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
+		{"text high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
+		// The WIRE still honours a small client max_tokens; the QUOTE does not, because the Qwen
+		// card's usage cannot prove a thinking-token sub-cap and the wallet must stay conservative.
+		// Those two columns diverging is the point of this row.
+		// **线缆**仍然尊重一个小的客户端 max_tokens;**报价**不尊重,因为 Qwen 卡的 usage 证明不了
+		// thinking-token 的子上限,而钱包必须保守。这两列**分岔**正是这一行的意义。
+		{"text lower client max_tokens respected on the wire only", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}`, ptrInt64(1), billing.Qwen37OutputLimit},
+		{"media high client max_tokens capped on wire", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}],"max_tokens":999999}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

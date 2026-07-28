@@ -100,7 +100,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 
 | key | 默认 | 约束 / 语义 |
 |---|---|---|
-| `TEXT_UPSTREAM_MODEL` | `deepseek-v4-flash` | 必须是 DeepSeek 的精确已编译 rate card；纯文本路由 |
+| `TEXT_UPSTREAM_MODEL` | — | **已停用(WRK-082 H9)**。文本与多模态现在共用 `MULTIMODAL_UPSTREAM_MODEL`——一个模型服务两种模态,免费档模型面从 9 收敛到 6。三条真实后果写在 invariants GW-INV-54 |
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `IMAGE_ENABLED` | `false` | 图像生成能力开关(WRK-082 批B);开启时要求 `DASHSCOPE_API_KEY` + 精确已编译图像 rate card + `DASHSCOPE_NATIVE_BASE`,缺一启动 fail-fast |
 | `IMAGE_UPSTREAM_MODEL` | `qwen-image-2.0` | 必须是精确已编译 DashScope 图像 rate card;按张计价(reserve==settle) |
