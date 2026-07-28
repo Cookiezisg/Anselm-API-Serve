@@ -197,4 +197,25 @@ if DEEPSEEK_API_KEY=$'bad\nsecret' \
 	fail "multiline secret was accepted"
 fi
 
-printf 'build-stage quoting/config/manifest/Caddy-render tests OK\n'
+# The two halves of the payload contract must AGREE: build-stage.sh decides what to ship, and
+# remote-entrypoint.sh decides what it will accept. Nothing used to compare them, so H9b's
+# `meta/media-domain` shipped for three commits and the server refused every one of them with
+# "stage file set differs from the reviewed payload" — a deploy failure whose cause is nowhere near
+# its message. This check is the missing comparison, and it lives here because this is the only
+# place that has a real stage in hand.
+#
+# 载荷契约的两半必须**一致**:build-stage.sh 决定发什么,remote-entrypoint.sh 决定收什么。此前没有任何
+# 东西比对过它们,于是 H9b 的 `meta/media-domain` 发了三个提交、服务器每一次都以「stage file set differs
+# from the reviewed payload」拒收——一句离病因十万八千里的部署失败。这条检查就是那次缺失的比对,放在这里
+# 是因为只有这里手上有一个**真的** stage。
+EXPECTED_FROM_ENTRYPOINT="$(sed -n "/^EXPECTED_FILES=/,/LC_ALL=C sort)/p" "${SCRIPT_DIR}/remote-entrypoint.sh" |
+	grep -oE "'[^']+'" | tr -d "'" | grep -v '%' | LC_ALL=C sort)"
+[[ -n "${EXPECTED_FROM_ENTRYPOINT}" ]] || fail "could not read EXPECTED_FILES out of remote-entrypoint.sh"
+ACTUAL_FROM_STAGE="$(cd "${STAGE}" && find . -mindepth 1 -type f | sed 's|^\./||' | LC_ALL=C sort)"
+if [[ "${EXPECTED_FROM_ENTRYPOINT}" != "${ACTUAL_FROM_STAGE}" ]]; then
+	printf 'build_stage_test: staged set and remote-entrypoint EXPECTED_FILES disagree\n' >&2
+	diff <(printf '%s\n' "${EXPECTED_FROM_ENTRYPOINT}") <(printf '%s\n' "${ACTUAL_FROM_STAGE}") >&2 || true
+	fail "payload contract drift (left = entrypoint accepts, right = build-stage ships)"
+fi
+
+printf 'build-stage quoting/config/manifest/Caddy-render/payload-contract tests OK\n'
