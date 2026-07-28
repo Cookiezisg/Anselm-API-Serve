@@ -110,7 +110,7 @@ audience: [human, ai]
 | `charged_pusd` | INTEGER | nullable CHECK ≥0；settle 可大于 reserved（truthful top-up） |
 | `state` | TEXT | NOT NULL CHECK IN (`open`,`settled`,`rolled_back`,`orphaned`) |
 | `sublimit_applied` | INTEGER | NOT NULL DEFAULT 0 CHECK IN (0,1) |
-| `category` | TEXT | NOT NULL DEFAULT ''；品类日账本归属(`image`;空=非品类请求)——0006 |
+| `category` | TEXT | NOT NULL DEFAULT ''；品类日账本归属(`image`/`speech`/`video`/`voice`;空=非品类请求)——0006 |
 | `category_units` | INTEGER | NOT NULL DEFAULT 0；该预留消耗的品类 units(图=张数)——0006 |
 | `created_at` | DATETIME | NOT NULL |
 | `terminal_at` | DATETIME | nullable |
@@ -192,6 +192,27 @@ staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能
 
 `received_bytes` 是进度，不是完成证明；完成时必须从暂存文件重算 SHA-256 后才能转 `completed` 并创建 lease。
 过期/删除必须先撤销 DB capability，再删除文件、最后 acknowledge；崩溃恢复会截去 fsync 后但 cursor 未推进的尾部，绝不因无法证明成功而把媒体跨 install 复用。
+
+## 5.5 克隆音色库存（0007）
+
+`install_voices`：`id TEXT PRIMARY KEY`、`install_id TEXT NOT NULL`、`name TEXT NOT NULL`、
+`upstream_id TEXT NOT NULL`、`created_at INTEGER NOT NULL`；`UNIQUE(install_id,name)` +
+`INDEX(install_id)`。
+
+**桌面端已有自己的 voices 行，为什么这里还要一张表**：因为音色住在**我们的** provider 账号里、不是
+用户的。每个 install 的克隆都登记在**同一把** DashScope 凭证之下，故本网关是唯一能回答那两个别处答
+不了的问题的地方——「这个 install 有几个」（他的库存）与「总共存在几个」（我们的，对着
+`VOICE_ACCOUNT_CEILING`）。桌面那一行是客户端侧的**指针**；这一行才是真正消耗共享资源的那个东西。
+
+**是库存、不是配额——schema 本身就这么说。** 日表按 `period_day` 作键、靠「明天根本匹配不上」自我
+重置；这张表**根本没有周期列**，因为时间的流逝不会腾出任何位置。一个音色占着它的位直到有人删掉，而
+创建花一次钱（$0.2）。这里任何读起来像「会续」的东西都是撒谎——**而这也正是它不足以界住成本的原因**：
+库存界的是**同时**持有几个，删除会腾位，故累计花费由 `VOICE_DAILY_LIMIT` 品类日闸与 pUSD 钱包界定，
+不由这张表。
+
+`UNIQUE(install_id,name)` 是那条**防孤儿**规则：一对 (install, name) 恰好映射到一个上游登记。同名登记
+两次会让第一个搁浅在我们账号里——再没有东西够得着它，而它会永远占着那份共享上限。它也是**重名竞态唯一
+的接手者**：两次并发登记在 service 前置检查里都会通过。
 
 ## 6. 迁移框架与连接纪律
 

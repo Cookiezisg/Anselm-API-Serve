@@ -197,6 +197,15 @@ var (
 	// (WRK-082 H1, 用户拍板 10/day). The unit is clips, not seconds: the honest
 	// client message is "you have used today's 10 videos", not a duration budget.
 	ErrVideoQuotaExhausted = NewError(statusTooManyRequests, "VIDEO_QUOTA_EXHAUSTED", "daily video generation quota reached, try again tomorrow")
+
+	// ErrVoiceQuotaExhausted — the per-install daily voice-ENROLLMENT cap is reached. "tomorrow" is
+	// honest here in a way the inventory refusal is not: this ledger DOES reset with the day, while
+	// VOICE_INVENTORY_FULL never does and therefore says "delete one" instead. Two refusals, two
+	// remedies; collapsing them would send a user to wait for a slot that will never open.
+	// ErrVoiceQuotaExhausted——逐 install 的每日**登记**次数上限到顶。「明天」在这里是诚实的,而在库存
+	// 拒绝那里不是:**这个**账本真的会随天重置,而 VOICE_INVENTORY_FULL 永远不会、故它说的是「删一个」。
+	// 两条拒绝、两种补救;合并它们会让用户去等一个永远不会开的位置。
+	ErrVoiceQuotaExhausted = NewError(statusTooManyRequests, "VOICE_QUOTA_EXHAUSTED", "daily voice enrollment quota reached, try again tomorrow")
 	// ErrVideoTaskNotFound — the polled handle names no task this install can
 	// read. It answers BOTH "the signature does not verify" and "the provider has
 	// forgotten this task": distinguishing them would confirm to a caller that

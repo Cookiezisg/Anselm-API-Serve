@@ -154,6 +154,13 @@ jobs:
           }
           check ./internal/app/quota/... 70
           check ./internal/app/chat/...  65
+          # The generation capabilities, kept in step with ci.yml. This gate runs on the path that
+          # actually reaches production, so it must not check LESS than the PR gate does.
+          check ./internal/app/image/...   70
+          check ./internal/app/tts/...     70
+          check ./internal/app/video/...   70
+          check ./internal/domain/video/... 90
+          check ./internal/app/voice/...   70
 
       - name: docs governance
         run: make docs

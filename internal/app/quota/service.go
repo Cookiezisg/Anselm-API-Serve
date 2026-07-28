@@ -102,6 +102,8 @@ func mapReserveErr(err error) error {
 			return apierr.ErrVideoQuotaExhausted
 		case quota.CategorySpeech:
 			return apierr.ErrTTSQuotaExhausted
+		case quota.CategoryVoice:
+			return apierr.ErrVoiceQuotaExhausted
 		}
 		return err
 	default:

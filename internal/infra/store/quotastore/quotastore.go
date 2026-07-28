@@ -228,6 +228,8 @@ func planCategory(plan billing.Plan) (category string, units int64) {
 		// **一条**,不论多长。钱按秒报价;本账本配给的是**整条片子**,因为那才是人能理解自己「用完了」
 		// 的单位。
 		return quota.CategoryVideo, 1
+	case billing.InputVoices:
+		return quota.CategoryVoice, plan.PromptQuote
 	default:
 		return "", 0
 	}
@@ -244,6 +246,8 @@ func categoryCap(category string, lim quota.Limits) int64 {
 		return lim.SpeechDailyLimit
 	case quota.CategoryVideo:
 		return lim.VideoDailyLimit
+	case quota.CategoryVoice:
+		return lim.VoiceDailyLimit
 	default:
 		return 0
 	}

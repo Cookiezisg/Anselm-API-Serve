@@ -77,6 +77,14 @@ const (
 	CategoryImage  = "image"
 	CategorySpeech = "speech"
 	CategoryVideo  = "video"
+	// CategoryVoice rations voice ENROLLMENTS per day. It is the one category whose purchase
+	// persists, and therefore the one where the daily gate does work no other ceiling does: the
+	// inventory cap bounds how many voices a person HOLDS, and deleting one frees a slot, so
+	// enroll→delete→enroll would spend without limit. This gate is what bounds the cumulative cost.
+	// CategoryVoice 配给每天的音色**登记**次数。它是唯一一个购买会长存的品类,故也是那个日闸干着别的
+	// 上限干不了的活的品类:库存上限界的是一个人**持有**几个,而删掉一个就腾出位置,于是
+	// enroll→delete→enroll 可以无界花钱。**是这道闸界住了累计成本。**
+	CategoryVoice = "voice"
 )
 
 // Period is the entry snapshot of the month + day buckets. It is computed ONCE
@@ -135,6 +143,14 @@ type Limits struct {
 	// VideoDailyLimit 数的是**条**、不是秒——用户定的额度是「一人一天 10 条」(H1)。计费按秒报价,
 	// 但人心里配给的是**整条片子**,故品类账本与钱账本在此刻意数不同的单位。
 	VideoDailyLimit int64 // 0 disables the per-install daily video-clip cap (default 10).
+	// VoiceDailyLimit counts ENROLLMENTS per day. Default 2 = the inventory size, so a person can
+	// fill an empty inventory in one day and a delete→re-enroll cycle costs them a day rather than
+	// $0.2 per round. Unlike the other three this cap is not about fairness of a renewable
+	// allowance; it is the only thing standing between a free-tier install and unbounded spend.
+	// VoiceDailyLimit 数的是每天的**登记**次数。默认 2 = 库存大小,故一个人能在一天里填满空库存,而
+	// delete→重登记 的循环代价是**一天**、不是每圈 $0.2。与另外三条不同,这条上限不是关于「可再生额度
+	// 的公平」;它是免费档 install 与无界花费之间唯一站着的东西。
+	VoiceDailyLimit int64 // 0 disables the per-install daily voice-enrollment cap (default 2).
 }
 
 // SnapshotPeriod computes the month/day buckets for now in loc. Pure: the caller

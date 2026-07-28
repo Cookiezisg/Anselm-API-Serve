@@ -141,6 +141,11 @@ jobs:
           check ./internal/app/tts/...     70
           check ./internal/app/video/...   70
           check ./internal/domain/video/... 90
+          # app/voice spends money too, and unlike the other three what it buys PERSISTS: an
+          # enrollment leaves a registration in our own provider account that outlives the request
+          # and can only be removed by an explicit delete. A stripped test here would let the
+          # order-and-rollback argument — the entire correctness of the package — rot silently.
+          check ./internal/app/voice/...   70
 
   # Frontend drift-guard (B0): the dashboard SPA dist is committed under
   # internal/infra/webassets/ui/dist and Go-embedded into the binary, so deploy

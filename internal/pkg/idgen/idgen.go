@@ -35,6 +35,14 @@ func MediaUploadID() string { return "mup_" + hex.EncodeToString(randBytes(media
 // id and source SHA so neither can be inferred from the other.
 func MediaLeaseID() string { return "mls_" + hex.EncodeToString(randBytes(mediaEntropyBytes)) }
 
+// VoiceID returns a fresh voice identifier: "vce_" + 32 hex chars. Wide on purpose — it is the
+// only handle to a registration that cost real money and lives in a shared provider account, and
+// it travels in request bodies where a guessable id would let one install probe another's.
+//
+// VoiceID 返回一个音色标识:"vce_" + 32 hex。**刻意宽**——它是那份花了真钱、住在共享 provider 账号里
+// 的登记的唯一把手,且它走在请求体里,而一个猜得中的 id 会让一个 install 探到另一个的。
+func VoiceID() string { return "vce_" + hex.EncodeToString(randBytes(installEntropyBytes)) }
+
 // MediaFetchToken returns a provider-only 256-bit capability. Its plaintext is never written to
 // SQLite or returned by the public upload API; persistence stores only its SHA-256 hash.
 func MediaFetchToken() string { return hex.EncodeToString(randBytes(32)) }

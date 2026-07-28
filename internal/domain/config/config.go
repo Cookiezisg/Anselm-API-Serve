@@ -65,9 +65,15 @@ const (
 	// undocumented, which is exactly why the default is 0 (unset). See load.go.
 	// MaxVoiceAccountCeiling 界**配置里**那条账号级音色上限。**刻意从宽**:它是为了接住多打的一个零,
 	// 不是为了表达某个真实的供应商上限——那个没有文档,而这正是默认值为 0(不设)的理由。见 load.go。
-	MaxVoiceAccountCeiling      int64 = 1_000_000
-	MaxSpeechDailyLimit         int64 = 100_000_000
-	MaxVideoDailyLimit          int64 = 10_000
+	MaxVoiceAccountCeiling int64 = 1_000_000
+	MaxSpeechDailyLimit    int64 = 100_000_000
+	MaxVideoDailyLimit     int64 = 10_000
+	// MaxVoiceDailyLimit bounds the CONFIGURED per-install daily enrollment cap. Deliberately low
+	// next to its siblings: every unit here is a $0.2 purchase that never expires, so a value in
+	// the thousands would not be a generous allowance, it would be a typo with a bill attached.
+	// MaxVoiceDailyLimit 界**配置里**那条逐 install 每日登记上限。与兄弟们相比刻意**低**:这里每一个
+	// 单位都是一笔 $0.2、永不过期的购买,故一个上千的值不是慷慨的额度,是一个附带账单的笔误。
+	MaxVoiceDailyLimit          int64 = 100
 	MaxInstallPerIPHour         int   = 1_000_000
 	MaxInstallGlobalDailyCap    int64 = 100_000_000
 	MaxInstallPerFPDaily        int64 = 1_000_000
@@ -242,6 +248,7 @@ type Config struct {
 	VideoEnabled       bool   // VIDEO_ENABLED
 	VideoUpstreamModel string // VIDEO_UPSTREAM_MODEL(exact priced DashScope video model id)
 	VideoDailyLimit    int64  // VIDEO_DAILY_LIMIT(per-install per-day CLIP count;0=off)
+	VoiceDailyLimit    int64  // VOICE_DAILY_LIMIT(per-install per-day voice ENROLLMENT count;0=off)
 	VideoHandleKey     []byte // derived, never read from env; empty => video unavailable
 
 	// Durable media staging is an explicit capability. Keeping it off until its
@@ -392,6 +399,7 @@ func (c Config) EffectiveLimits() Config {
 	m.ImageDailyLimit = 0
 	m.SpeechDailyLimit = 0
 	m.VideoDailyLimit = 0
+	m.VoiceDailyLimit = 0
 	m.InstallPerIPHour = 0
 	m.InstallGlobalDailyCap = 0
 	m.InstallPerFPDaily = 0

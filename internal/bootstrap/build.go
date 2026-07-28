@@ -28,6 +28,7 @@ import (
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
 	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
+	appvoice "github.com/sunweilin/anselm/gateway/internal/app/voice"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
@@ -41,6 +42,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/mediastore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/settingsstore"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/voicestore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
 	"github.com/sunweilin/anselm/gateway/internal/infra/webassets"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/alert"
@@ -320,6 +322,25 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
 
+	// Voice cloning (WRK-082 H9): the enrollment sibling — same key and origin, but the ONLY one
+	// that leaves something behind. It rides the speech capability switch (a deployment that cannot
+	// speak has no use for a voice), and like the others it is constructed unconditionally so
+	// Available() answers from live config rather than a nil deref.
+	// 音色克隆(H9):登记那个兄弟——同一把 key、同一个 origin,但**唯一一个会留下东西**的。它搭在语音
+	// 能力开关上(说不了话的部署要音色没有用),且与其余一样无条件构造,使可用性由 Available() 按 live
+	// 配置回答、而不是一次 nil 解引用。
+	voiceSvc := appvoice.New(appvoice.Deps{
+		Auth:     installSvc,
+		Quota:    quotaSvc,
+		RL:       rl,
+		Config:   cfgP,
+		Store:    voicestore.New(db.Writer, db.Reader),
+		Upstream: upstream.NewVoiceGen(effective.DashScopeNativeBase, imageKey),
+		Clock:    systemClock{},
+		IDs:      voiceIDs{},
+		Log:      voiceLogger{log: log, m: mx},
+	})
+
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
 	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
 	// optional key is configured. freshFor defaults to 90s (3× the 30s prober).
@@ -341,6 +362,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Images:             imageSvc,
 		TTS:                ttsSvc,
 		Video:              videoSvc,
+		Voices:             voiceSvc,
 		Media:              mediaSvc,
 		MediaChunkMaxBytes: effective.MediaChunkMaxBytes,
 		Mx:                 mx,

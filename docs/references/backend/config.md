@@ -46,6 +46,8 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `IMAGE_DAILY_LIMIT` | 10 | 0 | 100,000 | 否 | per-install 日图像生成张数上限(品类日闸,WRK-082 批B);0=禁用(仍记账) |
 | `SPEECH_DAILY_LIMIT` | 50,000 | 0 | 100,000,000 | 否 | per-install 日语音合成**字符数**上限(品类日闸,WRK-082 批C);0=禁用(仍记账) |
 | `VIDEO_DAILY_LIMIT` | 10 | 0 | 10,000 | 否 | per-install 日视频**条数**上限(品类日闸,WRK-082 H1,用户拍板);**不是秒**——钱按秒报价,人配给的是整条片子;0=禁用(仍记账) |
+| `VOICE_DAILY_LIMIT` | 2 | 0 | 100 | 否 | per-install 日音色**登记**次数上限(品类日闸,WRK-082 H9)。默认 2 = 库存大小,故空库存可在一天内填满、而 delete→重登记 的循环代价是**一天**、不是每圈 $0.2。**这条与另三条性质不同**:它不是「可再生额度的公平」,它是免费档 install 与无界花费之间唯一站着的东西;上限刻意只到 100——这里每个单位都是一笔永不过期的 $0.2 购买,上千的值不是慷慨、是一个附带账单的笔误。0=禁用(仍记账) |
+| `VOICE_ACCOUNT_CEILING` | 0 | 0 | 1,000,000 | 否 | **账号级**克隆音色总数上限(WRK-082 H9)。**是库存、不是配额**:没有周期、没有重置,一个音色占着位直到有人删掉。默认 0 = **不强制**,因为供应商没有文档写出真实上限;运营者从一次拒绝里学到之后再设。满时拒 `VOICE_CAPACITY_REACHED` + WARN,绝不驱逐 |
 | `INSTALL_PER_IP_HOUR` | 0 | 0 | 1,000,000 | 否 | `/install` per-IP 小时上限；0=禁用 |
 | `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100,000,000 | 否 | 全局日领号 cap；0=禁用 |
 | `INSTALL_PER_FP_DAILY` | 0 | 0 | 1,000,000 | 否 | per-fingerprint 日领号；0=禁用 |
@@ -73,7 +75,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | 钱 | `MONTHLY_QUOTA` | `1,000,000,000`（registry 天花板） |
 | 钱 | `GLOBAL_MONTHLY_SPEND_MICRO_USD` | `9,000,000,000,000`（registry 天花板） |
 | 吞吐 | `RATE_PER_MIN`、`DAILY_SUBLIMIT`、`TOKEN_ANOMALY_RPM` | `0`（各自的「禁用」值） |
-| 品类日闸 | `IMAGE_DAILY_LIMIT`、`SPEECH_DAILY_LIMIT`、`VIDEO_DAILY_LIMIT` | `0` |
+| 品类日闸 | `IMAGE_DAILY_LIMIT`、`SPEECH_DAILY_LIMIT`、`VIDEO_DAILY_LIMIT`、`VOICE_DAILY_LIMIT` | `0` |
 | 领号 | `INSTALL_PER_IP_HOUR`、`INSTALL_GLOBAL_DAILY_CAP`、`INSTALL_PER_FP_DAILY`、`INSTALL_PER_FP_COOLDOWN_SEC` | `0` |
 | 领号 | `INSTALL_POW_MODE` | `off` |
 

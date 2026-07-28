@@ -50,6 +50,13 @@ audience: [human, ai]
 | `TTS_QUOTA_EXHAUSTED` | 429 | daily speech synthesis quota reached, try again tomorrow | 品类日闸(`SPEECH_DAILY_LIMIT`,单位**字符**)拒;与 IMAGE_QUOTA_EXHAUSTED 同理但各记各账 |
 | `VIDEO_UNAVAILABLE` | **503** | video generation is not available on this deployment | `VIDEO_ENABLED=false`、无 Qwen 凭证、或无句柄签名材料(三半缺一)。自己的码而非复用 `IMAGE_UNAVAILABLE`——运营者可能只开图像与语音,而一个要视频的客户端被告知「图像不可用」会降级错误的功能 |
 | `VIDEO_QUOTA_EXHAUSTED` | 429 | daily video generation quota reached, try again tomorrow | 品类日闸(`VIDEO_DAILY_LIMIT`,单位**条**非秒)拒;诚实的客户端文案是「今天的 10 条用完了」,不是一个时长预算 |
+| `VOICE_UNAVAILABLE` | 503 | voice cloning is not available | 克隆搭在语音能力上(`SPEECH_ENABLED` + qwen key);说不了话的部署要音色没有用,故在这里诚实缺席、不到上游才失败 |
+| `VOICE_SAMPLE_INVALID` | 400 | voice sample is invalid | 参考音频不是 `data:` base64、或含 `://`、或超体积上限。**形状本身就是那道 SSRF 控制**(ADR 0011),不是校验客套 |
+| `VOICE_INVENTORY_FULL` | 409 | voice inventory is full, delete one to make room | 逐 install 库存(2 个)满。**补救是「删一个」、绝不是「明天再来」**——时间流逝不腾位;这一条与 `VOICE_QUOTA_EXHAUSTED` 是两条不同的拒绝、两种不同的补救,合并会让用户去等一个永远不会开的位置 |
+| `VOICE_NAME_TAKEN` | 409 | a voice with that name already exists | 同名登记两次会让第一份在上游搁浅(再没有东西寻址得到它,却永远占着共享上限)。前置检查与 store 事务(UNIQUE 索引)都会给出它——**同一个码**,因为「输了竞态」与「来晚了」对调用方是同一个事实 |
+| `VOICE_CAPACITY_REACHED` | 503 | voice capacity reached, try again later | **我们**账号级总数(`VOICE_ACCOUNT_CEILING`)满,只有本网关看得见。答案是拒绝 + WARN 日志(`voice_account_ceiling_reached`),**绝不驱逐**别人的音色腾地方——丢掉它的人什么也没做,且永远不会知道为什么 |
+| `VOICE_QUOTA_EXHAUSTED` | 429 | daily voice enrollment quota reached, try again tomorrow | 品类日闸(`VOICE_DAILY_LIMIT`,默认 2)拒。「明天」在这里**是诚实的**——这个账本真的随天重置;它是免费档 install 与无界花费之间唯一站着的东西(库存界**同时**持有几个、日闸界**累计**花多少) |
+| `VOICE_NOT_FOUND` | 404 | voice not found | 未知 id **或别的 install 的 id**——强制归属,故音色 id 永远不是存在性预言机 |
 | `VIDEO_TASK_NOT_FOUND` | 404 | video task was not found | 被轮询的句柄指不出任何本 install 读得到的任务。**同时**回答「签名验不过」与「上游已忘掉此任务」——区分两者等于向调用方确认「它刚猜中的那个句柄属于**别的** install」 |
 | `MEDIA_UPLOAD_INVALID` | 400 | invalid media upload request | create JSON/sha/MIME/长度、offset、chunk/body 形状非法 |
 | `MEDIA_UPLOAD_NOT_FOUND` | 404 | media upload was not found | 未知或非本 install 的 upload；故意不暴露存在性 |

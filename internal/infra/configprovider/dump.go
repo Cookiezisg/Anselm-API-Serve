@@ -99,6 +99,8 @@ func (p *Provider) Snapshot() []any {
 		"image_upstream_model", c.ImageUpstreamModel,
 		"image_edit_upstream_model", c.ImageEditUpstreamModel,
 		"image_daily_limit", c.ImageDailyLimit,
+		"voice_daily_limit", c.VoiceDailyLimit,
+		"voice_account_ceiling", c.VoiceAccountCeiling,
 		"dashscope_native_base", c.DashScopeNativeBase,
 		"install_per_ip_hour", c.InstallPerIPHour,
 		"install_global_daily_cap", c.InstallGlobalDailyCap,

@@ -157,6 +157,10 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// 视频是第三个开关,又是自己的单位:一天 10 **条**(H1,用户拍板)。不是秒——人配给的是**整条**片子。
 	c.VideoEnabled = g.boolean("VIDEO_ENABLED", false)
 	c.VideoDailyLimit = g.boundedInt64("VIDEO_DAILY_LIMIT", 10, 0, config.MaxVideoDailyLimit)
+	// Default 2 = the inventory size: an empty inventory can be filled in one day, and a
+	// delete→re-enroll cycle costs a day rather than $0.2 a round.
+	// 默认 2 = 库存大小:空库存可在一天内填满,而 delete→重登记 的循环代价是**一天**、不是每圈 $0.2。
+	c.VoiceDailyLimit = g.boundedInt64("VOICE_DAILY_LIMIT", 2, 0, config.MaxVoiceDailyLimit)
 	c.MediaUploadMaxBytes = g.boundedInt64("MEDIA_UPLOAD_MAX_BYTES", 100*1024*1024, 1, config.MaxMediaUploadBytes)
 	defaultChunkBytes := min(int64(4*1024*1024), c.MaxBodyBytes)
 	c.MediaChunkMaxBytes = g.boundedInt64("MEDIA_CHUNK_MAX_BYTES", defaultChunkBytes, 1, c.MaxBodyBytes)

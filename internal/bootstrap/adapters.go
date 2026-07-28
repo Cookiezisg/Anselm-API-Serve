@@ -7,6 +7,7 @@ package bootstrap
 
 import (
 	"context"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/idgen"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,7 @@ func (q quotaCfgSource) Limits() appquota.Limits {
 		// 是红的:每一层各自都对,只是其中两层之间的那根线**根本不存在**(H1 找到的真 bug)。
 		SpeechDailyLimit: c.SpeechDailyLimit,
 		VideoDailyLimit:  c.VideoDailyLimit,
+		VoiceDailyLimit:  c.VoiceDailyLimit,
 	}
 }
 
@@ -229,4 +231,50 @@ func (v videoUpstream) PollVideo(ctx context.Context, taskID string) (appvideo.V
 		return appvideo.VideoStatus{}, err
 	}
 	return appvideo.VideoStatus{Phase: st.Phase, URL: st.URL}, nil
+}
+
+// --- voice adapters (WRK-082 H9) ---------------------------------------------
+
+// voiceIDs mints voice ids.
+type voiceIDs struct{}
+
+func (voiceIDs) New() string { return idgen.VoiceID() }
+
+// voiceLogger renders the two conditions an operator must act on. Both are WARN and neither is
+// sampled: one says our shared account is full, the other says a paid registration is stranded
+// where nothing automatic can reach it. A dropped line here is a line nobody will ever see again.
+//
+// voiceLogger 渲染运营者**必须**处理的那两个状况。两条都是 WARN 且都不采样:一条说我们的共享账号满了,
+// 另一条说有一份已付费的登记搁浅在自动机制够不着的地方。这里丢掉一行,就是永远不会再有人看见的一行。
+// It reuses the SAME Prometheus counters the other three capabilities feed, because an unclosed
+// book is one condition regardless of which capability left it open — the operator's alert must
+// fire on the total, not on four independently-named metrics nobody thought to graph together.
+//
+// 它喂的是另外三个能力**同一批** Prometheus 计数器,因为「账没平」是**一个**状况、与是哪个能力留下的
+// 无关——运营者的告警该对着**总数**响,而不是对着四个各自命名、没人想到要放一起看的指标。
+type voiceLogger struct {
+	log *slog.Logger
+	m   *metrics.Metrics
+}
+
+func (l voiceLogger) AccountVoiceCeilingReached(total, ceiling int) {
+	l.log.Warn("voice_account_ceiling_reached", "total", total, "ceiling", ceiling)
+}
+
+func (l voiceLogger) VoiceOrphaned(upstreamID string) {
+	l.log.Warn("voice_orphaned_upstream", "upstream_id", upstreamID)
+}
+
+func (l voiceLogger) SettleFailure() {
+	if l.m != nil {
+		l.m.SettleFailures.Inc()
+	}
+	l.log.Warn("voice_settle_failed")
+}
+
+func (l voiceLogger) RollbackFailure() {
+	if l.m != nil {
+		l.m.RollbackFailures.Inc()
+	}
+	l.log.Warn("voice_rollback_failed")
 }

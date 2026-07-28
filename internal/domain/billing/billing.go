@@ -29,14 +29,20 @@ const (
 	QwenImage20           = "qwen-image-2.0"
 	Qwen3TTSFlash         = "qwen3-tts-flash"
 	Wan27T2V              = "wan2.7-t2v"
-	PicoUSDPerMicroUSD    = int64(1_000_000)
-	PicoUSDPerUSD         = int64(1_000_000_000_000)
-	DeepSeekInputLimit    = int64(1_000_000)
-	DeepSeekOutputLimit   = int64(384_000)
-	Qwen37InputLimit      = int64(1_000_000)
-	Qwen37OutputLimit     = int64(65_536)
-	QwenASRInputLimit     = int64(120) // seconds; bounded by the speech WebSocket session cap.
-	QwenASROutputLimit    = int64(0)
+	// QwenTTSClone is the voice-ENROLLMENT model — the `model` field of the customization call, not
+	// the synthesis model. It is a separate card because it is a separate purchase: enrollment buys
+	// a persistent registration once, synthesis buys characters every time.
+	// QwenTTSClone 是音色**登记**模型——customization 调用的 `model` 字段,不是合成模型。它是一张
+	// 单独的卡,因为它是一笔**单独的购买**:登记一次性买下一份长存的登记,合成每次买字符。
+	QwenTTSClone        = "qwen-tts-clone"
+	PicoUSDPerMicroUSD  = int64(1_000_000)
+	PicoUSDPerUSD       = int64(1_000_000_000_000)
+	DeepSeekInputLimit  = int64(1_000_000)
+	DeepSeekOutputLimit = int64(384_000)
+	Qwen37InputLimit    = int64(1_000_000)
+	Qwen37OutputLimit   = int64(65_536)
+	QwenASRInputLimit   = int64(120) // seconds; bounded by the speech WebSocket session cap.
+	QwenASROutputLimit  = int64(0)
 	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1
 	// (WRK-082 P12); the small headroom only bounds the card, it does not widen the wire.
 	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1(P12);小余量只界卡、不放宽线缆。
@@ -52,8 +58,13 @@ const (
 	// QwenVideoInputLimit bounds SECONDS per reservation. The wire caps one clip at
 	// maxDurationSec; the headroom only bounds the card.
 	// QwenVideoInputLimit 界定单次预留的**秒数**。线缆把单条封在 maxDurationSec;余量只界卡。
-	QwenVideoInputLimit   = int64(15)
-	QwenVideoOutputLimit  = int64(0)
+	QwenVideoInputLimit  = int64(15)
+	QwenVideoOutputLimit = int64(0)
+	// QwenVoiceInputLimit bounds VOICES per reservation. One enrollment is always exactly one voice
+	// (the wire has no batch form); the headroom only bounds the card.
+	// QwenVoiceInputLimit 界定单次预留的**音色个数**。一次登记恒为一个音色(线缆没有批量形);余量只界卡。
+	QwenVoiceInputLimit   = int64(2)
+	QwenVoiceOutputLimit  = int64(0)
 	legacyMaxPUSDPerToken = int64(280_000)
 )
 
@@ -72,7 +83,9 @@ func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 // elapsed audio duration rather than chat tokens; Images is used only by image
 // generation, where the provider bills per successfully generated image;
 // Characters is used only by speech synthesis, where the provider bills the
-// INPUT text length rather than the produced audio's duration.
+// INPUT text length rather than the produced audio's duration; Voices is used
+// only by voice cloning, where the provider bills once per registration created
+// — the only class whose purchase OUTLIVES the request that made it.
 type InputClass uint8
 
 const (
@@ -81,6 +94,7 @@ const (
 	InputImages
 	InputCharacters
 	InputVideoSeconds
+	InputVoices
 )
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -210,6 +224,29 @@ var rateCards = map[Provider]map[string]RateCard{
 			// 这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenVideoInputLimit, InputPUSD: 83_000_000_000, OutputPUSD: 0}},
 		},
+		QwenTTSClone: {
+			ID: "qwen-tts-clone-2026-07-28", Provider: ProviderQwen, Model: QwenTTSClone,
+			InputLimit: QwenVoiceInputLimit, OutputLimit: QwenVoiceOutputLimit,
+			// $0.2 per voice created = 200e9 pUSD. NOT an "assumed" card: this figure is printed
+			// verbatim on the official pricing page (H9 第0步核准 2026-07-28), which is why the ID
+			// carries no `assumed-` marker — the other three generation cards do, and the absence
+			// here is the claim that this one is reconciled.
+			//
+			// The reservation is what makes this capability bounded at all. Its two ceilings are
+			// INVENTORY (how many a person may hold), and inventory bounds the CONCURRENT count,
+			// never the cumulative spend: delete frees a slot, so an enroll→delete cycle would burn
+			// money without limit. The wallet gate and the daily category gate are the two things
+			// that actually bound it.
+			//
+			// 每创建一个音色 $0.2 = 200e9 pUSD。**不是** assumed 卡:这个数字逐字印在官方价目页上
+			// (H9 第0步核准 2026-07-28),故 ID 里没有 `assumed-` 标记——另外三张生成卡都有,而这里
+			// 的**缺席**本身就是「这一张已对账」的断言。
+			//
+			// 预留才是让这个能力**有界**的东西。它那两条上限是**库存**(一个人能持有几个),而库存界的
+			// 是**同时**的个数、从来不是**累计**的花费:删除会腾出位置,故 enroll→delete 循环可以无界
+			// 烧钱。钱包闸与品类日闸才是真正界住它的那两样。
+			tiers: []pricingTier{{InputUpperBound: QwenVoiceInputLimit, InputPUSD: 200_000_000_000, OutputPUSD: 0}},
+		},
 	},
 }
 
@@ -311,6 +348,10 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 		if provider != ProviderQwen || model != Wan27T2V || outputBound != 0 || promptBound < 1 {
 			return Plan{}, ErrUnknownRateCard
 		}
+	case InputVoices:
+		if provider != ProviderQwen || model != QwenTTSClone || outputBound != 0 || promptBound < 1 {
+			return Plan{}, ErrUnknownRateCard
+		}
 	default:
 		return Plan{}, ErrUnknownRateCard
 	}
@@ -386,6 +427,30 @@ func (p Plan) ImagesCost(images int64) (int64, error) {
 		return 0, ErrUnknownRateCard
 	}
 	return checkedMul(images, tier.InputPUSD)
+}
+
+// NewVoicesPlan prices a voice-ENROLLMENT reservation by voice count (always 1 on the wire). The
+// price is fixed and known before the call, so reserve equals settle for a successful enrollment —
+// the same deterministic shape as images, but for a purchase that persists after the request ends.
+//
+// NewVoicesPlan 按**音色个数**定价一次音色登记预留(线缆上恒为 1)。价格固定、调用前就已知,故登记成功
+// 时 reserve == settle——与图像同一种确定性形状,只是这笔购买在请求结束之后仍然存在。
+func NewVoicesPlan(provider Provider, model string, voices int64) (Plan, error) {
+	return NewPlan(provider, model, InputVoices, voices, 0)
+}
+
+// VoicesCost converts an authoritative created-voice count under a frozen enrollment plan.
+//
+// VoicesCost 在冻结的登记 plan 下换算权威已创建音色数。
+func (p Plan) VoicesCost(voices int64) (int64, error) {
+	if p.InputClass != InputVoices || voices < 0 || voices > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(voices)
+	if !ok {
+		return 0, ErrUnknownRateCard
+	}
+	return checkedMul(voices, tier.InputPUSD)
 }
 
 // NewCharactersPlan prices a speech-synthesis reservation by INPUT character

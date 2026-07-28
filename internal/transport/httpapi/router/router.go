@@ -22,6 +22,7 @@ import (
 	appspeech "github.com/sunweilin/anselm/gateway/internal/app/speech"
 	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
 	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
+	appvoice "github.com/sunweilin/anselm/gateway/internal/app/voice"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/audio"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/challenge"
@@ -35,6 +36,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/quota"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/speech"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/videos"
+	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/voices"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware"
 )
 
@@ -75,6 +77,11 @@ type Deps struct {
 	// Video is the only TWO-route capability: submit + poll (WRK-082 H1).
 	// Video 是唯一的**两路由**能力:提交 + 轮询(H1)。
 	Video *appvideo.Service // POST /v1/videos/generations + GET /v1/videos/{videoId}
+	// Voices is the only capability whose resource OUTLIVES its request: an enrollment creates a
+	// registration in our own provider account that persists until deleted (WRK-082 H9).
+	// Voices 是唯一一个**资源比请求活得久**的能力:一次登记在我们自己的 provider 账号里造出一份
+	// 留到被删为止的登记(H9)。
+	Voices *appvoice.Service // POST /v1/voices + GET /v1/voices + POST /v1/voices:delete
 	// Media is nil while MEDIA_ENABLED=false; routes remain proof-gated and
 	// return MEDIA_UNAVAILABLE rather than silently accepting an unusable upload.
 	Media              *appmedia.Service
@@ -118,6 +125,9 @@ func BuildHandler(d Deps) http.Handler {
 		speechASR:      proof.Protect(d.Proof, speech.New(d.Speech)),
 		imagesGenerate: proof.Protect(d.Proof, images.New(d.Images)),
 		imagesEdit:     proof.Protect(d.Proof, images.NewEdit(d.Images)),
+		voiceEnroll:    proof.Protect(d.Proof, voices.NewEnroll(d.Voices)),
+		voiceList:      proof.Protect(d.Proof, voices.NewList(d.Voices)),
+		voiceDelete:    proof.Protect(d.Proof, voices.NewDelete(d.Voices)),
 		audioSpeech:    proof.Protect(d.Proof, audio.New(d.TTS)),
 		videosGenerate: proof.Protect(d.Proof, http.HandlerFunc(videoHandler.Generate)),
 		videosAnimate:  proof.Protect(d.Proof, http.HandlerFunc(videos.NewAnimate(d.Video).Generate)),
@@ -146,6 +156,9 @@ type routes struct {
 	speechASR      http.Handler
 	imagesGenerate http.Handler
 	imagesEdit     http.Handler
+	voiceEnroll    http.Handler
+	voiceList      http.Handler
+	voiceDelete    http.Handler
 	audioSpeech    http.Handler
 	videosGenerate http.Handler
 	videosAnimate  http.Handler
@@ -185,6 +198,9 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("POST /v1/images/generations", wrap("images_generate", rt.imagesGenerate))
 	mux.Handle("POST /v1/images/edits", wrap("images_edit", rt.imagesEdit))
 	mux.Handle("POST /v1/audio/speech", wrap("audio_speech", rt.audioSpeech))
+	mux.Handle("POST /v1/voices", wrap("voice_enroll", rt.voiceEnroll))
+	mux.Handle("GET /v1/voices", wrap("voice_list", rt.voiceList))
+	mux.Handle("POST /v1/voices:delete", wrap("voice_delete", rt.voiceDelete))
 	mux.Handle("POST /v1/videos/generations", wrap("videos_generate", rt.videosGenerate))
 	mux.Handle("POST /v1/videos/animations", wrap("videos_animate", rt.videosAnimate))
 	mux.Handle("GET /v1/videos/{videoId}", wrap("video_status", rt.videoStatus))
