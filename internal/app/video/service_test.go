@@ -57,19 +57,27 @@ func (f *fakeQuota) Rollback(context.Context, *domquota.Reservation) error {
 }
 
 type fakeUpstream struct {
-	taskID    string
-	unbilled  bool
-	submitErr error
+	gotRatio      string
+	gotResolution string
+	gotFrame      string
+	taskID        string
+	unbilled      bool
+	submitErr     error
 
 	status    VideoStatus
 	pollErr   error
 	polledFor string
 }
 
-func (f *fakeUpstream) SubmitVideo(context.Context, string, string, int, string, string) (string, bool, error) {
+func (f *fakeUpstream) SubmitVideo(_ context.Context, _, _ string, _ int, ratio, resolution, firstFrame string) (string, bool, error) {
+	f.gotRatio, f.gotResolution, f.gotFrame = ratio, resolution, firstFrame
 	return f.taskID, f.unbilled, f.submitErr
 }
 
+// gotRatio/gotResolution/gotFrame record what actually reached the upstream — the animate path's
+// contract is as much about what it DROPS as about what it sends.
+// gotRatio/gotResolution/gotFrame 记下真正抵达上游的东西——图生视频那条路径的契约,**丢掉什么**与
+// **发送什么**同样重要。
 func (f *fakeUpstream) PollVideo(_ context.Context, taskID string) (VideoStatus, error) {
 	f.polledFor = taskID
 	return f.status, f.pollErr
@@ -250,5 +258,53 @@ func TestInstallGates(t *testing.T) {
 	}
 	if len(q.settled) != 0 || q.rolledBack != 0 {
 		t.Fatal("a rejected install must never touch money")
+	}
+}
+
+// TestAnimate_RefusesAnAddressShapedFrame — the SSRF mitigation, at the service boundary, for the
+// same reason as the image editor's: an address this gateway would fetch is a primitive aimed at
+// our own network, and a boundary that only holds for well-behaved callers is not a boundary.
+//
+// TestAnimate_RefusesAnAddressShapedFrame——SSRF 缓解,在 service 边界上,理由与改图那条相同:
+// 一个本网关会去取的地址是指向我们自己网络的原语,而只对守规矩的调用方成立的边界不是边界。
+func TestAnimate_RefusesAnAddressShapedFrame(t *testing.T) {
+	for _, frame := range []string{
+		"https://example.com/cat.png",
+		"http://169.254.169.254/latest/meta-data/",
+		"file:///etc/passwd",
+		"",
+	} {
+		up := &fakeUpstream{taskID: "task_1"}
+		svc := newSvc(enabledCfg(), &fakeQuota{}, up)
+		_, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, frame)
+		if ae == nil || ae.Code != "VIDEO_FRAME_INVALID" {
+			t.Fatalf("frame %q: err = %v, want VIDEO_FRAME_INVALID", frame, ae)
+		}
+		if up.gotFrame != "" {
+			t.Fatalf("frame %q reached the upstream despite the refusal", frame)
+		}
+	}
+}
+
+// TestAnimate_DropsGeometrySoTheClipInheritsTheFrame is the whole reason animate is not just
+// "submit with one more field". A clip made from a picture takes that picture's aspect and size;
+// forwarding ours would ask the upstream to letterbox or crop the user's own image, silently.
+//
+// TestAnimate_DropsGeometrySoTheClipInheritsTheFrame 正是「animate 不只是多一个字段的 submit」的
+// 全部理由。由一张图做出的片子取那张图的比例与尺寸;转发我们的,等于**静默地**要求上游对用户自己的
+// 图做信箱边或裁切。
+func TestAnimate_DropsGeometrySoTheClipInheritsTheFrame(t *testing.T) {
+	up := &fakeUpstream{taskID: "task_1"}
+	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
+	const frame = "data:image/png;base64,iVBORw0KGgo="
+	if _, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, frame); ae != nil {
+		t.Fatalf("animate failed: %v", ae)
+	}
+	if up.gotFrame != frame {
+		t.Fatalf("upstream frame = %q, want the data URL unchanged", up.gotFrame)
+	}
+	if up.gotRatio != "" || up.gotResolution != "" {
+		t.Fatalf("geometry leaked to the upstream: ratio=%q resolution=%q — the clip must inherit the frame",
+			up.gotRatio, up.gotResolution)
 	}
 }

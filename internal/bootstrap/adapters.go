@@ -219,8 +219,8 @@ func (c powCounter) Inc(result string) { c.m.InstallPoW.WithLabelValues(result).
 // 就是那个 import(依赖单向)。
 type videoUpstream struct{ g *upstream.VideoGen }
 
-func (v videoUpstream) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
-	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+func (v videoUpstream) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (string, bool, error) {
+	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution, firstFrame)
 }
 
 func (v videoUpstream) PollVideo(ctx context.Context, taskID string) (appvideo.VideoStatus, error) {

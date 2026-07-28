@@ -80,7 +80,7 @@ type VideoStatus struct {
 //
 // unbilled 守本族规矩(GW-INV-50):**仅**显式的生成前拒绝为 true。这里比图像那边更强——一次被拒的
 // **提交**可证明没产出任何视频,因为上游连任务都还没排。歧义(超时、5xx、200 却解析不出)仍保留计费。
-func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
+func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (string, bool, error) {
 	if g == nil || g.base == "" || g.apiKey == "" {
 		return "", false, apierr.ErrVideoUnavailable
 	}
@@ -88,19 +88,28 @@ func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, second
 		"duration":  seconds,
 		"watermark": false,
 	}
-	// wan2.7 replaced the single `size` with resolution + ratio; 2.6 and earlier still
-	// take `size`. Same provider, two shapes — branch on the model, never guess.
-	// wan2.7 把单一 `size` 换成了 resolution + ratio;2.6 及更早仍吃 `size`。同一家两种形,
-	// 按模型分支、绝不猜。
-	if strings.HasPrefix(model, "wan2.7") {
+	input := map[string]any{"prompt": prompt}
+	switch {
+	case firstFrame != "":
+		// Image-to-video: the frame goes in `img_url` (data URL accepted) and the geometry keys are
+		// OMITTED entirely — the clip takes the frame's own aspect and size. Sending ours anyway is
+		// how a user's 3:2 photo silently becomes a letterboxed 16:9 clip (WRK-082 H9).
+		// 图生视频:首帧走 `img_url`(收 data URL),几何键**整个略去**——片子取首帧自己的比例与尺寸。
+		// 照旧递我们的过去,正是用户那张 3:2 的照片静默变成加了黑边的 16:9 的方式(H9)。
+		input["img_url"] = firstFrame
+	case strings.HasPrefix(model, "wan2.7"):
+		// wan2.7 replaced the single `size` with resolution + ratio; 2.6 and earlier still
+		// take `size`. Same provider, two shapes — branch on the model, never guess.
+		// wan2.7 把单一 `size` 换成了 resolution + ratio;2.6 及更早仍吃 `size`。同一家两种形,
+		// 按模型分支、绝不猜。
 		params["resolution"] = resolution
 		params["ratio"] = ratio
-	} else {
+	default:
 		params["size"] = legacyVideoSize(resolution, ratio)
 	}
 	payload, err := json.Marshal(map[string]any{
 		"model":      model,
-		"input":      map[string]any{"prompt": prompt},
+		"input":      input,
 		"parameters": params,
 	})
 	if err != nil {

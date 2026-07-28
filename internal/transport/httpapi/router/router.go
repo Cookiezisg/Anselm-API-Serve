@@ -120,6 +120,7 @@ func BuildHandler(d Deps) http.Handler {
 		imagesEdit:     proof.Protect(d.Proof, images.NewEdit(d.Images)),
 		audioSpeech:    proof.Protect(d.Proof, audio.New(d.TTS)),
 		videosGenerate: proof.Protect(d.Proof, http.HandlerFunc(videoHandler.Generate)),
+		videosAnimate:  proof.Protect(d.Proof, http.HandlerFunc(videos.NewAnimate(d.Video).Generate)),
 		videoStatus:    proof.Protect(d.Proof, http.HandlerFunc(videoHandler.Status)),
 		mediaCreate:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Create)),
 		mediaStatus:    proof.Protect(d.Proof, http.HandlerFunc(mediaHandler.Status)),
@@ -147,6 +148,7 @@ type routes struct {
 	imagesEdit     http.Handler
 	audioSpeech    http.Handler
 	videosGenerate http.Handler
+	videosAnimate  http.Handler
 	videoStatus    http.Handler
 	mediaCreate    http.Handler
 	mediaStatus    http.Handler
@@ -184,6 +186,7 @@ func assemble(rt routes, mx Wrapper, onPanic PanicCounter, maxBodyBytes int64) h
 	mux.Handle("POST /v1/images/edits", wrap("images_edit", rt.imagesEdit))
 	mux.Handle("POST /v1/audio/speech", wrap("audio_speech", rt.audioSpeech))
 	mux.Handle("POST /v1/videos/generations", wrap("videos_generate", rt.videosGenerate))
+	mux.Handle("POST /v1/videos/animations", wrap("videos_animate", rt.videosAnimate))
 	mux.Handle("GET /v1/videos/{videoId}", wrap("video_status", rt.videoStatus))
 	mux.Handle("POST /v1/media/uploads", wrap("media_create", rt.mediaCreate))
 	mux.Handle("GET /v1/media/uploads/{uploadId}", wrap("media_status", rt.mediaStatus))

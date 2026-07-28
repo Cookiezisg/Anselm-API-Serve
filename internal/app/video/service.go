@@ -61,7 +61,12 @@ type Quota interface {
 // Upstream 是异步视频端口:**两个**动词,因为本族没有同步形态。unbilled=true **仅限**可证明未计费
 // 的显式拒绝(GW-INV-50)。
 type Upstream interface {
-	SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (taskID string, unbilled bool, err error)
+	// SubmitVideo takes an optional firstFrame data URL: empty = text-to-video, present =
+	// image-to-video (WRK-082 H9). One method rather than two because the upstream is the same
+	// endpoint with one more input field, and the entire settlement dance below is identical.
+	// SubmitVideo 收一个可选的 firstFrame data URL:空=文生视频,有=图生视频(H9)。**一个方法**而非
+	// 两个,因为上游是同一条端点多一个输入字段,而下面整套结算舞步一模一样。
+	SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (taskID string, unbilled bool, err error)
 	PollVideo(ctx context.Context, taskID string) (status VideoStatus, err error)
 }
 
@@ -133,6 +138,38 @@ func (s *Service) Available() bool {
 // Submit 跑完用例的钱那一半,返回签名句柄。按秒 plan 在调用前即确定(请求的时长**就是**计费量),
 // 故受理成功时 settle == reserve。
 func (s *Service) Submit(ctx context.Context, installID, prompt string, seconds int, ratio, resolution string) (string, *apierr.APIError) {
+	return s.submit(ctx, installID, prompt, seconds, ratio, resolution, "")
+}
+
+// Animate is Submit with a first frame (WRK-082 H9): image-to-video. It shares every gate and the
+// whole settlement path — an animated clip costs seconds of video and IS a video, so splitting it
+// would duplicate the GW-INV-50 dance to express one extra upstream field.
+//
+// **The shape guard is the same security decision as the image editor's**, for the same reason and
+// at the same boundary: ADR 0011 forbids a managed media input carrying a scheme or a host, because
+// an address this gateway would fetch is an SSRF primitive aimed at our own network. A data URL
+// cannot be fetched — it IS the bytes.
+//
+// **Geometry is dropped, not defaulted.** The clip inherits the frame, so passing our ratio and
+// resolution through would ask the upstream to letterbox or crop the very picture the user handed
+// over — silently.
+//
+// Animate 是「带首帧的 Submit」(H9):图生视频。它共用每一道闸与整条结算路径——一段动起来的片子花的是
+// 视频的秒数、产出的也是视频,拆开只会把 GW-INV-50 舞步复制一遍,只为表达上游多一个字段。
+//
+// **形状闸与改图那条是同一个安全决定**,同样的理由、同样的边界:ADR 0011 禁止带 scheme 或 host 的
+// 受管媒体输入,因为一个本网关会去取的地址是指向我们自己网络的 SSRF 原语。data URL 取不了——它就是字节。
+//
+// **几何被丢弃、不是被默认。** 片子继承首帧,把我们的 ratio 与 resolution 递过去,等于要求上游对用户
+// 刚递来的那张图做信箱边或裁切——而且是静默地做。
+func (s *Service) Animate(ctx context.Context, installID, prompt string, seconds int, firstFrame string) (string, *apierr.APIError) {
+	if !strings.HasPrefix(firstFrame, "data:") || strings.Contains(firstFrame, "://") {
+		return "", apierr.ErrVideoFrameInvalid
+	}
+	return s.submit(ctx, installID, prompt, seconds, "", "", firstFrame)
+}
+
+func (s *Service) submit(ctx context.Context, installID, prompt string, seconds int, ratio, resolution, firstFrame string) (string, *apierr.APIError) {
 	if s == nil || s.auth == nil || s.cfg == nil || s.quota == nil || s.upstream == nil || s.clock == nil {
 		return "", apierr.Internal()
 	}
@@ -161,7 +198,7 @@ func (s *Service) Submit(ctx context.Context, installID, prompt string, seconds 
 		return "", apierr.Internal()
 	}
 
-	taskID, unbilled, err := s.upstream.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+	taskID, unbilled, err := s.upstream.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution, firstFrame)
 	if err != nil {
 		if unbilled {
 			if rbErr := s.quota.Rollback(ctx, reservation); rbErr != nil {

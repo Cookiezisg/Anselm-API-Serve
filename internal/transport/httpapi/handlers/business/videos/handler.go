@@ -61,18 +61,43 @@ var resolutions = map[string]string{
 }
 
 // Handler serves both video routes.
+// Handler serves both /v1/videos/generations and /v1/videos/animations. One handler, one flag —
+// the two requests differ by one field and share every other guard (prompt bound, the seconds
+// window refused BEFORE the reservation, the aspect and resolution vocabularies).
+//
+// Handler 同时服务 /v1/videos/generations 与 /v1/videos/animations。一个 handler、一个开关——两种
+// 请求只差一个字段,其余每一道闸都共用(prompt 上限、**预留之前**就拒的时长窗、比例与分辨率词表)。
 type Handler struct {
-	svc *appvideo.Service
+	svc     *appvideo.Service
+	animate bool
 }
 
-// New wires the handler to the video service.
+// New wires the text-to-video handler.
 func New(svc *appvideo.Service) *Handler { return &Handler{svc: svc} }
 
+// NewAnimate wires the image-to-video handler (WRK-082 H9).
+func NewAnimate(svc *appvideo.Service) *Handler { return &Handler{svc: svc, animate: true} }
+
+// maxFrameChars bounds the base64 first frame before the app layer sees it. 10MB of image is
+// ~13.4M base64 characters; this is the MEMORY guard, while the SHAPE guard (data: and no scheme)
+// is the security one and lives in the service.
+// maxFrameChars 在首帧抵达 app 层之前界住它。10MB 图约 1340 万 base64 字符;这是**内存**闸,而
+// **形状**闸(data: 且无 scheme)是**安全**闸、住在 service 里。
+const maxFrameChars = 14_000_000
+
 type generateRequest struct {
-	Model      string `json:"model"`
-	Prompt     string `json:"prompt"`
-	Seconds    *int   `json:"seconds"`
-	Aspect     string `json:"aspect"`
+	Model   string `json:"model"`
+	Prompt  string `json:"prompt"`
+	Seconds *int   `json:"seconds"`
+	Aspect  string `json:"aspect"`
+	// Image is the first frame for image-to-video: a base64 data URL, never an address (WRK-082 H9,
+	// ADR 0011). Present only on /videos/animations — the generations route rejects it via
+	// DisallowUnknownFields, which is what keeps the two shapes from quietly merging into one
+	// permissive one.
+	// Image 是图生视频的首帧:base64 data URL、绝不是地址(H9,ADR 0011)。**只**出现在
+	// /videos/animations 上——generations 那条经 DisallowUnknownFields 拒掉它,正是这一点让两个形状
+	// 不会悄悄并成一个更宽松的。
+	Image      string `json:"image"`
 	Resolution string `json:"resolution"`
 }
 
@@ -142,7 +167,25 @@ func (h *Handler) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	installID := r.Header.Get(proofhttp.HeaderInstallID)
-	handle, ae := h.svc.Submit(r.Context(), installID, prompt, seconds, ratio, resolution)
+	var (
+		handle string
+		ae     *apierr.APIError
+	)
+	if h.animate {
+		if body.Image == "" || len(body.Image) > maxFrameChars {
+			response.WriteError(w, apierr.ErrVideoFrameInvalid)
+			return
+		}
+		// Aspect and resolution were parsed above and are deliberately DROPPED here: the clip
+		// inherits the frame's geometry, so forwarding ours would ask the upstream to letterbox or
+		// crop the very picture the user handed over. They stay parsed so an out-of-vocabulary value
+		// is still a 400 rather than silently ignored.
+		// 上面解出的 aspect 与 resolution 在这里**刻意丢弃**:片子继承首帧几何,转发我们的等于要求上游
+		// 对用户刚递来的那张图做信箱边或裁切。仍然照常解析,故词表外的值依旧 400、而不是被静默忽略。
+		handle, ae = h.svc.Animate(r.Context(), installID, prompt, seconds, body.Image)
+	} else {
+		handle, ae = h.svc.Submit(r.Context(), installID, prompt, seconds, ratio, resolution)
+	}
 	if ae != nil {
 		response.WriteError(w, ae)
 		return

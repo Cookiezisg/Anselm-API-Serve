@@ -131,6 +131,13 @@ var (
 	// 客套:ADR 0011 禁止带 scheme 或 host 的受管媒体输入,因为一个本网关会去取的地址,是指向**我们自己
 	// 网络**的 SSRF 原语。要求 `data:` **就是**那个缓解——data URL 取不了,它就是字节本身。
 	ErrImageSourceInvalid = NewError(statusBadRequest, "IMAGE_SOURCE_INVALID", "the edit source must be a base64 data URL, not an address")
+	// ErrVideoFrameInvalid — the image-to-video first frame is not a base64 data URL (WRK-082 H9).
+	// Its own code rather than reusing IMAGE_SOURCE_INVALID: a client animating a picture that gets
+	// told "the EDIT source is invalid" would go looking at the wrong request.
+	//
+	// ErrVideoFrameInvalid——图生视频的首帧不是 base64 data URL(H9)。**自己的码**而非复用
+	// IMAGE_SOURCE_INVALID:一个在让图动起来的客户端被告知「**改图**的源无效」,会去查错的那个请求。
+	ErrVideoFrameInvalid = NewError(statusBadRequest, "VIDEO_FRAME_INVALID", "the first frame must be a base64 data URL, not an address")
 	// ErrImageQuotaExhausted — the per-install daily image-generation cap is
 	// reached (WRK-082 P8). Distinct from RATE_LIMITED (a pacing denial) and from
 	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer
