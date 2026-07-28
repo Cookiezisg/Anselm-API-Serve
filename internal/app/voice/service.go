@@ -35,6 +35,7 @@ import (
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	domvoice "github.com/sunweilin/anselm/gateway/internal/domain/voice"
+	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
 
 type Authenticator interface {
@@ -65,8 +66,26 @@ type Store interface {
 // Upstream 是音色生命周期的 provider 端口。`unbilled` **只有**在可证明的创建前拒绝时才为 true;
 // 一切歧义都保留计费(GW-INV-50)。
 type Upstream interface {
-	EnrollVoice(ctx context.Context, name, sampleDataURL string) (upstreamID string, unbilled bool, err error)
+	EnrollVoice(ctx context.Context, sampleURL string) (upstreamID string, unbilled bool, err error)
+	AwaitVoiceReady(ctx context.Context, upstreamID string) error
 	DeleteVoice(ctx context.Context, upstreamID string) error
+}
+
+// Samples turns an install-owned media lease into an address the upstream can fetch, and spends it
+// afterwards. It is the seam that keeps this package from importing app/media.
+//
+// **Why a URL at all** — `voice-enrollment` accepts no base64 (真机实测). This is the single narrow
+// exception to ADR 0012's "never hand the provider an address"; chat and image inputs still inline
+// their bytes.
+//
+// Samples 把一个归本 install 所有的媒体 lease 变成上游能取的地址,并在用完后**花掉**它。它是让本包
+// 不必 import app/media 的那道缝。
+//
+// **为什么非要 URL**——`voice-enrollment` 不收 base64(真机实测)。这是 ADR 0012「绝不给 provider
+// 一个地址」的**唯一一条窄缝例外**;chat 与图像输入仍然内联字节。
+type Samples interface {
+	SampleFetchToken(ctx context.Context, installID, leaseID string) (string, error)
+	RevokeSample(ctx context.Context, installID, leaseID string) error
 }
 
 // Quota is the pUSD wallet port — the same one image, tts and video reserve against, because the
@@ -105,6 +124,13 @@ type Logger interface {
 	// VoiceOrphaned:存在一个谁也寻址不到的上游登记——记录写失败**且**回滚也失败。补救:去上游手动
 	// 删掉它。没有任何自动机制做得到。
 	VoiceOrphaned(upstreamID string)
+	// SampleNotRevoked: a spent fetch capability is still live until its TTL. Not fatal, but it is
+	// a window nobody intends to be open. SampleNotRevoked:一个已经用掉的取回凭据在 TTL 之前仍然
+	// 活着。不致命,但那是一扇没人打算开着的窗。
+	SampleNotRevoked(leaseID string)
+	// VoiceSlowToDeploy: paid for and recorded, but not yet usable when we stopped waiting.
+	// VoiceSlowToDeploy:已付费、已记录,但在我们不再等的时候还不能用。
+	VoiceSlowToDeploy(upstreamID string)
 	// SettleFailure / RollbackFailure: the books did not close. Money that fails to settle is money
 	// the operator's wallet under-reports until the orphan scanner finalizes it, so it must be
 	// observable rather than silently deferred (B2, the same rule as the other three capabilities).
@@ -119,6 +145,7 @@ type Logger interface {
 // Service 登记、列出、删除音色。
 type Service struct {
 	auth     Authenticator
+	samples  Samples
 	quota    Quota
 	rl       RateLimiter
 	cfg      Config
@@ -132,6 +159,7 @@ type Service struct {
 // Deps wires the service.
 type Deps struct {
 	Auth     Authenticator
+	Samples  Samples
 	Quota    Quota
 	RL       RateLimiter
 	Config   Config
@@ -148,7 +176,7 @@ func New(d Deps) *Service {
 	if log == nil {
 		log = noopLogger{}
 	}
-	return &Service{auth: d.Auth, quota: d.Quota, rl: d.RL, cfg: d.Config, store: d.Store,
+	return &Service{auth: d.Auth, samples: d.Samples, quota: d.Quota, rl: d.RL, cfg: d.Config, store: d.Store,
 		upstream: d.Upstream, clock: d.Clock, ids: d.IDs, log: log}
 }
 
@@ -177,18 +205,24 @@ func (s *Service) Available() bool {
 // **顺序就是那个正确性论证**,且与桌面侧互为镜像:两条上限与重名都在**付费上游调用之前**查,因为
 // 先登记、后记不下来,会在我们账号里留下一个孤儿——占着共享上限的一个位,而再没有东西寻址得到它。
 // 万一记录仍然失败,上游登记会被**回滚**而不是被丢下。
-func (s *Service) Enroll(ctx context.Context, installID, name, sampleDataURL string) (domvoice.Voice, *apierr.APIError) {
+func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (domvoice.Voice, *apierr.APIError) {
 	if s == nil || s.auth == nil || s.cfg == nil || s.store == nil || s.upstream == nil ||
-		s.clock == nil || s.ids == nil || s.quota == nil {
+		s.clock == nil || s.ids == nil || s.quota == nil || s.samples == nil {
 		return domvoice.Voice{}, apierr.Internal()
 	}
 	if !s.Available() {
 		return domvoice.Voice{}, apierr.ErrVoiceUnavailable
 	}
-	// The shape guard, same boundary and same reason as the image editor's: an address this gateway
-	// would fetch is an SSRF primitive aimed at our own network (ADR 0011).
-	// 形状闸,与改图同一条边界、同一个理由:一个本网关会去取的地址是指向我们自己网络的 SSRF 原语。
-	if !strings.HasPrefix(sampleDataURL, "data:") || strings.Contains(sampleDataURL, "://") {
+	// **The sample is named by a LEASE ID, never by an address.** ADR 0011's入站 half is untouched:
+	// a caller still cannot hand this gateway a URL to fetch, because that is an SSRF primitive
+	// aimed at our own network. What changed is only the OUTBOUND hop — the gateway resolves the
+	// lease it already owns into its own public address (ADR 0012 clause 4's parked media subdomain),
+	// because `voice-enrollment` accepts nothing else.
+	// **样本由 lease id 指名,绝不由地址指名。** ADR 0011 的**入站**那半原样不动:调用方**仍然**不能
+	// 递给本网关一个 URL 让它去取——那是一枚指向我们自己网络的 SSRF 原语。变的只是**出站**那一跳:
+	// 网关把自己本来就拥有的 lease 解析成**它自己的**公开地址(ADR 0012 第 4 条为此留的媒体子域),
+	// 因为 `voice-enrollment` 别的什么都不收。
+	if strings.TrimSpace(leaseID) == "" {
 		return domvoice.Voice{}, apierr.ErrVoiceSampleInvalid
 	}
 	name = strings.TrimSpace(name)
@@ -249,7 +283,26 @@ func (s *Service) Enroll(ctx context.Context, installID, name, sampleDataURL str
 		return domvoice.Voice{}, apierr.Internal()
 	}
 
-	upstreamID, unbilled, err := s.upstream.EnrollVoice(ctx, name, sampleDataURL)
+	// Resolve the lease AFTER the wallet, not before: a caller who is out of daily allowance must
+	// not have caused us to mint a public address for their audio at all.
+	// 在钱包**之后**才解析 lease,不在之前:一个当天额度已用尽的调用方,不该导致我们**根本**为他的
+	// 音频铸出过一个公开地址。
+	token, terr := s.samples.SampleFetchToken(ctx, got, leaseID)
+	if terr != nil {
+		s.rollbackReservation(ctx, reservation)
+		return domvoice.Voice{}, apierr.ErrVoiceSampleInvalid
+	}
+	sampleURL, uerr := secureurl.PublicFetchURL(s.cfg.Load().MediaFetchDomain, leaseID, token)
+	if uerr != nil {
+		// An unconfigured or `api.`-prefixed media host cannot serve the upstream, and the failure
+		// would be invisible on the wire — refuse locally with nothing spent.
+		// 未配置或 `api.` 前缀的媒体主机服务不了上游,而那种失败在线缆上**看不见**——本地拒绝,一分
+		// 钱不花。
+		s.rollbackReservation(ctx, reservation)
+		return domvoice.Voice{}, apierr.ErrVoiceUnavailable
+	}
+
+	upstreamID, unbilled, err := s.upstream.EnrollVoice(ctx, sampleURL)
 	if err != nil {
 		if unbilled {
 			if rbErr := s.quota.Rollback(ctx, reservation); rbErr != nil {
@@ -272,6 +325,28 @@ func (s *Service) Enroll(ctx context.Context, installID, name, sampleDataURL str
 	// 记账,它退不掉上游已经收走的钱。写失败时删掉那份登记,收回的是**位置**、从来不是那笔费用。
 	if err := s.quota.Settle(ctx, reservation, reservation.ReservedPUSD); err != nil {
 		s.log.SettleFailure()
+	}
+
+	// **Spend the capability the moment the upstream is done with it.** The fetch URL is a bearer
+	// token: anyone holding it can download the user's voice until the lease TTL runs out. The
+	// upstream fetches exactly once, so every second of validity after that is a window with no
+	// remaining purpose. Revoking beats shortening a TTL — it does not depend on a clock.
+	// **上游一用完就把那个 capability 花掉。** 取回 URL 是持有型凭据:拿到它的人在 lease TTL 走完
+	// 之前都能下载用户的声音。上游**恰好取一次**,故那之后每一秒的有效期都是一扇没有剩余用途的窗。
+	// **撤销胜过缩短 TTL**——它不依赖时钟。
+	//
+	// A failed revoke does not fail the enrollment: the voice is real and paid for, and the lease
+	// still expires on its own. 撤销失败**不**让登记失败:音色是真的、已付费,而 lease 自己也会过期。
+	awaitErr := s.upstream.AwaitVoiceReady(ctx, upstreamID)
+	if rerr := s.samples.RevokeSample(ctx, got, leaseID); rerr != nil {
+		s.log.SampleNotRevoked(leaseID)
+	}
+	if awaitErr != nil {
+		// Out of patience, not out of voice — the registration exists and is paid for. Record it
+		// anyway so the user owns what they bought; it becomes usable when the provider finishes.
+		// 是我们没耐心了,不是音色没了——那份登记存在且已付费。**照样记下来**,使用户拥有他买到的
+		// 东西;上游做完之后它就能用了。
+		s.log.VoiceSlowToDeploy(upstreamID)
 	}
 	v := domvoice.Voice{ID: s.ids.New(), Name: name, UpstreamID: upstreamID, CreatedAt: s.clock.Now().UTC()}
 	if err := s.store.CreateVoice(ctx, got, v); err != nil {
@@ -357,6 +432,15 @@ func (s *Service) Delete(ctx context.Context, installID, id string) *apierr.APIE
 	return nil
 }
 
+// rollbackReservation reverses a charge for work that provably never reached the provider.
+//
+// rollbackReservation 为一次**可证明从未抵达上游**的工作反转计费。
+func (s *Service) rollbackReservation(ctx context.Context, r *domquota.Reservation) {
+	if err := s.quota.Rollback(ctx, r); err != nil {
+		s.log.RollbackFailure()
+	}
+}
+
 func (s *Service) authorize(ctx context.Context, installID string) (string, *apierr.APIError) {
 	got, status, found, err := s.auth.LookupInstall(ctx, installID)
 	if err != nil {
@@ -378,5 +462,7 @@ type noopLogger struct{}
 
 func (noopLogger) AccountVoiceCeilingReached(int, int) {}
 func (noopLogger) VoiceOrphaned(string)                {}
+func (noopLogger) SampleNotRevoked(string)             {}
+func (noopLogger) VoiceSlowToDeploy(string)            {}
 func (noopLogger) SettleFailure()                      {}
 func (noopLogger) RollbackFailure()                    {}

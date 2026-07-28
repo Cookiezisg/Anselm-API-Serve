@@ -30,6 +30,8 @@ type Repository interface {
 	AbortOpen(ctx context.Context, installID, uploadID string, now time.Time) (bool, error)
 	AdvanceReceived(ctx context.Context, installID, uploadID string, expectedReceived, nextReceived int64, now time.Time) (bool, error)
 	CompleteUpload(ctx context.Context, installID, uploadID, actualSHA256 string, now time.Time, lease dmedia.Lease) (*dmedia.Lease, bool, error)
+	GetLeaseForInstall(ctx context.Context, installID, leaseID string) (*dmedia.Lease, bool, error)
+	RevokeLease(ctx context.Context, installID, leaseID string, now time.Time) (bool, error)
 }
 
 type Files interface {
@@ -444,4 +446,50 @@ func supportedMIME(v string) bool {
 	default:
 		return false
 	}
+}
+
+// SampleFetchToken re-derives the bearer token for an install-owned, still-active lease.
+//
+// **The token is derivable rather than stored, and that is what makes this possible at all.** Only
+// its hash is persisted; the plaintext comes from `signer.Token(id, install, expiry)`, which is
+// deterministic. So a caller that can prove ownership can reconstruct exactly the capability the
+// uploader received — without the gateway ever having kept a secret at rest.
+//
+// It is deliberately NOT a general accessor: the only caller is voice enrollment, the one upstream
+// that cannot be handed bytes (see upstream/voicegen.go). Everything else inlines its media.
+//
+// SampleFetchToken 为一个**归本 install 所有、且仍然活跃**的 lease 重新派生持有型 token。
+//
+// **token 是「派生的」而不是「存下来的」,而这正是这件事根本能成立的原因。** 库里只存哈希;明文来自
+// `signer.Token(id, install, expiry)`,它是确定性的。故一个能证明归属的调用方,可以**重建出上传者
+// 当初拿到的那个 capability**——而网关从未在静态存储里留下任何秘密。
+//
+// 它**刻意不是**一个通用取值口:唯一的调用方是音色登记——那个唯一没法递字节给它的上游(见
+// upstream/voicegen.go)。其余一切都内联自己的媒体。
+func (s *Service) SampleFetchToken(ctx context.Context, installID, leaseID string) (string, error) {
+	lease, found, err := s.repo.GetLeaseForInstall(ctx, installID, leaseID)
+	if err != nil {
+		return "", err
+	}
+	// Unknown, another install's, retired, or expired all read the same way — a lease id must never
+	// become an existence oracle. 未知、别人的、已退役、已过期,读起来**全都一样**——lease id 绝不
+	// 能变成一个存在性预言机。
+	if !found || lease.State != dmedia.LeaseActive || !s.clock.Now().UTC().Before(lease.ExpiresAt) {
+		return "", ErrNotFound
+	}
+	return s.signer.Token(lease.ID, lease.InstallID, lease.ExpiresAt), nil
+}
+
+// RevokeSample spends a lease: after the upstream has fetched it once, the capability has no
+// remaining purpose and must stop working immediately rather than idle out.
+//
+// Idempotent by design — a retried cleanup, or one racing the expiry sweeper, is not an error.
+//
+// RevokeSample **用掉**一个 lease:上游取过一次之后,那个 capability 已经没有剩余用途,必须**立刻**
+// 失效,而不是慢慢空转到过期。
+//
+// **刻意幂等**——重试的清理,或与过期清扫赛跑的那一次,都不是错误。
+func (s *Service) RevokeSample(ctx context.Context, installID, leaseID string) error {
+	_, err := s.repo.RevokeLease(ctx, installID, leaseID, s.clock.Now().UTC())
+	return err
 }

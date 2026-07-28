@@ -35,12 +35,6 @@ const (
 	// short by nature; the bound is a memory guard, not a product opinion.
 	// maxNameChars 界音色名。名字是此后合成用的把手,天然就短;这个界是内存闸、不是产品意见。
 	maxNameChars = 120
-	// maxSampleChars bounds the base64 reference clip. 30s of 24kHz mono PCM in a container is well
-	// under this; the SHAPE guard (data: and no scheme, ADR 0011) is the security one and lives in
-	// the service.
-	// maxSampleChars 界 base64 参考音频。30 秒 24kHz 单声道 PCM 装进容器远小于此;**形状**闸
-	// (data: 且无 scheme,ADR 0011)是安全闸、住在 service 里。
-	maxSampleChars = 14_000_000
 )
 
 // Handler serves the three voice routes.
@@ -70,9 +64,20 @@ func NewDelete(svc *appvoice.Service) *Handler { return &Handler{svc: svc, actio
 
 type enrollRequest struct {
 	Name string `json:"name"`
-	// Audio is the reference clip as a base64 data URL, never an address (ADR 0011).
-	// Audio 是参考音频,base64 data URL、绝不是地址(ADR 0011)。
-	Audio string `json:"audio"`
+	// LeaseID names a media lease this install already uploaded — **never an address**. ADR 0011's
+	// inbound half is untouched: a caller cannot hand this gateway a URL to fetch. The gateway
+	// resolves the lease into ITS OWN public address on the outbound hop, because
+	// `voice-enrollment` accepts nothing else (真机实测).
+	//
+	// The clip travels through the ordinary resumable upload, so a 30-second sample never has to
+	// fit in one JSON body.
+	//
+	// LeaseID 指名一个本 install 已经上传好的媒体 lease——**绝不是地址**。ADR 0011 的入站那半原样
+	// 不动:调用方不能递给本网关一个 URL 让它去取。网关在**出站**那一跳把 lease 解析成**它自己的**
+	// 公开地址,因为 `voice-enrollment` 别的什么都不收(真机实测)。
+	//
+	// 音频走普通的断点上传,故一段 30 秒的样本永远不必塞进一个 JSON body。
+	LeaseID string `json:"leaseId"`
 }
 
 type deleteRequest struct {
@@ -137,11 +142,11 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request, installID strin
 		response.WriteError(w, apierr.ErrBadRequest)
 		return
 	}
-	if body.Audio == "" || len(body.Audio) > maxSampleChars {
+	if strings.TrimSpace(body.LeaseID) == "" {
 		response.WriteError(w, apierr.ErrVoiceSampleInvalid)
 		return
 	}
-	v, ae := h.svc.Enroll(r.Context(), installID, name, body.Audio)
+	v, ae := h.svc.Enroll(r.Context(), installID, name, strings.TrimSpace(body.LeaseID))
 	if ae != nil {
 		response.WriteError(w, ae)
 		return

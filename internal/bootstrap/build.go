@@ -331,6 +331,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 配置回答、而不是一次 nil 解引用。
 	voiceSvc := appvoice.New(appvoice.Deps{
 		Auth:     installSvc,
+		Samples:  mediaSvc,
 		Quota:    quotaSvc,
 		RL:       rl,
 		Config:   cfgP,

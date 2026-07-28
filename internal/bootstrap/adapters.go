@@ -265,6 +265,14 @@ func (l voiceLogger) VoiceOrphaned(upstreamID string) {
 	l.log.Warn("voice_orphaned_upstream", "upstream_id", upstreamID)
 }
 
+func (l voiceLogger) SampleNotRevoked(leaseID string) {
+	l.log.Warn("voice_sample_not_revoked", "lease_id", leaseID)
+}
+
+func (l voiceLogger) VoiceSlowToDeploy(upstreamID string) {
+	l.log.Warn("voice_slow_to_deploy", "upstream_id", upstreamID)
+}
+
 func (l voiceLogger) SettleFailure() {
 	if l.m != nil {
 		l.m.SettleFailures.Inc()

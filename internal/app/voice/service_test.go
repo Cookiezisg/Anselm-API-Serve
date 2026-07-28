@@ -74,6 +74,9 @@ func (f *fakeStore) DeleteVoice(_ context.Context, id, vid string) (string, bool
 }
 
 type fakeUpstream struct {
+	sawURL       string
+	awaited      int
+	awaitErr     error
 	enrolled     int
 	deleted      []string
 	enrollErr    error
@@ -81,18 +84,48 @@ type fakeUpstream struct {
 	deleteErr    error
 }
 
-func (f *fakeUpstream) EnrollVoice(context.Context, string, string) (string, bool, error) {
+func (f *fakeUpstream) EnrollVoice(_ context.Context, sampleURL string) (string, bool, error) {
+	f.sawURL = sampleURL
 	if f.enrollErr != nil {
 		return "", f.enrollUnbill, f.enrollErr
 	}
 	f.enrolled++
 	return "upstream-voice-1", false, nil
 }
+
+func (f *fakeUpstream) AwaitVoiceReady(context.Context, string) error {
+	f.awaited++
+	return f.awaitErr
+}
 func (f *fakeUpstream) DeleteVoice(_ context.Context, id string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
 	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+// fakeSamples stands in for the media seam. It records whether the capability was spent.
+// fakeSamples 代表媒体那道缝。它记录那个 capability 有没有被**花掉**。
+type fakeSamples struct {
+	token    string
+	tokenErr error
+	revoked  []string
+	revErr   error
+}
+
+func (f *fakeSamples) SampleFetchToken(_ context.Context, _, leaseID string) (string, error) {
+	if f.tokenErr != nil {
+		return "", f.tokenErr
+	}
+	return f.token, nil
+}
+
+func (f *fakeSamples) RevokeSample(_ context.Context, _, leaseID string) error {
+	if f.revErr != nil {
+		return f.revErr
+	}
+	f.revoked = append(f.revoked, leaseID)
 	return nil
 }
 
@@ -109,10 +142,14 @@ type capturingLog struct {
 	orphans     []string
 	settleFails int
 	rbFails     int
+	notRevoked  int
+	slowDeploy  int
 }
 
 func (l *capturingLog) AccountVoiceCeilingReached(int, int) { l.ceilingHits++ }
 func (l *capturingLog) VoiceOrphaned(id string)             { l.orphans = append(l.orphans, id) }
+func (l *capturingLog) SampleNotRevoked(string)             { l.notRevoked++ }
+func (l *capturingLog) VoiceSlowToDeploy(string)            { l.slowDeploy++ }
 func (l *capturingLog) SettleFailure()                      { l.settleFails++ }
 func (l *capturingLog) RollbackFailure()                    { l.rbFails++ }
 
@@ -162,18 +199,25 @@ func (f *fakeQuota) Rollback(context.Context, *domquota.Reservation) error {
 	return nil
 }
 
-const sample = "data:audio/wav;base64,UklGRg=="
+const sample = "mls_sample"
 
 func newSvc(t *testing.T, store *fakeStore, up *fakeUpstream, ceiling int64) (*Service, *capturingLog, *fakeQuota) {
+	svc, lg, q, _ := newSvcFull(t, store, up, ceiling, &fakeSamples{token: "tok"})
+	return svc, lg, q
+}
+
+func newSvcFull(t *testing.T, store *fakeStore, up *fakeUpstream, ceiling int64, sm *fakeSamples) (*Service, *capturingLog, *fakeQuota, *fakeSamples) {
 	t.Helper()
 	lg := &capturingLog{}
 	q := &fakeQuota{}
 	return New(Deps{
-		Auth:   fakeAuth{},
-		Quota:  q,
-		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}, VoiceAccountCeiling: ceiling}},
-		Store:  store, Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{}, Log: lg,
-	}), lg, q
+		Auth:    fakeAuth{},
+		Quota:   q,
+		Samples: sm,
+		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"},
+			VoiceAccountCeiling: ceiling, MediaFetchDomain: "media.example.com"}},
+		Store: store, Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{}, Log: lg,
+	}), lg, q, sm
 }
 
 // TestEnroll_InventoryFullBeforeSpending: the per-install cap is checked BEFORE the paid upstream
@@ -248,28 +292,6 @@ func TestEnroll_ZeroCeilingIsUnenforced(t *testing.T) {
 	svc, _, _ := newSvc(t, st, &fakeUpstream{}, 0)
 	if _, ae := svc.Enroll(context.Background(), "ins_1", "narrator", sample); ae != nil {
 		t.Fatalf("ae = %v, want success with the ceiling unset", ae)
-	}
-}
-
-// TestEnroll_AddressShapedSampleIsRefused: ADR 0011 — a managed media input that carries an address
-// is an SSRF primitive aimed at our own network. The shape IS the control.
-//
-// TestEnroll_AddressShapedSampleIsRefused:ADR 0011——携带地址的受管媒体输入是一枚指向我们自己网络
-// 的 SSRF 原语。**形状本身就是那道控制**。
-func TestEnroll_AddressShapedSampleIsRefused(t *testing.T) {
-	for _, bad := range []string{
-		"https://internal.example/clip.wav",
-		"http://169.254.169.254/latest/meta-data/",
-		"data:audio/wav;base64,x://y",
-	} {
-		up := &fakeUpstream{}
-		svc, _, _ := newSvc(t, newStore(), up, 0)
-		if _, ae := svc.Enroll(context.Background(), "ins_1", "n", bad); ae != apierr.ErrVoiceSampleInvalid {
-			t.Fatalf("sample %q: ae = %v, want ErrVoiceSampleInvalid", bad, ae)
-		}
-		if up.enrolled != 0 {
-			t.Fatalf("sample %q reached the upstream", bad)
-		}
 	}
 }
 
@@ -390,10 +412,11 @@ func TestDelete_OtherInstallsVoiceIsAbsent(t *testing.T) {
 // 而不是到上游那里才失败。
 func TestUnavailableWhenSpeechIsOff(t *testing.T) {
 	svc := New(Deps{
-		Auth:   fakeAuth{},
-		Config: &fakeCfg{c: config.Config{SpeechEnabled: false, QwenAPIKeys: []string{"k"}}},
-		Quota:  &fakeQuota{},
-		Store:  newStore(), Upstream: &fakeUpstream{}, Clock: fixedClock{}, IDs: &seqIDs{},
+		Auth:    fakeAuth{},
+		Config:  &fakeCfg{c: config.Config{SpeechEnabled: false, QwenAPIKeys: []string{"k"}, MediaFetchDomain: "media.example.com"}},
+		Quota:   &fakeQuota{},
+		Samples: &fakeSamples{token: "tok"},
+		Store:   newStore(), Upstream: &fakeUpstream{}, Clock: fixedClock{}, IDs: &seqIDs{},
 	})
 	if svc.Available() {
 		t.Fatal("Available() must be false when speech is off")
@@ -409,10 +432,11 @@ func TestUnavailableWhenSpeechIsOff(t *testing.T) {
 func TestBannedInstallIsRefused(t *testing.T) {
 	up := &fakeUpstream{}
 	svc := New(Deps{
-		Auth:   fakeAuth{status: dominstall.StatusBanned},
-		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}}},
-		Quota:  &fakeQuota{},
-		Store:  newStore(), Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{},
+		Auth:    fakeAuth{status: dominstall.StatusBanned},
+		Config:  &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}, MediaFetchDomain: "media.example.com"}},
+		Quota:   &fakeQuota{},
+		Samples: &fakeSamples{token: "tok"},
+		Store:   newStore(), Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{},
 	})
 	if _, ae := svc.Enroll(context.Background(), "ins_1", "n", sample); ae != apierr.ErrAccountBanned {
 		t.Fatalf("ae = %v, want ErrAccountBanned", ae)
@@ -471,7 +495,7 @@ func TestEnroll_LocalRefusalsNeverTouchTheWallet(t *testing.T) {
 		samp  string
 	}{
 		{"inventory full", full, "another", sample},
-		{"bad sample shape", newStore(), "n", "https://internal.example/clip.wav"},
+		{"blank lease", newStore(), "n", "  "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, _, q := newSvc(t, tc.store, &fakeUpstream{}, 0)
@@ -559,9 +583,9 @@ func TestEnroll_QuotaDenialSurfacesItsOwnCode(t *testing.T) {
 	up := &fakeUpstream{}
 	lg := &capturingLog{}
 	svc := New(Deps{
-		Auth:   fakeAuth{},
-		Quota:  &fakeQuota{reserveErr: apierr.ErrVoiceQuotaExhausted},
-		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}}},
+		Auth:  fakeAuth{},
+		Quota: &fakeQuota{reserveErr: apierr.ErrVoiceQuotaExhausted}, Samples: &fakeSamples{token: "tok"},
+		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}, MediaFetchDomain: "media.example.com"}},
 		Store:  newStore(), Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{}, Log: lg,
 	})
 	_, ae := svc.Enroll(context.Background(), "ins_1", "n", sample)
@@ -581,9 +605,9 @@ func TestEnroll_QuotaDenialSurfacesItsOwnCode(t *testing.T) {
 func TestEnroll_UnclosedBooksAreObservable(t *testing.T) {
 	lg := &capturingLog{}
 	svc := New(Deps{
-		Auth:   fakeAuth{},
-		Quota:  &fakeQuota{settleErr: errors.New("wallet down")},
-		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}}},
+		Auth:  fakeAuth{},
+		Quota: &fakeQuota{settleErr: errors.New("wallet down")}, Samples: &fakeSamples{token: "tok"},
+		Config: &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}, MediaFetchDomain: "media.example.com"}},
 		Store:  newStore(), Upstream: &fakeUpstream{}, Clock: fixedClock{}, IDs: &seqIDs{}, Log: lg,
 	})
 	if _, ae := svc.Enroll(context.Background(), "ins_1", "n", sample); ae != nil {
@@ -591,5 +615,141 @@ func TestEnroll_UnclosedBooksAreObservable(t *testing.T) {
 	}
 	if lg.settleFails != 1 {
 		t.Fatalf("settleFails = %d; an unclosed book must be observable", lg.settleFails)
+	}
+}
+
+// --- the lease seam: what the real API forced -------------------------------
+//
+// The first implementation of this package posted base64 to a model id that does not exist, and
+// every test above was green. These pin the three things the REAL contract demands, each of which
+// is invisible from the artifact side.
+//
+// 本包的第一版实现,是把 base64 发给一个**根本不存在**的 model id,而上面每一个测试都是绿的。这几条钉
+// 住真实契约要求的三件事,而它们从**产物那一侧**全都看不见。
+
+// TestEnroll_HandsTheUpstreamOurOwnPublicAddress: the upstream gets a URL on OUR media host, built
+// from a lease it never learns the id of by any other route. ADR 0011's inbound half is untouched —
+// the caller named a lease, not an address.
+//
+// TestEnroll_HandsTheUpstreamOurOwnPublicAddress:上游拿到的是**我们自己**媒体主机上的一个 URL,由一个
+// 它无从从别处得知 id 的 lease 构造。ADR 0011 的入站那半原样不动——调用方指名的是 lease、不是地址。
+func TestEnroll_HandsTheUpstreamOurOwnPublicAddress(t *testing.T) {
+	up := &fakeUpstream{}
+	svc, _, _, _ := newSvcFull(t, newStore(), up, 0, &fakeSamples{token: "tok"})
+	if _, ae := svc.Enroll(context.Background(), "ins_1", "narrator", "mls_abc"); ae != nil {
+		t.Fatalf("ae = %v", ae)
+	}
+	const want = "https://media.example.com/v1/media/leases/mls_abc/content?token=tok"
+	if up.sawURL != want {
+		t.Fatalf("upstream saw %q, want %q", up.sawURL, want)
+	}
+}
+
+// TestEnroll_SpendsTheCapabilityWhenTheUpstreamIsDone: the fetch URL is a bearer token. The upstream
+// fetches once, so every second of validity after that is an open window with no purpose. Revoking
+// beats shortening a TTL because it does not depend on a clock.
+//
+// TestEnroll_SpendsTheCapabilityWhenTheUpstreamIsDone:取回 URL 是持有型凭据。上游只取一次,故那之后
+// 每一秒有效期都是一扇没有用途的窗。**撤销胜过缩短 TTL**,因为它不依赖时钟。
+func TestEnroll_SpendsTheCapabilityWhenTheUpstreamIsDone(t *testing.T) {
+	sm := &fakeSamples{token: "tok"}
+	up := &fakeUpstream{}
+	svc, _, _, _ := newSvcFull(t, newStore(), up, 0, sm)
+	if _, ae := svc.Enroll(context.Background(), "ins_1", "narrator", "mls_abc"); ae != nil {
+		t.Fatalf("ae = %v", ae)
+	}
+	if up.awaited != 1 {
+		t.Fatalf("awaited %d times; a voice is not usable until the upstream reports it deployed", up.awaited)
+	}
+	if len(sm.revoked) != 1 || sm.revoked[0] != "mls_abc" {
+		t.Fatalf("the sample capability was not spent: %v", sm.revoked)
+	}
+}
+
+// TestEnroll_SlowDeploymentStillKeepsTheVoice: running out of patience is not the same as the voice
+// failing. It exists and is paid for, so the record stands and the operator is told.
+//
+// TestEnroll_SlowDeploymentStillKeepsTheVoice:**我们没耐心了**和**音色失败了**不是一回事。它存在、
+// 已付费,故记录留下、并告诉运营者。
+func TestEnroll_SlowDeploymentStillKeepsTheVoice(t *testing.T) {
+	sm := &fakeSamples{token: "tok"}
+	up := &fakeUpstream{awaitErr: apierr.ErrUpstreamTimeout}
+	svc, lg, q, _ := newSvcFull(t, newStore(), up, 0, sm)
+	v, ae := svc.Enroll(context.Background(), "ins_1", "narrator", "mls_abc")
+	if ae != nil || v.UpstreamID == "" {
+		t.Fatalf("a slow deploy must not lose a voice the user paid for: ae=%v v=%+v", ae, v)
+	}
+	if lg.slowDeploy != 1 {
+		t.Fatalf("slowDeploy = %d; the operator must be told", lg.slowDeploy)
+	}
+	if len(q.settled) != 1 || q.rolledBack != 0 {
+		t.Fatalf("the fee was really paid: settled=%v rolledBack=%d", q.settled, q.rolledBack)
+	}
+	// Even on a slow deploy the capability is spent — the upstream already fetched the bytes.
+	// 即使部署慢,凭据照样花掉——上游**已经**把字节取走了。
+	if len(sm.revoked) != 1 {
+		t.Fatalf("the sample stayed fetchable after the upstream had it: %v", sm.revoked)
+	}
+}
+
+// TestEnroll_UnresolvableLeaseRefundsAndNeverSpends: a lease that is not this install's, expired, or
+// already spent must refuse with the money reversed — nothing reached the provider.
+//
+// TestEnroll_UnresolvableLeaseRefundsAndNeverSpends:一个不属于本 install、已过期、或已经用掉的 lease
+// 必须以**退款**告终——什么也没抵达上游。
+func TestEnroll_UnresolvableLeaseRefundsAndNeverSpends(t *testing.T) {
+	up := &fakeUpstream{}
+	svc, _, q, _ := newSvcFull(t, newStore(), up, 0, &fakeSamples{tokenErr: errors.New("not found")})
+	if _, ae := svc.Enroll(context.Background(), "ins_1", "narrator", "mls_nope"); ae != apierr.ErrVoiceSampleInvalid {
+		t.Fatalf("ae = %v, want ErrVoiceSampleInvalid", ae)
+	}
+	if up.enrolled != 0 {
+		t.Fatal("an unresolvable sample still reached the paid upstream")
+	}
+	if q.rolledBack != 1 {
+		t.Fatalf("rolledBack = %d; nothing reached the provider so the charge must reverse", q.rolledBack)
+	}
+}
+
+// TestEnroll_UnconfiguredMediaHostRefusesLocally: without a media host the upstream cannot fetch,
+// and that failure is invisible on the wire (ADR 0012: 400s with no origin log). Refuse here, with
+// nothing spent, rather than pay to discover it.
+//
+// TestEnroll_UnconfiguredMediaHostRefusesLocally:没有媒体主机,上游就取不到,而那种失败**在线缆上
+// 看不见**(ADR 0012:400 且源站无日志)。在这里拒绝、一分不花,而不是花钱去发现它。
+func TestEnroll_UnconfiguredMediaHostRefusesLocally(t *testing.T) {
+	up := &fakeUpstream{}
+	lg := &capturingLog{}
+	q := &fakeQuota{}
+	svc := New(Deps{
+		Auth:    fakeAuth{},
+		Quota:   q,
+		Samples: &fakeSamples{token: "tok"},
+		Config:  &fakeCfg{c: config.Config{SpeechEnabled: true, QwenAPIKeys: []string{"k"}}},
+		Store:   newStore(), Upstream: up, Clock: fixedClock{}, IDs: &seqIDs{}, Log: lg,
+	})
+	if _, ae := svc.Enroll(context.Background(), "ins_1", "n", "mls_abc"); ae != apierr.ErrVoiceUnavailable {
+		t.Fatalf("ae = %v, want ErrVoiceUnavailable", ae)
+	}
+	if up.enrolled != 0 || q.rolledBack != 1 {
+		t.Fatalf("enrolled=%d rolledBack=%d; nothing may be spent when the fetch can never work",
+			up.enrolled, q.rolledBack)
+	}
+}
+
+// TestEnroll_FailedRevokeIsReportedNotFatal: the voice is real and paid for. A stuck revoke leaves a
+// window open until the TTL, which the operator must know about — but failing the enrollment would
+// take away something the user already bought.
+//
+// TestEnroll_FailedRevokeIsReportedNotFatal:音色是真的、已付费。撤销卡住会留一扇窗到 TTL,运营者必须
+// 知道——但让登记失败,等于拿走用户已经买到的东西。
+func TestEnroll_FailedRevokeIsReportedNotFatal(t *testing.T) {
+	sm := &fakeSamples{token: "tok", revErr: errors.New("db down")}
+	svc, lg, _, _ := newSvcFull(t, newStore(), &fakeUpstream{}, 0, sm)
+	if _, ae := svc.Enroll(context.Background(), "ins_1", "narrator", "mls_abc"); ae != nil {
+		t.Fatalf("a stuck revoke must not take away a paid voice: %v", ae)
+	}
+	if lg.notRevoked != 1 {
+		t.Fatalf("notRevoked = %d; an unspent capability must be observable", lg.notRevoked)
 	}
 }

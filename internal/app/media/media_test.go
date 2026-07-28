@@ -417,3 +417,108 @@ func TestVerifyLeaseBindsToTheRequestingInstall(t *testing.T) {
 		}
 	}
 }
+
+func (r *memRepo) GetLeaseForInstall(_ context.Context, install, id string) (*dmedia.Lease, bool, error) {
+	if r.lease == nil || r.lease.ID != id || r.lease.InstallID != install {
+		return nil, false, nil
+	}
+	return r.lease, true, nil
+}
+
+func (r *memRepo) RevokeLease(_ context.Context, install, id string, _ time.Time) (bool, error) {
+	if r.lease == nil || r.lease.ID != id || r.lease.InstallID != install || r.lease.State != dmedia.LeaseActive {
+		return false, nil
+	}
+	r.lease.State = dmedia.LeaseExpired
+	return true, nil
+}
+
+// TestSampleFetchToken_OwnershipAndLiveness: an unknown id, another install's lease, a retired one
+// and an expired one all read the same way. A lease id must never become an existence oracle.
+//
+// TestSampleFetchToken_OwnershipAndLiveness:未知 id、别的 install 的 lease、已退役的、已过期的,读起来
+// **全都一样**。lease id 绝不能变成一个存在性预言机。
+func TestSampleFetchToken_OwnershipAndLiveness(t *testing.T) {
+	svc, repo, _ := completedLeaseService(t)
+	lease := repo.lease
+
+	if _, err := svc.SampleFetchToken(context.Background(), lease.InstallID, lease.ID); err != nil {
+		t.Fatalf("the owner must be able to re-derive the token: %v", err)
+	}
+	if _, err := svc.SampleFetchToken(context.Background(), "ins_other", lease.ID); err != ErrNotFound {
+		t.Fatalf("another install got %v, want ErrNotFound", err)
+	}
+	if _, err := svc.SampleFetchToken(context.Background(), lease.InstallID, "mls_nope"); err != ErrNotFound {
+		t.Fatalf("unknown id got %v, want ErrNotFound", err)
+	}
+	lease.State = dmedia.LeaseExpired
+	if _, err := svc.SampleFetchToken(context.Background(), lease.InstallID, lease.ID); err != ErrNotFound {
+		t.Fatalf("retired lease got %v, want ErrNotFound", err)
+	}
+}
+
+// TestRevokeSample_SpendsTheCapabilityAndIsIdempotent: after the upstream has fetched once, the URL
+// must stop working immediately rather than idle out — and a retried cleanup is not an error.
+//
+// TestRevokeSample_SpendsTheCapabilityAndIsIdempotent:上游取过一次之后,那个 URL 必须**立刻**失效、
+// 而不是慢慢空转到过期——且重试的清理不是错误。
+func TestRevokeSample_SpendsTheCapabilityAndIsIdempotent(t *testing.T) {
+	svc, repo, _ := completedLeaseService(t)
+	lease := repo.lease
+	if err := svc.RevokeSample(context.Background(), lease.InstallID, lease.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if repo.lease.State != dmedia.LeaseExpired {
+		t.Fatalf("state = %q, want the capability spent", repo.lease.State)
+	}
+	if _, err := svc.SampleFetchToken(context.Background(), lease.InstallID, lease.ID); err != ErrNotFound {
+		t.Fatal("a spent capability must stop resolving")
+	}
+	if err := svc.RevokeSample(context.Background(), lease.InstallID, lease.ID); err != nil {
+		t.Fatalf("a retried cleanup must not error: %v", err)
+	}
+}
+
+// completedLeaseService drives one upload to a real lease, so the token these tests re-derive is
+// the same one the uploader received rather than a hand-made value.
+//
+// completedLeaseService 把一次上传真的走到 lease,使这些测试重新派生出的 token 与上传者当初拿到的
+// **是同一个**,而不是手工捏的值。
+func completedLeaseService(t *testing.T) (*Service, *memRepo, *PrivateLease) {
+	t.Helper()
+	repo := &memRepo{}
+	files := &memFiles{data: map[string][]byte{}}
+	svc := testService(t, repo, files)
+	b := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	sum := sha256.Sum256(b)
+	u, err := svc.Create(context.Background(), CreateInput{InstallID: "ins_a",
+		ExpectedSHA256: hex.EncodeToString(sum[:]), MIMEType: "image/png", TotalBytes: int64(len(b))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Append(context.Background(), "ins_a", u.ID, 0, b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Complete(context.Background(), "ins_a", u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, repo, got
+}
+
+// TestSampleFetchToken_ReDerivesTheUploadersOwnToken: only the hash is stored, so the plaintext must
+// come back from the signer. If it did not match, the public route would 404 the upstream and the
+// failure would look like a fetch problem rather than a token one.
+//
+// TestSampleFetchToken_ReDerivesTheUploadersOwnToken:库里只存哈希,故明文必须由 signer 还原。若对不上,
+// 公开路由会对上游 404,而那个失败看起来像**取回**出了问题、不像 token 出了问题。
+func TestSampleFetchToken_ReDerivesTheUploadersOwnToken(t *testing.T) {
+	svc, _, issued := completedLeaseService(t)
+	got, err := svc.SampleFetchToken(context.Background(), "ins_a", issued.Lease.ID)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got != issued.FetchToken {
+		t.Fatal("the re-derived token differs from the one the uploader received")
+	}
+}

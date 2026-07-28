@@ -250,3 +250,36 @@ func scanLease(row *sql.Row) (*dmedia.Lease, bool, error) {
 	}
 	return &out, true, nil
 }
+
+// RevokeLease retires ONE active lease immediately, by owner.
+//
+// **It exists so a capability can be spent rather than merely expire.** A lease's fetch URL is a
+// bearer capability: whoever holds it can download the bytes until the TTL runs out. Voice
+// enrollment hands that URL to an upstream for exactly one fetch, so leaving it valid for the rest
+// of its TTL would keep a window open for no remaining purpose. Revoking on completion is tighter
+// than any TTL and does not depend on a clock being right.
+//
+// Ownership-enforcing and idempotent: another install's lease, an unknown id, or an already-retired
+// one all report false rather than erroring, so a retried cleanup is safe.
+//
+// RevokeLease 按归属**立刻**退役**一个**活跃 lease。
+//
+// **它存在,是为了让一个 capability 可以被「用掉」,而不只是「过期」。** lease 的取回 URL 是持有即有权
+// 的凭据:拿到的人在 TTL 走完之前都能下载那些字节。音色登记把那个 URL 交给上游**恰好取一次**,故让它
+// 在剩下的 TTL 里继续有效,是为一个已经不存在的用途留着一扇窗。**完成即撤销**比任何 TTL 都紧,而且
+// 不依赖时钟是对的。
+//
+// **强制归属且幂等**:别的 install 的 lease、未知 id、已退役的,一律报 false 而不是报错,故重试清理
+// 是安全的。
+func (s *Store) RevokeLease(ctx context.Context, installID, leaseID string, now time.Time) (bool, error) {
+	res, err := s.w.Exec(ctx, `UPDATE media_leases SET state=? WHERE id=? AND install_id=? AND state=?`,
+		dmedia.LeaseExpired, leaseID, installID, dmedia.LeaseActive)
+	if err != nil {
+		return false, fmt.Errorf("mediastore.RevokeLease: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mediastore.RevokeLease rows: %w", err)
+	}
+	return n == 1, nil
+}

@@ -38,34 +38,25 @@ func TestEnroll_RejectsBadShapeBeforeTheService(t *testing.T) {
 		name, body string
 		want       int
 	}{
-		{"empty name", `{"name":"  ","audio":"data:audio/wav;base64,AA"}`, http.StatusBadRequest},
-		{"missing audio", `{"name":"narrator"}`, http.StatusBadRequest},
-		{"unknown field", `{"name":"n","audio":"data:audio/wav;base64,AA","voiceId":"x"}`, http.StatusBadRequest},
+		{"empty name", `{"name":"  ","leaseId":"mls_1"}`, http.StatusBadRequest},
+		{"missing lease", `{"name":"narrator"}`, http.StatusBadRequest},
+		{"blank lease", `{"name":"narrator","leaseId":"   "}`, http.StatusBadRequest},
+		{"unknown field", `{"name":"n","leaseId":"mls_1","voiceId":"x"}`, http.StatusBadRequest},
 		{"not json", `nonsense`, http.StatusBadRequest},
-		{"oversize name", `{"name":"` + strings.Repeat("x", maxNameChars+1) + `","audio":"data:audio/wav;base64,AA"}`, http.StatusBadRequest},
+		{"oversize name", `{"name":"` + strings.Repeat("x", maxNameChars+1) + `","leaseId":"mls_1"}`, http.StatusBadRequest},
+		// **An address must never be accepted here.** ADR 0011's inbound half: a caller cannot hand
+		// this gateway something to fetch. The field takes a lease id, so a URL is simply not the
+		// shape — and the handler must refuse it rather than pass it down to be "validated later".
+		// **地址在这里绝不能被接受。** ADR 0011 的入站那半:调用方不能递给本网关一个可取的东西。这个
+		// 字段收的是 lease id,故 URL 根本不是那个形状——handler 必须**当场**拒,而不是往下传给
+		// 「稍后再校验」。
+		{"address instead of lease", `{"name":"n","audio":"https://evil.example/x.wav"}`, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := post(t, h, http.MethodPost, tc.body).Code; got != tc.want {
 				t.Fatalf("code = %d, want %d", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestEnroll_OversizeSampleIsRefusedByShapeCode: too much base64 is a sample problem, not a generic
-// bad request — the caller has to know WHICH field to fix, and the clip is the expensive one to
-// re-record.
-//
-// TestEnroll_OversizeSampleIsRefusedByShapeCode:太大的 base64 是**样本**的问题、不是泛泛的 bad
-// request——调用方得知道该改**哪个**字段,而那段音频正是重录代价最大的那个。
-func TestEnroll_OversizeSampleIsRefusedByShapeCode(t *testing.T) {
-	body := `{"name":"n","audio":"` + strings.Repeat("A", maxSampleChars+1) + `"}`
-	rec := post(t, NewEnroll(nil), http.MethodPost, body)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("code = %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "VOICE_SAMPLE_INVALID") {
-		t.Fatalf("body must name the sample as the problem: %s", rec.Body.String())
 	}
 }
 
