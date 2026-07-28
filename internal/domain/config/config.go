@@ -54,12 +54,18 @@ const (
 	// MaxBodyBytesCeiling bounds MAX_BODY_BYTES: bodies are fully buffered (~3.5×
 	// peak per in-flight request incl. decode + upstream re-marshal), so the
 	// ceiling is what the reference 2G box tolerates at N_GLOBAL — never higher.
-	MaxBodyBytesCeiling         int64 = 8 * 1024 * 1024
-	MinBodyBytes                int64 = 4 * 1024
-	MaxNGlobalConcurrency       int   = 100_000
-	MaxRatePerMin               int   = 10_000_000
-	MaxDailySublimit            int64 = 1_000_000_000
-	MaxImageDailyLimit          int64 = 100_000
+	MaxBodyBytesCeiling   int64 = 8 * 1024 * 1024
+	MinBodyBytes          int64 = 4 * 1024
+	MaxNGlobalConcurrency int   = 100_000
+	MaxRatePerMin         int   = 10_000_000
+	MaxDailySublimit      int64 = 1_000_000_000
+	MaxImageDailyLimit    int64 = 100_000
+	// MaxVoiceAccountCeiling bounds the CONFIGURED account-wide voice ceiling. Generous by design:
+	// it exists to catch a typo'd extra zero, not to express a real provider limit — that one is
+	// undocumented, which is exactly why the default is 0 (unset). See load.go.
+	// MaxVoiceAccountCeiling 界**配置里**那条账号级音色上限。**刻意从宽**:它是为了接住多打的一个零,
+	// 不是为了表达某个真实的供应商上限——那个没有文档,而这正是默认值为 0(不设)的理由。见 load.go。
+	MaxVoiceAccountCeiling      int64 = 1_000_000
 	MaxSpeechDailyLimit         int64 = 100_000_000
 	MaxVideoDailyLimit          int64 = 10_000
 	MaxInstallPerIPHour         int   = 1_000_000
@@ -195,8 +201,19 @@ type Config struct {
 	// ImageEditUpstreamModel 是生成模型的**改图**兄弟——同一条端点上的**不同** model id(H9 官方文档
 	// 核准)。沿用生成 id 会把改图载荷投给一个读不了图像块的模型。
 	ImageEditUpstreamModel string // IMAGE_EDIT_UPSTREAM_MODEL
-	ImageDailyLimit        int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
-	DashScopeNativeBase    string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
+
+	// VoiceAccountCeiling caps how many cloned voices may exist in OUR provider account across ALL
+	// installs (WRK-082 H9). It is not a per-user limit and it is not a quota — every install's
+	// clone lives under one DashScope credential, so this is the shared resource nobody else can
+	// see. 0 = no ceiling enforced (the provider's own limit is then the only one, and we find out
+	// by being refused).
+	//
+	// VoiceAccountCeiling 界**我们的** provider 账号里、跨**所有** install 能存在多少克隆音色(H9)。
+	// 它不是逐用户上限、也不是配额——每个 install 的克隆都住在同一把 DashScope 凭证下,故这是那份
+	// 别人都看不见的共享资源。0 = 不设(那时只剩供应商自己的上限,而我们靠**被拒绝**才知道)。
+	VoiceAccountCeiling int64  // VOICE_ACCOUNT_CEILING
+	ImageDailyLimit     int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
+	DashScopeNativeBase string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
 
 	// Speech synthesis is its own explicit capability (WRK-082 批C), separate from
 	// image generation: an operator may want one and not the other, and they bill in

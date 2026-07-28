@@ -138,6 +138,34 @@ var (
 	// ErrVideoFrameInvalid——图生视频的首帧不是 base64 data URL(H9)。**自己的码**而非复用
 	// IMAGE_SOURCE_INVALID:一个在让图动起来的客户端被告知「**改图**的源无效」,会去查错的那个请求。
 	ErrVideoFrameInvalid = NewError(statusBadRequest, "VIDEO_FRAME_INVALID", "the first frame must be a base64 data URL, not an address")
+	// ErrVoiceUnavailable — voice cloning is not configured on this deployment (it rides the speech
+	// capability; a deployment that cannot speak has no use for a voice).
+	// ErrVoiceUnavailable——本部署没配音色克隆(它搭在语音能力上;说不了话的部署要音色没用)。
+	ErrVoiceUnavailable = NewError(statusServiceUnavailable, "VOICE_UNAVAILABLE", "voice cloning is not available on this deployment")
+	// ErrVoiceSampleInvalid — the reference sample is not a base64 data URL. Same shape guard, same
+	// SSRF reason, as the image editor's source and the video's first frame.
+	// ErrVoiceSampleInvalid——参考样本不是 base64 data URL。与改图的源、图生视频的首帧同一条形状闸、
+	// 同一个 SSRF 理由。
+	ErrVoiceSampleInvalid = NewError(statusBadRequest, "VOICE_SAMPLE_INVALID", "the voice sample must be a base64 data URL, not an address")
+	// ErrVoiceInventoryFull — this install already holds its maximum number of voices. INVENTORY,
+	// not quota: nothing frees a slot tomorrow, so the message says "delete one" — "try again
+	// later" would send the user away to wait for something that never happens.
+	// ErrVoiceInventoryFull——本 install 已持有上限数量的音色。**库存**不是配额:明天不会腾出位置,
+	// 故消息说「删一个」——「过会儿再试」会打发用户去等一件永远不会发生的事。
+	ErrVoiceInventoryFull = NewError(statusConflict, "VOICE_INVENTORY_FULL", "voice inventory is full — delete a voice to make room")
+	// ErrVoiceNameTaken — that name already points at an upstream registration; enrolling over it
+	// would orphan the first one in our provider account.
+	// ErrVoiceNameTaken——该名已指向一个上游登记;覆盖它会让第一个在我们的 provider 账号里变成孤儿。
+	ErrVoiceNameTaken = NewError(statusConflict, "VOICE_NAME_TAKEN", "a voice with this name already exists — delete it first")
+	// ErrVoiceCapacityReached — OUR provider account is at its voice ceiling, not this install's.
+	// Distinct from VOICE_INVENTORY_FULL because the remedy is different and NOT the user's:
+	// deleting their own voice will not help, and the operator is the one who has to act.
+	// ErrVoiceCapacityReached——**我们的** provider 账号到了音色上限,不是这个 install 的。与
+	// VOICE_INVENTORY_FULL 分开,因为补救办法不同、**且不在用户手里**:删掉他自己的音色也没用,
+	// 该动手的是运营者。
+	ErrVoiceCapacityReached = NewError(statusServiceUnavailable, "VOICE_CAPACITY_REACHED", "the service cannot register new voices right now")
+	// ErrVoiceNotFound — no such voice for this install.
+	ErrVoiceNotFound = NewError(statusNotFound, "VOICE_NOT_FOUND", "voice not found")
 	// ErrImageQuotaExhausted — the per-install daily image-generation cap is
 	// reached (WRK-082 P8). Distinct from RATE_LIMITED (a pacing denial) and from
 	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer
