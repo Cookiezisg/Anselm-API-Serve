@@ -207,6 +207,18 @@ fi
 # 东西比对过它们,于是 H9b 的 `meta/media-domain` 发了三个提交、服务器每一次都以「stage file set differs
 # from the reviewed payload」拒收——一句离病因十万八千里的部署失败。这条检查就是那次缺失的比对,放在这里
 # 是因为只有这里手上有一个**真的** stage。
+# Whatever host Caddy is told to serve media on, the gateway process must be told the same host —
+# they are two halves of one fact, and the half that was missing produced a 503 on every enrollment
+# while the vhost itself answered perfectly.
+# Caddy 被告知在哪个主机上服务媒体,网关进程就必须被告知**同一个**主机——它们是同一个事实的两半,而
+# 缺掉的那半让每一次登记都 503,同时 vhost 本身应答得好好的。
+STAGED_MEDIA_DOMAIN="$(sed -n 's/^MEDIA_DOMAIN="\(.*\)"$/\1/p' "${STAGE}/gateway.env")"
+META_MEDIA_DOMAIN="$(cat "${STAGE}/meta/media-domain")"
+[[ -n "${STAGED_MEDIA_DOMAIN}" ]] ||
+	fail "gateway.env carries no MEDIA_DOMAIN — enrollment would 503 while Caddy served the vhost fine"
+[[ "${STAGED_MEDIA_DOMAIN}" == "${META_MEDIA_DOMAIN}" ]] ||
+	fail "MEDIA_DOMAIN differs between the process (${STAGED_MEDIA_DOMAIN}) and Caddy (${META_MEDIA_DOMAIN})"
+
 # The stage must NOT pin the default voice: that value belongs to the model and lives in the binary.
 # 舞台**不得**钉默认音色:那个值属于模型、住在二进制里。
 if grep -q '^TTS_DEFAULT_VOICE=' "${STAGE}/gateway.env"; then

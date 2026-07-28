@@ -216,6 +216,18 @@ write_env MEDIA_UPLOAD_MAX_BYTES "104857600"
 write_env MEDIA_CHUNK_MAX_BYTES "4194304"
 write_env MEDIA_UPLOAD_TTL_SEC "3600"
 write_env MEDIA_LEASE_TTL_SEC "3600"
+# MEDIA_DOMAIN must reach the GATEWAY PROCESS too, not only Caddy. It was rendered into the
+# reverse proxy (a vhost that served fine) while the binary was never told the host — so
+# `PublicFetchURL` had nothing to build an address from and **every** enrollment answered 503
+# VOICE_UNAVAILABLE, indistinguishable from "speech is switched off on this deployment". A value
+# handed to the proxy but not to the app is the shape of misconfiguration that looks healthy from
+# outside: the vhost answers, the certificate is valid, and the one thing that needed the name
+# never had it.
+# MEDIA_DOMAIN 必须**也**抵达网关进程、不能只到 Caddy。它此前只被渲染进反向代理(vhost 服务得好好的),
+# 而二进制**从没被告知**那个主机名——于是 `PublicFetchURL` 没有东西可以拼地址,**每一次**登记都答 503
+# VOICE_UNAVAILABLE,与「本部署关掉了语音」无从分辨。一个只给了代理、没给应用的值,正是**从外面看很
+# 健康**的那类错配:vhost 会应答、证书有效,而唯一需要这个名字的东西从来没拿到它。
+write_env MEDIA_DOMAIN "${MEDIA_DOMAIN}"
 # The three generation capabilities (WRK-082). They ship DEFAULT-OFF in code — a
 # capability, not a birthright — which means an unlisted one is simply absent in
 # production no matter how complete its code is. Each carries its own daily cap in
