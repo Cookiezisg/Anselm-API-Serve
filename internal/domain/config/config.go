@@ -256,6 +256,32 @@ type Config struct {
 	MediaChunkMaxBytes       int64         // MEDIA_CHUNK_MAX_BYTES(<= MAX_BODY_BYTES)
 	MediaUploadTTL           time.Duration // MEDIA_UPLOAD_TTL_SEC
 	MediaLeaseTTL            time.Duration // MEDIA_LEASE_TTL_SEC
+	// MediaFetchDomain is the PUBLIC host an upstream may fetch a lease's bytes from — and it must
+	// NOT be the `api.` host, because that is the one shape the fetcher rejects.
+	//
+	// ADR 0012 removed the old MEDIA_PUBLIC_BASE_URL after a生产环境判别实验: the same lease URL on
+	// `api.<domain>` failed 400 three times over while Caddy's access log proved the origin never
+	// received a request, whereas identical bytes, path and token on a plain host answered 200. The
+	// fetcher blacklists API-shaped hosts at its own edge — invisible, uncontestable. That ADR's
+	// clause 4 explicitly parked a dedicated media subdomain for "if some provider ever truly needs
+	// a URL". Voice enrollment IS that provider: `voice-enrollment` accepts no base64 at all.
+	//
+	// **Scope: enrollment only.** Chat and image inputs keep inlining their bytes (ADR 0012), so
+	// this host is not a general re-opening of URL relay — it exists for the one upstream that
+	// cannot be served any other way.
+	//
+	// MediaFetchDomain 是上游可以来取 lease 字节的**公开**主机——且它**绝不能**是 `api.` 那台,因为
+	// 那正是拉取器唯一会拒的形状。
+	//
+	// ADR 0012 当初拆掉了 MEDIA_PUBLIC_BASE_URL,依据是一次生产环境判别实验:同一个 lease URL 放在
+	// `api.<域>` 上连续三次 400,而 Caddy 访问日志证明**源站从未收到请求**;同样的字节、同样的路径、
+	// 同样的 token 放在普通主机上答 200。拉取器在**它自己的边缘**把 API 形主机拉黑——不可见、不可
+	// 申诉。那篇 ADR 的第 4 条明文为「将来某个 provider 确需 URL 形态」留了一个专用媒体子域的门。
+	// 音色登记**就是**那个 provider:`voice-enrollment` 根本不收 base64。
+	//
+	// **范围:只给登记用。** chat 与图像输入继续内联字节(ADR 0012),故这台主机**不是**对 URL 直通的
+	// 全面重开——它只为那个别无他法的上游而存在。
+	MediaFetchDomain string // MEDIA_DOMAIN(host only, no scheme; empty = enrollment unavailable)
 
 	ResetTZ  string         // RESET_TZ
 	Location *time.Location // LoadLocation(ResetTZ) 结果
@@ -519,6 +545,29 @@ func (c *Config) ValidateSemantics() error {
 		}
 		if strings.TrimSpace(c.TTSDefaultVoice) == "" {
 			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires TTS_DEFAULT_VOICE")
+		}
+	}
+	if d := strings.TrimSpace(c.MediaFetchDomain); d != "" {
+		// A bare host, never a URL: the gateway builds the scheme and path itself, so accepting a
+		// URL here would let a typo silently point the upstream at somebody else's server.
+		// **裸主机、绝不是 URL**:scheme 与路径由网关自己拼,故在这里收 URL 等于让一个笔误把上游
+		// 静默地指向别人的服务器。
+		if strings.Contains(d, "://") || strings.ContainsAny(d, "/?#") {
+			return fmt.Errorf("CONFIG_MEDIA_DOMAIN_INVALID: MEDIA_DOMAIN must be a bare host, not a URL")
+		}
+		// **Refuse an `api.` host outright.** This is not stylistic. ADR 0012's production
+		// experiment proved the upstream fetcher rejects API-shaped hosts at its own edge: the
+		// same lease URL on `api.<domain>` failed three times over while the origin's access log
+		// showed no request ever arrived, and identical bytes on a plain host answered 200. A
+		// misconfiguration here would therefore fail INVISIBLY — no origin log, no upstream detail,
+		// just enrollments that never work. Fail at boot instead.
+		// **直接拒绝 `api.` 主机。** 这不是风格问题。ADR 0012 的生产实验证明拉取器在**它自己的边缘**
+		// 拒绝 API 形主机:同一个 lease URL 放在 `api.<域>` 上连续三次失败,而源站访问日志显示**请求
+		// 从未到达**;同样的字节放普通主机上答 200。故这里配错会**无形地**失败——没有源站日志、没有
+		// 上游细节,只有永远不成功的登记。所以在启动时就失败。
+		if strings.HasPrefix(d, "api.") {
+			return fmt.Errorf("CONFIG_MEDIA_DOMAIN_INVALID: MEDIA_DOMAIN must not be an `api.` host — " +
+				"the upstream fetcher blacklists that shape at its edge (ADR 0018/0012)")
 		}
 	}
 	if c.VideoEnabled {

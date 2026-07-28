@@ -98,6 +98,7 @@ func (p *Provider) Snapshot() []any {
 		"image_enabled", c.ImageEnabled,
 		"image_upstream_model", c.ImageUpstreamModel,
 		"image_daily_limit", c.ImageDailyLimit,
+		"media_fetch_domain", c.MediaFetchDomain,
 		"voice_daily_limit", c.VoiceDailyLimit,
 		"voice_account_ceiling", c.VoiceAccountCeiling,
 		"dashscope_native_base", c.DashScopeNativeBase,

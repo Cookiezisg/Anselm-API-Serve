@@ -72,11 +72,13 @@ read_meta() {
 
 GATEWAY_DOMAIN="$(read_meta gateway-domain)"
 SITE_DOMAIN="$(read_meta site-domain)"
+MEDIA_DOMAIN="$(read_meta media-domain)"
 ACME_EMAIL="$(read_meta acme-email)"
 RESET_UNLAUNCHED_GATEWAY_DATA="$(read_meta reset-unlaunched-gateway-data)"
 SHA="$(read_meta sha)"
 [[ "${GATEWAY_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid gateway domain"
 [[ "${SITE_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid site domain"
+[[ "${MEDIA_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid media domain"
 [[ "${SHA}" =~ ^[0-9a-f]{12}$ ]] || die "invalid SHA"
 [[ -n "${ACME_EMAIL}" ]] || die "ACME email is empty"
 [[ "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 0 || "${RESET_UNLAUNCHED_GATEWAY_DATA}" == 1 ]] ||
@@ -124,7 +126,7 @@ WORK="${STAGE}/work"
 mkdir -m 0700 "${WORK}"
 bash "${STAGE}/render-caddy.sh" \
 	"${STAGE}/Caddyfile" "${WORK}/Caddyfile" \
-	"${GATEWAY_DOMAIN}" "${SITE_DOMAIN}" "${ACME_EMAIL}"
+	"${GATEWAY_DOMAIN}" "${SITE_DOMAIN}" "${ACME_EMAIL}" "${MEDIA_DOMAIN}"
 caddy validate --config "${WORK}/Caddyfile" --adapter caddyfile >/dev/null
 
 if sudo test -e "${ROLLBACK_ROOT}" || sudo test -L "${ROLLBACK_ROOT}"; then

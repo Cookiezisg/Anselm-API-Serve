@@ -29,6 +29,34 @@
 	}
 }
 
+# {$MEDIA_DOMAIN} — 上游取 lease 字节的**公开**主机。
+#
+# 它与 {$GATEWAY_DOMAIN} 指向同一个网关进程,**唯一的区别是主机名**——而那正是全部要点:
+# ADR 0012 的生产判别实验证明,上游拉取器在它自己的边缘拒绝 `api.` 形主机(同一个 lease URL 在
+# api.<域> 上连续三次 400 且源站从未收到请求;同样的字节放普通主机上 200)。故这台**必须**是非
+# api. 前缀的名字。
+#
+# 只暴露那一条取回路由。**不做 reverse_proxy *** —— 这台主机上除了 lease 内容口之外什么都不该有:
+# 把整个 API 面复制到第二个主机名下,等于把一台没人在看的门也开成正门。
+{$MEDIA_DOMAIN} {
+	handle /v1/media/leases/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond 404
+	}
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000;"
+		X-Content-Type-Options "nosniff"
+	}
+}
+
 {$GATEWAY_DOMAIN} {
 	# 边缘请求体上限:与网关 MAX_BODY_BYTES(deploy.yml,8MiB)对齐,超限在边缘
 	# 即拒(413),不进网关缓冲。改 MAX_BODY_BYTES 时同步改这里。

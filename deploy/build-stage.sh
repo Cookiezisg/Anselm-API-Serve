@@ -82,6 +82,7 @@ DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-disabled}"
 DASHBOARD_USER="${DASHBOARD_USER:-}"
 DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
+MEDIA_DOMAIN="${MEDIA_DOMAIN:-}"
 RESET_UNLAUNCHED_GATEWAY_DATA="${RESET_UNLAUNCHED_GATEWAY_DATA:-0}"
 
 for secret_name in DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_WORKSPACE_ID MEDIA_SIGNING_SECRET; do
@@ -120,6 +121,25 @@ if [[ -z "${SITE_DOMAIN}" ]]; then
 	SITE_DOMAIN="${GATEWAY_DOMAIN#api.}"
 fi
 require_single_line SITE_DOMAIN "${SITE_DOMAIN}"
+
+# MEDIA_DOMAIN defaults to media.<root>, the same derivation SITE_DOMAIN uses. It is required
+# because Caddy cannot render an empty host — the gateway binary tolerates an unset one (voice
+# enrollment simply unavailable), but a deploy must make the choice explicit.
+#
+# It must NOT be an api.* name: the upstream fetcher blacklists that shape at its own edge
+# (ADR 0012's production experiment — three 400s while the origin log proved no request arrived).
+#
+# MEDIA_DOMAIN 缺省取 media.<root>,与 SITE_DOMAIN 同一套推导。它是**必需**的,因为 Caddy 渲染不了
+# 空主机名——网关二进制容许不设(音色登记不可用而已),但部署必须把这个选择摆到明面上。
+#
+# 它**绝不能**是 api.* 的名字:拉取器在它自己的边缘拒绝那个形状(ADR 0012 生产实验——三次 400,而
+# 源站日志证明请求从未到达)。
+if [[ -z "${MEDIA_DOMAIN}" ]]; then
+	MEDIA_DOMAIN="media.${SITE_DOMAIN}"
+fi
+require_single_line MEDIA_DOMAIN "${MEDIA_DOMAIN}"
+[[ "${MEDIA_DOMAIN}" != api.* ]] ||
+	die "MEDIA_DOMAIN must not be an api.* host; the upstream fetcher blacklists that shape"
 valid_hostname "${SITE_DOMAIN}" || die "SITE_DOMAIN is not a valid hostname"
 require_single_line ACME_EMAIL "${ACME_EMAIL}"
 [[ "${ACME_EMAIL}" =~ ^[A-Za-z0-9.!#$%\&\'*+/=?^_\`{|}~-]+@[A-Za-z0-9.-]+$ ]] ||
@@ -242,6 +262,7 @@ write_env ADMIN_ADDR "127.0.0.1:9090"
 
 write_meta gateway-domain "${GATEWAY_DOMAIN}"
 write_meta site-domain "${SITE_DOMAIN}"
+write_meta media-domain "${MEDIA_DOMAIN}"
 write_meta acme-email "${ACME_EMAIL}"
 write_meta reset-unlaunched-gateway-data "${RESET_UNLAUNCHED_GATEWAY_DATA}"
 write_meta sha "${SHA}"

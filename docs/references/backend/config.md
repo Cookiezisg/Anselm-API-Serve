@@ -46,6 +46,7 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `IMAGE_DAILY_LIMIT` | 10 | 0 | 100,000 | 否 | per-install 日图像生成张数上限(品类日闸,WRK-082 批B);0=禁用(仍记账) |
 | `SPEECH_DAILY_LIMIT` | 50,000 | 0 | 100,000,000 | 否 | per-install 日语音合成**字符数**上限(品类日闸,WRK-082 批C);0=禁用(仍记账) |
 | `VIDEO_DAILY_LIMIT` | 10 | 0 | 10,000 | 否 | per-install 日视频**条数**上限(品类日闸,WRK-082 H1,用户拍板);**不是秒**——钱按秒报价,人配给的是整条片子;0=禁用(仍记账) |
+| `MEDIA_DOMAIN` | 空 | — | — | 是(启动硬) | 上游来取 lease 字节的**公开主机**(裸主机名、无 scheme;空=音色登记不可用)。**绝不能是 `api.` 前缀**——ADR 0012 生产判别实验:同一 lease 路径与 token,`api.<域>` 连续三次 400 且 Caddy 日志证明**源站从未收到请求**,普通主机答 200;拉取器在**它自己的边缘**拉黑 API 形主机,不可见不可申诉,故配错**在任何地方都不留诊断**。三处 fail-closed:config 校验、`render-caddy.sh`、`secureurl.PublicFetchURL`。**范围:只给音色登记**(`voice-enrollment` 不收 base64);chat 与图像输入继续内联字节(ADR 0012 不变)。部署侧**必填**(Caddy 渲染不了空主机名),缺省取 `media.<root>` |
 | `VOICE_DAILY_LIMIT` | 2 | 0 | 100 | 否 | per-install 日音色**登记**次数上限(品类日闸,WRK-082 H9)。默认 2 = 库存大小,故空库存可在一天内填满、而 delete→重登记 的循环代价是**一天**、不是每圈 $0.2。**这条与另三条性质不同**:它不是「可再生额度的公平」,它是免费档 install 与无界花费之间唯一站着的东西;上限刻意只到 100——这里每个单位都是一笔永不过期的 $0.2 购买,上千的值不是慷慨、是一个附带账单的笔误。0=禁用(仍记账) |
 | `VOICE_ACCOUNT_CEILING` | 0 | 0 | 1,000,000 | 否 | **账号级**克隆音色总数上限(WRK-082 H9)。**是库存、不是配额**:没有周期、没有重置,一个音色占着位直到有人删掉。默认 0 = **不强制**,因为供应商没有文档写出真实上限;运营者从一次拒绝里学到之后再设。满时拒 `VOICE_CAPACITY_REACHED` + WARN,绝不驱逐 |
 | `INSTALL_PER_IP_HOUR` | 0 | 0 | 1,000,000 | 否 | `/install` per-IP 小时上限；0=禁用 |

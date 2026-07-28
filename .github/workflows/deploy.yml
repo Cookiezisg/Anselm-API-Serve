@@ -4,11 +4,16 @@
 # Required GitHub Environment (`production`) secrets:
 #   SSH_PRIVATE_KEY, SERVER_HOST, SERVER_USER, SERVER_KNOWN_HOSTS
 #   DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, DASHSCOPE_WORKSPACE_ID, MEDIA_SIGNING_SECRET,
-#   GATEWAY_DOMAIN, ACME_EMAIL
+#   GATEWAY_DOMAIN, ACME_EMAIL, MEDIA_DOMAIN
 # Optional secrets:
 #   DASHBOARD_AUTH_MODE (disabled|builtin|external; external for a preceding IAP)
 #   DASHBOARD_USER + DASHBOARD_PASSWORD (required only for builtin)
 #   SITE_DOMAIN (otherwise derived from api.<root>)
+#
+# MEDIA_DOMAIN is the PUBLIC host an upstream fetches a media lease from. It MUST NOT be an
+# `api.` name: ADR 0012's production experiment proved the fetcher blacklists API-shaped hosts at
+# its own edge (three 400s while the origin log showed no request ever arrived). render-caddy.sh
+# refuses an api.* value for that reason.
 #
 # SERVER_KNOWN_HOSTS is mandatory. There is deliberately no ssh-keyscan/TOFU
 # fallback: the production host identity must be pinned out of band.
@@ -225,6 +230,7 @@ jobs:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
+          MEDIA_DOMAIN: ${{ secrets.MEDIA_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
           RESET_UNLAUNCHED_GATEWAY_DATA: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           SHA: ${{ steps.ver.outputs.sha }}

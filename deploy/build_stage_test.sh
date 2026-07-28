@@ -156,10 +156,26 @@ fi
 RENDERED_CADDY="${TEST_ROOT}/rendered.Caddyfile"
 bash "${STAGE}/render-caddy.sh" \
 	"${STAGE}/Caddyfile" "${RENDERED_CADDY}" \
-	'api.example.com' 'example.com' 'ops+anselm@example.com'
+	'api.example.com' 'example.com' 'ops+anselm@example.com' 'media.example.com'
 grep -Fq 'api.example.com {' "${RENDERED_CADDY}" || fail "gateway domain was not rendered"
 grep -Fq 'example.com {' "${RENDERED_CADDY}" || fail "site domain was not rendered"
 grep -Fq 'email ops+anselm@example.com' "${RENDERED_CADDY}" || fail "ACME email was not rendered"
+grep -Fq 'media.example.com {' "${RENDERED_CADDY}" || fail "media domain was not rendered"
+
+# The media host serves the lease route and NOTHING else. Copying the whole API surface onto a
+# second hostname would open a second front door nobody is watching.
+# 媒体主机只服务 lease 那一条路由、别无其他。把整个 API 面复制到第二个主机名下,等于开了一扇没人
+# 在看的正门。
+grep -Fq 'handle /v1/media/leases/*' "${RENDERED_CADDY}" || fail "media host does not scope to the lease route"
+
+# An api.* media host fails INVISIBLY against the real upstream (ADR 0012: three 400s, origin log
+# empty), so the renderer must refuse it rather than emit a config that looks fine.
+# api.* 的媒体主机对着真上游会**无形地**失败(ADR 0012:三次 400、源站日志为空),故渲染器必须拒绝
+# 它,而不是吐出一份看着没问题的配置。
+if bash "${STAGE}/render-caddy.sh" "${STAGE}/Caddyfile" "${TEST_ROOT}/nope.Caddyfile" \
+	'api.example.com' 'example.com' 'ops@example.com' 'api.media.example.com' 2>/dev/null; then
+	fail "renderer accepted an api.* MEDIA_DOMAIN"
+fi
 if grep -Fq '{$' "${RENDERED_CADDY}"; then
 	fail "Caddy renderer left a literal deployment placeholder"
 fi

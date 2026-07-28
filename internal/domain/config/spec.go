@@ -386,6 +386,7 @@ func Specs() []Spec {
 		{Key: "IMAGE_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageUpstreamModel }},
 		{Key: "SPEECH_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.SpeechEnabled) }},
 		{Key: "TTS_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSUpstreamModel }},
+		{Key: "MEDIA_DOMAIN", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MediaFetchDomain }},
 		{Key: "TTS_DEFAULT_VOICE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSDefaultVoice }},
 		{Key: "VIDEO_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.VideoEnabled) }},
 		{Key: "VIDEO_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.VideoUpstreamModel }},

@@ -148,6 +148,7 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// It defaults off so an existing gateway cannot accidentally become a file
 	// ingress before its persistent volume and secret are installed.
 	c.MediaEnabled = g.boolean("MEDIA_ENABLED", false)
+	c.MediaFetchDomain = strings.TrimSpace(g.str("MEDIA_DOMAIN", ""))
 	// Image generation defaults off (a capability, not a birthright); the daily cap defaults to
 	// the WRK-082 P8 product number so enabling the capability alone ships the intended budget.
 	// 图像生成默认关(能力非天赋);日限默认取 P8 产品数,单开能力即得预期预算。
