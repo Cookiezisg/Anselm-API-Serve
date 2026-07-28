@@ -128,6 +128,16 @@ func (g *TTSGen) GenerateSpeech(ctx context.Context, model, text, voice string) 
 
 	conn, resp, err := g.dialer.DialContext(cctx, endpoint,
 		http.Header{"Authorization": []string{"bearer " + g.apiKey}})
+	// A failed upgrade still hands back a real HTTP response. Gorilla's doc says the caller need not
+	// close it, but that is a statement about correctness of the LIBRARY, not about this connection:
+	// the body is an ordinary reader over a socket that nothing else will ever drain. Close it and
+	// the pool can reuse the connection; leave it and every rejected handshake keeps one.
+	// 升级失败时拿回的仍是一个**真的** HTTP 响应。gorilla 的文档说调用方不必关它,但那是在讲**库**的
+	// 正确性、不是在讲这条连接:那个 body 是一个套接字上的普通 reader,再没有别人会去把它读干。关掉,
+	// 连接池就能复用;不关,每一次被拒的握手都占住一条。
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
 	if err != nil {
 		// A handshake rejection carries a status, and a 4xx there is a provably pre-synthesis
 		// refusal. Everything else is ambiguous and keeps the charge (GW-INV-50).

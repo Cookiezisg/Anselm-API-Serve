@@ -162,7 +162,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, installID string)
 		response.WriteError(w, ae)
 		return
 	}
-	// A non-nil empty slice so an empty inventory serialises as [] rather than null.
+	// A non-nil empty slice so an empty inventory serializes as [] rather than null.
 	// 非 nil 的空切片,使空库存序列化成 [] 而非 null。
 	items := make([]voiceItem, 0, len(rows))
 	for _, v := range rows {

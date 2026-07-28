@@ -1060,7 +1060,7 @@ func TestPayloadMaxTokensBoundedForWireAndQuote(t *testing.T) {
 	}{
 		{"absent max_tokens explicitly capped on wire and quote", `{"messages":[{"role":"user","content":"hi"}]}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
 		{"text high client max_tokens capped", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":999999}`, ptrInt64(billing.Qwen37OutputLimit), billing.Qwen37OutputLimit},
-		// The WIRE still honours a small client max_tokens; the QUOTE does not, because the Qwen
+		// The WIRE still honors a small client max_tokens; the QUOTE does not, because the Qwen
 		// card's usage cannot prove a thinking-token sub-cap and the wallet must stay conservative.
 		// Those two columns diverging is the point of this row.
 		// **线缆**仍然尊重一个小的客户端 max_tokens;**报价**不尊重,因为 Qwen 卡的 usage 证明不了

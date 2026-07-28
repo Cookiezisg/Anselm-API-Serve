@@ -54,7 +54,7 @@ func (s *Store) ListVoices(ctx context.Context, installID string) ([]domvoice.Vo
 		return nil, fmt.Errorf("voicestore.ListVoices: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	// A non-nil empty slice: an install with no voices must serialise as [] rather than null.
+	// A non-nil empty slice: an install with no voices must serialize as [] rather than null.
 	// 非 nil 的空切片:没有音色的 install 必须序列化成 [] 而非 null。
 	out := make([]domvoice.Voice, 0, domvoice.PerInstallInventory)
 	for rows.Next() {

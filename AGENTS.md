@@ -17,4 +17,4 @@
 
 ## 完成的定义
 
-`go build ./... && go vet ./... && gofmt -l(空) && go test -race ./...` 全绿 + 相关 GW-INV 守住 + **同一提交内同步对应文档**(doc-code parity)。本地一键:`make verify`。
+`go build ./... && go vet ./... && gofmt -l(空) && go test -race ./... && golangci-lint run`(**含 lint——CI 有它,本地门禁就得有它**)全绿 + 相关 GW-INV 守住 + **同一提交内同步对应文档**(doc-code parity)。本地一键:`make verify`。

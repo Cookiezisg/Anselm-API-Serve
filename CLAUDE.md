@@ -39,7 +39,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ## 5. 门禁命令
 
 ```sh
-make verify   # vet + build + test -race + docs(本地门禁)
+make verify   # vet + build + test -race + lint + docs(本地门禁,与 CI 同一套规则)
 make docs     # cmd/docs:frontmatter/类型·状态·目录/review-due/INDEX≤50/孤儿链接/working 90 天
 make lint     # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
 ```

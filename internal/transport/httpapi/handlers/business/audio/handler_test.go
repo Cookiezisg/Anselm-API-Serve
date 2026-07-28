@@ -81,7 +81,7 @@ func post(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
 //
 // The envelope changed in H9 because the upstream did: a duplex WebSocket streams frames, so there
 // is no artifact URL for P13's passthrough to relay. Asserting the content type matters as much as
-// asserting the bytes — a client that receives WAV bytes labelled `application/json` cannot play
+// asserting the bytes — a client that receives WAV bytes labeled `application/json` cannot play
 // them without sniffing.
 //
 // TestHandler_SuccessIsRawAudio:响应体**就是**音频(OpenAI 在这条端点上自己的形状),且省略 voice

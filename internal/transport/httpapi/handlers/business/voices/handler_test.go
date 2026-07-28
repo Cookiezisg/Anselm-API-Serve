@@ -122,10 +122,10 @@ func TestListResponse_CarriesTheArithmetic(t *testing.T) {
 			t.Fatalf("the list response must carry %q: %s", k, raw)
 		}
 	}
-	// An empty inventory serialises as [] rather than null, so no client has to special-case null.
+	// An empty inventory serializes as [] rather than null, so no client has to special-case null.
 	// 空库存序列化成 [] 而非 null,使没有客户端需要为 null 写一个分支。
 	empty, _ := json.Marshal(listResponse{Voices: []voiceItem{}})
 	if !strings.Contains(string(empty), `"voices":[]`) {
-		t.Fatalf("empty inventory must serialise as []: %s", empty)
+		t.Fatalf("empty inventory must serialize as []: %s", empty)
 	}
 }

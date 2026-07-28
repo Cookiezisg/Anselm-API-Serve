@@ -50,7 +50,7 @@ func probeConfig(qwenURL string) config.Config {
 
 // TestUpstreamProberAuthenticatesTheRoutedModel: the probe must prove BOTH that the credential
 // works and that the exact configured model is advertised — a 200 from /models with the wrong
-// catalogue is not readiness.
+// catalog is not readiness.
 //
 // TestUpstreamProberAuthenticatesTheRoutedModel:探测必须同时证明**凭证能用**与**那个精确的模型被
 // 宣称**——/models 回 200 但目录里没有那个模型,不算就绪。

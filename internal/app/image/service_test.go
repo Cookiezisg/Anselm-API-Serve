@@ -63,7 +63,7 @@ type fakeUpstream struct {
 	unbilled bool
 	err      error
 	// gotSource records what the edit path handed the upstream, so a test can assert the source
-	// actually travelled rather than that the call merely happened.
+	// actually traveled rather than that the call merely happened.
 	// gotSource 记下改图路径递给上游的东西,使测试断言的是「源图真的走到了」、而不只是「调用发生过」。
 	gotSource *string
 }
