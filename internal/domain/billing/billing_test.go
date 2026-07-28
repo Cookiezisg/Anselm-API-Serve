@@ -319,7 +319,7 @@ func TestImagesPlanAndCost(t *testing.T) {
 // TestCharactersPlanAndCost 钉语音卡对(批C)。最要紧的是**跨类**断言:字符 plan 不得答 ImagesCost、
 // 图像 plan 不得答 CharactersCost——两者单位不同,静默串线会把音频按每单位 35e9 计费。
 func TestCharactersPlanAndCost(t *testing.T) {
-	p, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 100)
+	p, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 100)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}
@@ -339,10 +339,10 @@ func TestCharactersPlanAndCost(t *testing.T) {
 	if _, err := NewCharactersPlan(ProviderDeepSeek, DeepSeekV4Flash, 100); err == nil {
 		t.Fatal("characters plan on a text card must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 0); err == nil {
+	if _, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 0); err == nil {
 		t.Fatal("zero-character plan must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, QwenTTSInputLimit+1); err == nil {
+	if _, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, QwenTTSInputLimit+1); err == nil {
 		t.Fatal("over-card character count must fail closed")
 	}
 	if _, err := p.ImagesCost(1); err == nil {
@@ -395,7 +395,7 @@ func TestVideoSecondsPlanAndCost(t *testing.T) {
 	if _, err := p.ImagesCost(1); err == nil {
 		t.Fatal("a video plan must refuse ImagesCost")
 	}
-	tts, err := NewCharactersPlan(ProviderQwen, Qwen3TTSFlash, 100)
+	tts, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 100)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}

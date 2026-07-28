@@ -27,7 +27,7 @@ const (
 	Qwen37Plus            = "qwen3.7-plus"
 	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
 	QwenImage20           = "qwen-image-2.0"
-	Qwen3TTSFlash         = "qwen3-tts-flash"
+	QwenAudio30TTSFlash   = "qwen-audio-3.0-tts-flash"
 	Wan27T2V              = "wan2.7-t2v"
 	// QwenTTSClone is the voice-ENROLLMENT model — the `model` field of the customization call, not
 	// the synthesis model. It is a separate card because it is a separate purchase: enrollment buys
@@ -197,10 +197,10 @@ var rateCards = map[Provider]map[string]RateCard{
 			// 对账——ID 里的 "assumed" 让这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenImageInputLimit, InputPUSD: 35_000_000_000, OutputPUSD: 0}},
 		},
-		Qwen3TTSFlash: {
-			ID: "qwen3-tts-flash-assumed-2026-07-27", Provider: ProviderQwen, Model: Qwen3TTSFlash,
+		QwenAudio30TTSFlash: {
+			ID: "qwen-audio-3.0-tts-flash-assumed-2026-07-28", Provider: ProviderQwen, Model: QwenAudio30TTSFlash,
 			InputLimit: QwenTTSInputLimit, OutputLimit: QwenTTSOutputLimit,
-			// WORKING ASSUMPTION (WRK-082 代拍 C2): ¥1 / 10K characters ≈ $0.0000139 per character
+			// WORKING ASSUMPTION (WRK-082 代拍 C2, model swapped H9): ¥1 / 10K characters ≈ $0.0000139/char
 			// = 14e6 pUSD. The official price page renders its table in JS and could not be read
 			// verbatim; the third-party figure is what this card encodes. Same discipline as the
 			// image card: this budgets the operator's OWN wallet gate (reserve == settle, cost is
@@ -341,7 +341,7 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 			return Plan{}, ErrUnknownRateCard
 		}
 	case InputCharacters:
-		if provider != ProviderQwen || model != Qwen3TTSFlash || outputBound != 0 || promptBound < 1 {
+		if provider != ProviderQwen || model != QwenAudio30TTSFlash || outputBound != 0 || promptBound < 1 {
 			return Plan{}, ErrUnknownRateCard
 		}
 	case InputVideoSeconds:

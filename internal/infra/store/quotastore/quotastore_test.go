@@ -631,7 +631,7 @@ func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.
 // speechPlan builds a frozen n-character speech plan (the second category).
 func speechPlan(t *testing.T, chars int64) billing.Plan {
 	t.Helper()
-	p, err := billing.NewCharactersPlan(billing.ProviderQwen, billing.Qwen3TTSFlash, chars)
+	p, err := billing.NewCharactersPlan(billing.ProviderQwen, billing.QwenAudio30TTSFlash, chars)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}

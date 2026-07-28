@@ -59,17 +59,23 @@ func (f *fakeQuota) Rollback(context.Context, *domquota.Reservation) error {
 	return nil
 }
 
+// wantAudio stands in for a synthesized utterance. It is BYTES because the upstream is a duplex
+// WebSocket that streams frames — there is no artifact URL to assert on any more (H9).
+// wantAudio 代表一段合成出来的话。它是**字节**,因为上游是一条流帧的双工 WebSocket——已经没有产物
+// URL 可供断言了(H9)。
+var wantAudio = []byte("RIFF....WAVEfake-pcm")
+
 type fakeUpstream struct {
-	url      string
+	audio    []byte
 	unbilled bool
 	err      error
 	gotText  string
 	gotVoice string
 }
 
-func (f *fakeUpstream) GenerateSpeech(_ context.Context, _, text, voice string) (string, bool, error) {
+func (f *fakeUpstream) GenerateSpeech(_ context.Context, _, text, voice string) ([]byte, bool, error) {
 	f.gotText, f.gotVoice = text, voice
-	return f.url, f.unbilled, f.err
+	return f.audio, f.unbilled, f.err
 }
 
 type fixedClock struct{}
@@ -79,8 +85,8 @@ func (fixedClock) Now() time.Time { return time.Unix(1_800_000_000, 0) }
 func enabledCfg() *fakeCfg {
 	return &fakeCfg{c: config.Config{
 		SpeechEnabled:    true,
-		TTSUpstreamModel: billing.Qwen3TTSFlash,
-		TTSDefaultVoice:  "Cherry",
+		TTSUpstreamModel: billing.QwenAudio30TTSFlash,
+		TTSDefaultVoice:  "longanhuan_v3.6",
 		QwenAPIKeys:      []string{"sk-test"},
 	}}
 }
@@ -93,10 +99,10 @@ func newSvc(cfg *fakeCfg, q *fakeQuota, up Upstream) *Service {
 // per-character cost (reserve == settle) and relays the upstream URL untouched (P13).
 func TestSynthesize_SuccessSettlesDeterministicCost(t *testing.T) {
 	q := &fakeQuota{}
-	up := &fakeUpstream{url: "https://oss.example/a.wav?Expires=1"}
+	up := &fakeUpstream{audio: wantAudio}
 	svc := newSvc(enabledCfg(), q, up)
 	u, ae := svc.Synthesize(context.Background(), "ins_1", "hello there", "")
-	if ae != nil || u != "https://oss.example/a.wav?Expires=1" {
+	if ae != nil || string(u) != string(wantAudio) {
 		t.Fatalf("synthesize = %q, %v", u, ae)
 	}
 	if len(q.settled) != 1 || q.settled[0] != q.reservation.ReservedPUSD {
@@ -115,7 +121,7 @@ func TestSynthesize_SuccessSettlesDeterministicCost(t *testing.T) {
 // 路上最可能发生、也最不容易被看见的计费错误。
 func TestSynthesize_BillsRunesNotBytes(t *testing.T) {
 	q := &fakeQuota{}
-	svc := newSvc(enabledCfg(), q, &fakeUpstream{url: "https://oss.example/a.wav"})
+	svc := newSvc(enabledCfg(), q, &fakeUpstream{audio: wantAudio})
 	if _, ae := svc.Synthesize(context.Background(), "ins_1", "你好世界", ""); ae != nil {
 		t.Fatalf("synthesize: %v", ae)
 	}
@@ -127,12 +133,12 @@ func TestSynthesize_BillsRunesNotBytes(t *testing.T) {
 // TestSynthesize_DefaultVoiceFillsIn: an omitted voice becomes the configured default rather
 // than an empty string on the wire (P10: the parameter stays, the picker does not).
 func TestSynthesize_DefaultVoiceFillsIn(t *testing.T) {
-	up := &fakeUpstream{url: "https://oss.example/a.wav"}
+	up := &fakeUpstream{audio: wantAudio}
 	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
 	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", "  "); ae != nil {
 		t.Fatalf("synthesize: %v", ae)
 	}
-	if up.gotVoice != "Cherry" {
+	if up.gotVoice != "longanhuan_v3.6" {
 		t.Fatalf("upstream got voice %q, want the configured default", up.gotVoice)
 	}
 	// An explicit voice is passed through untouched. 显式音色原样透传。
@@ -155,7 +161,7 @@ func TestSynthesize_UnavailableIsWholePath(t *testing.T) {
 
 	for name, cfg := range map[string]*fakeCfg{"capabilityOff": off, "noCredential": noKey} {
 		q := &fakeQuota{}
-		svc := newSvc(cfg, q, &fakeUpstream{url: "https://oss.example/a.wav"})
+		svc := newSvc(cfg, q, &fakeUpstream{audio: wantAudio})
 		_, ae := svc.Synthesize(context.Background(), "ins_1", "hi", "")
 		if ae == nil || ae.Code != "TTS_UNAVAILABLE" {
 			t.Fatalf("%s: err = %v, want TTS_UNAVAILABLE", name, ae)
@@ -196,7 +202,7 @@ func TestSynthesize_AmbiguousFailureKeepsFullQuote(t *testing.T) {
 // the caller — never the image one, and never a generic internal error.
 func TestSynthesize_QuotaDenialPassesSentinelThrough(t *testing.T) {
 	q := &fakeQuota{reserveErr: apierr.ErrTTSQuotaExhausted}
-	svc := newSvc(enabledCfg(), q, &fakeUpstream{url: "https://oss.example/a.wav"})
+	svc := newSvc(enabledCfg(), q, &fakeUpstream{audio: wantAudio})
 	_, ae := svc.Synthesize(context.Background(), "ins_1", "hi", "")
 	if ae == nil || ae.Code != "TTS_QUOTA_EXHAUSTED" {
 		t.Fatalf("err = %v, want TTS_QUOTA_EXHAUSTED", ae)
@@ -212,7 +218,7 @@ func TestSynthesize_BannedInstall(t *testing.T) {
 	q := &fakeQuota{}
 	svc := New(Deps{
 		Auth: fakeAuth{status: dominstall.StatusBanned}, Quota: q, Config: enabledCfg(),
-		Upstream: &fakeUpstream{url: "https://oss.example/a.wav"}, Clock: fixedClock{},
+		Upstream: &fakeUpstream{audio: wantAudio}, Clock: fixedClock{},
 	})
 	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", ""); ae == nil || ae.Code != "ACCOUNT_BANNED" {
 		t.Fatalf("err = %v, want ACCOUNT_BANNED", ae)

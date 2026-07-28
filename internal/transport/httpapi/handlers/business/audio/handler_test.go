@@ -2,7 +2,6 @@ package audio
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,8 +26,8 @@ type okCfg struct{}
 
 func (okCfg) Load() *config.Config {
 	return &config.Config{
-		SpeechEnabled: true, TTSUpstreamModel: billing.Qwen3TTSFlash,
-		TTSDefaultVoice: "Cherry", QwenAPIKeys: []string{"k"},
+		SpeechEnabled: true, TTSUpstreamModel: billing.QwenAudio30TTSFlash,
+		TTSDefaultVoice: "longanhuan_v3.6", QwenAPIKeys: []string{"k"},
 	}
 }
 
@@ -44,13 +43,17 @@ func (okQuota) Reserve(_ context.Context, installID string, plan billing.Plan, p
 func (okQuota) Settle(context.Context, *domquota.Reservation, int64) error { return nil }
 func (okQuota) Rollback(context.Context, *domquota.Reservation) error      { return nil }
 
+// fakeAudio stands in for a synthesized utterance — bytes, because that is what a duplex stream
+// hands back. 代表一段合成出来的话——**字节**,因为双工流回来的就是字节。
+var fakeAudio = []byte("RIFF....WAVEfake-pcm")
+
 type okUpstream struct{ voiceSeen *string }
 
-func (u okUpstream) GenerateSpeech(_ context.Context, _, _, voice string) (string, bool, error) {
+func (u okUpstream) GenerateSpeech(_ context.Context, _, _, voice string) ([]byte, bool, error) {
 	if u.voiceSeen != nil {
 		*u.voiceSeen = voice
 	}
-	return "https://oss.example/a.wav", false, nil
+	return fakeAudio, false, nil
 }
 
 type nowClock struct{}
@@ -73,28 +76,33 @@ func post(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
 	return w
 }
 
-// TestHandler_SuccessEnvelope: the url envelope (the images shape, not OpenAI's raw audio body —
-// P13 makes URL passthrough the whole media contract), and an omitted voice reaches the upstream
-// as the configured default.
-func TestHandler_SuccessEnvelope(t *testing.T) {
+// TestHandler_SuccessIsRawAudio: the body IS the audio (OpenAI's own shape for this endpoint), and
+// an omitted voice reaches the upstream as the configured default.
+//
+// The envelope changed in H9 because the upstream did: a duplex WebSocket streams frames, so there
+// is no artifact URL for P13's passthrough to relay. Asserting the content type matters as much as
+// asserting the bytes — a client that receives WAV bytes labelled `application/json` cannot play
+// them without sniffing.
+//
+// TestHandler_SuccessIsRawAudio:响应体**就是**音频(OpenAI 在这条端点上自己的形状),且省略 voice
+// 时抵达上游的是配置的默认音色。
+//
+// 信封在 H9 变了是因为上游变了:双工 WebSocket 流的是帧,没有产物 URL 可供 P13 直通。**断言
+// content type 与断言字节同样要紧**——一个收到被标成 `application/json` 的 WAV 字节的客户端,不去
+// 嗅探就播不了。
+func TestHandler_SuccessIsRawAudio(t *testing.T) {
 	var voice string
 	w := post(t, testHandler(&voice), `{"input":"你好，世界"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Created int64 `json:"created"`
-		Data    []struct {
-			URL string `json:"url"`
-		} `json:"data"`
+	if got := w.Header().Get("Content-Type"); got != "audio/wav" {
+		t.Fatalf("Content-Type = %q, want audio/wav", got)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	if got := w.Body.String(); got != string(fakeAudio) {
+		t.Fatalf("body = %q, want the synthesized bytes", got)
 	}
-	if resp.Created == 0 || len(resp.Data) != 1 || resp.Data[0].URL != "https://oss.example/a.wav" {
-		t.Fatalf("envelope = %+v", resp)
-	}
-	if voice != "Cherry" {
+	if voice != "longanhuan_v3.6" {
 		t.Fatalf("upstream voice = %q, want the configured default", voice)
 	}
 }
@@ -113,7 +121,7 @@ func TestHandler_ClosedShapeRejections(t *testing.T) {
 		"unknownField":   `{"input":"hi","speed":1.2}`,
 		"formatRejected": `{"input":"hi","format":"mp3"}`,
 		"emptyInput":     `{"input":"   "}`,
-		"missingInput":   `{"voice":"Cherry"}`,
+		"missingInput":   `{"voice":"longanhuan_v3.6"}`,
 		"oversizedInput": `{"input":"` + long + `"}`,
 		"oversizedVoice": `{"input":"hi","voice":"` + strings.Repeat("v", maxVoiceChars+1) + `"}`,
 	}

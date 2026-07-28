@@ -51,7 +51,7 @@ type Quota interface {
 //
 // Upstream 是同步语音合成端口。与图像端口同一条 unbilled 纪律:仅可证明未计费的显式拒绝才为真。
 type Upstream interface {
-	GenerateSpeech(ctx context.Context, model, text, voice string) (audioURL string, unbilled bool, err error)
+	GenerateSpeech(ctx context.Context, model, text, voice string) (audio []byte, unbilled bool, err error)
 }
 
 type Clock interface {
@@ -114,25 +114,25 @@ func (s *Service) Available() bool {
 // Synthesize 跑完整用例并返回上游产物 URL(URL 直通,P13)。计费单位是**输入**文本的 rune 数,
 // 调用前即精确已知——故成功时 reserve == settle,无需上游回报 usage。按 rune 而非 byte:字符
 // 计价的全部意义就是一个汉字算一个字符,按字节数会把它算成三个。
-func (s *Service) Synthesize(ctx context.Context, installID, text, voice string) (string, *apierr.APIError) {
+func (s *Service) Synthesize(ctx context.Context, installID, text, voice string) ([]byte, *apierr.APIError) {
 	if s == nil || s.auth == nil || s.cfg == nil || s.quota == nil || s.upstream == nil || s.clock == nil {
-		return "", apierr.Internal()
+		return nil, apierr.Internal()
 	}
 	if !s.Available() {
-		return "", apierr.ErrTTSUnavailable
+		return nil, apierr.ErrTTSUnavailable
 	}
 	got, status, found, err := s.auth.LookupInstall(ctx, installID)
 	if err != nil {
-		return "", apierr.Internal()
+		return nil, apierr.Internal()
 	}
 	if installID == "" || !found || got == "" {
-		return "", apierr.ErrInvalidInstall
+		return nil, apierr.ErrInvalidInstall
 	}
 	if status == dominstall.StatusBanned {
-		return "", apierr.ErrAccountBanned
+		return nil, apierr.ErrAccountBanned
 	}
 	if s.rl != nil && !s.rl.Allow(got) {
-		return "", apierr.ErrRateLimited
+		return nil, apierr.ErrRateLimited
 	}
 
 	c := s.cfg.Load()
@@ -143,21 +143,21 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 		// Startup validation pins the card and the handler bounds the length; reaching
 		// this means config drifted mid-flight.
 		// 启动校验已钉卡、handler 已界长度;走到这里说明配置在途漂移。
-		return "", apierr.Internal()
+		return nil, apierr.Internal()
 	}
 	reservation, err := s.quota.Reserve(ctx, got, plan, s.quota.SnapshotPeriod(s.clock.Now()))
 	if err != nil {
 		var ae *apierr.APIError
 		if errors.As(err, &ae) {
-			return "", ae
+			return nil, ae
 		}
-		return "", apierr.Internal()
+		return nil, apierr.Internal()
 	}
 
 	if strings.TrimSpace(voice) == "" {
 		voice = strings.TrimSpace(c.TTSDefaultVoice)
 	}
-	audioURL, unbilled, err := s.upstream.GenerateSpeech(ctx, model, text, voice)
+	audio, unbilled, err := s.upstream.GenerateSpeech(ctx, model, text, voice)
 	if err != nil {
 		if unbilled {
 			if rbErr := s.quota.Rollback(ctx, reservation); rbErr != nil {
@@ -170,9 +170,9 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 		}
 		var ae *apierr.APIError
 		if errors.As(err, &ae) {
-			return "", ae
+			return nil, ae
 		}
-		return "", apierr.ErrUpstreamError
+		return nil, apierr.ErrUpstreamError
 	}
 
 	cost, err := reservation.Plan.CharactersCost(characters)
@@ -182,7 +182,7 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 	if err := s.quota.Settle(ctx, reservation, cost); err != nil {
 		s.mx.SettleFailure()
 	}
-	return audioURL, nil
+	return audio, nil
 }
 
 type noopMetrics struct{}

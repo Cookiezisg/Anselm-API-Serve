@@ -98,12 +98,18 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// (北京)会答 401 "Incorrect API key provided"——同一把 key,一个区域 200、另一个区域 401。那是
 	// 本战役桌面侧实测到的真 401,而写死区域正是它发生的方式。显式配的 DASHSCOPE_NATIVE_BASE 仍然优先。
 	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", nativeBaseFrom(c.QwenBaseURL))
-	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.Qwen3TTSFlash)
+	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.QwenAudio30TTSFlash)
 	c.VideoUpstreamModel = g.str("VIDEO_UPSTREAM_MODEL", billing.Wan27T2V)
 	// Cherry is the cross-generation default voice (WRK-082 P10: the parameter stays on the wire,
 	// the desktop settings page does not expose it — one good default beats a picker nobody tunes).
 	// Cherry 是跨代默认音色(P10:参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。
-	c.TTSDefaultVoice = g.str("TTS_DEFAULT_VOICE", "Cherry")
+	// The default voice belongs to the MODEL, not to the product: qwen-audio-3.0's voices carry a
+	// `_v3.6` suffix and it rejects qwen3-tts's names outright (实测). A stale default here is not a
+	// cosmetic mismatch — every synthesis that omits `voice` would fail at the upstream.
+	// 默认音色属于**模型**、不属于产品:qwen-audio-3.0 的音色名带 `_v3.6` 后缀,且它**直接拒绝**
+	// qwen3-tts 那套名字(实测)。这里留一个过期默认值不是外观不一致——每一次省略 `voice` 的合成都会
+	// 在上游失败。
+	c.TTSDefaultVoice = g.str("TTS_DEFAULT_VOICE", "longanhuan_v3.6")
 
 	// --- runtime-hot numeric knobs (env default ← bounded, shared ceilings) ---
 	// GATEWAY_MODE governs every rationing knob in this block (config.EffectiveLimits).

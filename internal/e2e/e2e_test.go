@@ -1708,7 +1708,7 @@ func newFakeDashScope(t *testing.T) *fakeDashScopeNative {
 		case r.URL.Path == "/api/v1/services/aigc/multimodal-generation/generation":
 			// Image and speech share this endpoint; the requested model tells them apart.
 			// 图像与语音共用此端点;按请求里的 model 区分。
-			if strings.Contains(string(body), billing.Qwen3TTSFlash) {
+			if strings.Contains(string(body), billing.QwenAudio30TTSFlash) {
 				_, _ = io.WriteString(w, `{"output":{"audio":{"url":"https://oss.example/a.wav"}}}`)
 				return
 			}
@@ -1742,7 +1742,7 @@ func generationEnabled(native string) func(*config.Config) {
 	return func(c *config.Config) {
 		c.DashScopeNativeBase = strings.TrimRight(native, "/")
 		c.ImageEnabled, c.ImageUpstreamModel, c.ImageDailyLimit = true, billing.QwenImage20, 10
-		c.SpeechEnabled, c.TTSUpstreamModel, c.TTSDefaultVoice, c.SpeechDailyLimit = true, billing.Qwen3TTSFlash, "Cherry", 50_000
+		c.SpeechEnabled, c.TTSUpstreamModel, c.TTSDefaultVoice, c.SpeechDailyLimit = true, billing.QwenAudio30TTSFlash, "Cherry", 50_000
 		c.VideoEnabled, c.VideoUpstreamModel, c.VideoDailyLimit = true, billing.Wan27T2V, 10
 		c.MediaSigningSecret = []byte("e2e-media-signing-secret-32-bytes!!")
 		c.VideoHandleKey = domvideo.DeriveKey(c.MediaSigningSecret)

@@ -2,21 +2,35 @@
 // 批C): decode + validate the closed request shape (bounded input, bounded
 // voice), run app/tts.Synthesize, and render the artifact URL.
 //
-// The response is `{created, data:[{url}]}` — the images shape, NOT OpenAI's
-// raw-audio-bytes body. Two reasons: P13 makes URL passthrough the gateway's
-// whole media contract (the gateway never holds artifact bytes), and matching
-// the sibling generation endpoint means one client-side shape for both.
+// **The response is raw `audio/wav` bytes** — OpenAI's own shape for this endpoint, and no longer
+// the `{created,data:[{url}]}` images shape it used to share (WRK-082 H9).
 //
-// Package audio 是 POST /v1/audio/speech 的薄 handler(批C)。响应用 `{created,data:[{url}]}`
-// ——图像那一形,**不是** OpenAI 的裸音频字节体。两个理由:P13 让 URL 直通成为网关的整个媒体契约
-// (网关从不持有产物字节),且与兄弟生成端点同形意味着客户端只需认一种形状。
+// This was not a preference. The upstream that can synthesize with BOTH preset and cloned voices
+// (`qwen-audio-3.0-tts-flash`) is served ONLY over a duplex WebSocket — both HTTP shapes answer
+// `url error` (真机实测 2026-07-28). A duplex stream hands back FRAMES, not an artifact URL, so
+// there is nothing for P13's URL passthrough to pass through. The alternative — park the bytes in
+// the media store and mint a lease — would buy storage, expiry, cleanup and a second round trip
+// purely to preserve a JSON envelope, while the gateway ends up holding the bytes either way.
+//
+// P13 is unchanged for images and video, whose upstreams really do return URLs.
+//
+// Package audio 是 POST /v1/audio/speech 的薄 handler(批C)。**响应是裸 `audio/wav` 字节**——
+// OpenAI 自己在这条端点上的形状,不再是它此前与图像共用的 `{created,data:[{url}]}`(H9)。
+//
+// 这不是偏好。那个既能用预置音色、又能用克隆音色合成的上游(`qwen-audio-3.0-tts-flash`)**只**在
+// 双工 WebSocket 上提供服务,两种 HTTP 形状都答 `url error`(真机实测 2026-07-28)。双工流回来的是
+// **帧**、不是产物 URL,故 P13 的 URL 直通**没有东西可直通**。另一条路——把字节停进媒体库再签一个
+// lease——是为了保住一个 JSON 信封而买下存储、过期、清理与第二次往返,而网关**两种做法都一样**要
+// 持有那些字节。
+//
+// P13 对图像与视频不变——那两家上游真的返 URL。
 package audio
 
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
@@ -61,15 +75,6 @@ type requestBody struct {
 	Voice string `json:"voice"`
 }
 
-type responseBody struct {
-	Created int64               `json:"created"`
-	Data    []responseAudioItem `json:"data"`
-}
-
-type responseAudioItem struct {
-	URL string `json:"url"`
-}
-
 // ServeHTTP guards method + shape then delegates. The request `model` is a
 // logical alias and never selects an upstream (the same rule as chat and images).
 // There is no `format` field: qwen3-tts always answers 24kHz/16-bit/mono WAV, so
@@ -101,13 +106,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	installID := r.Header.Get(proofhttp.HeaderInstallID)
-	audioURL, ae := h.svc.Synthesize(r.Context(), installID, input, voice)
+	audio, ae := h.svc.Synthesize(r.Context(), installID, input, voice)
 	if ae != nil {
 		response.WriteError(w, ae)
 		return
 	}
-	response.WriteJSON(w, http.StatusOK, responseBody{
-		Created: time.Now().Unix(),
-		Data:    []responseAudioItem{{URL: audioURL}},
-	})
+	// The model answers 24kHz/16bit/mono WAV and the wire carries no format knob, so the content
+	// type is a fact about the upstream rather than something the caller negotiated.
+	// 模型恒返 24kHz/16bit/mono WAV,且线缆上没有 format 旋钮,故 content type 是一个**关于上游的
+	// 事实**、不是调用方协商出来的东西。
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(audio)
 }
