@@ -63,6 +63,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/infra/sqlite"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/installstore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/store/quotastore"
+	"github.com/sunweilin/anselm/gateway/internal/infra/store/voicestore"
 	"github.com/sunweilin/anselm/gateway/internal/infra/upstream"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/noncecache"
 	proofhttp "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/business/proof"
@@ -257,9 +258,11 @@ func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate f
 		Upstream: upstream.NewImageGen(cfg.DashScopeNativeBase, genKey),
 		Clock:    sysClock{}, Metrics: chatMx{m: mx, inflight: inflight},
 	})
+	voiceStore := voicestore.New(db.Writer, db.Reader)
 	ttsSvc := apptts.New(apptts.Deps{
 		Auth: installSvc, Quota: quotaSvc, RL: rl, Config: cfgP,
 		Upstream: upstream.NewTTSGen(cfg.DashScopeNativeBase, genKey),
+		Voices:   voiceStore,
 		Clock:    sysClock{}, Metrics: chatMx{m: mx, inflight: inflight},
 	})
 	videoSvc := appvideo.New(appvideo.Deps{

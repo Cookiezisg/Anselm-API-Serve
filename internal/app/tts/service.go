@@ -25,6 +25,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	domvoice "github.com/sunweilin/anselm/gateway/internal/domain/voice"
 )
 
 type Authenticator interface {
@@ -69,8 +70,56 @@ type Service struct {
 	rl       RateLimiter
 	cfg      Config
 	upstream Upstream
+	voices   Voices
 	clock    Clock
 	mx       Metrics
+}
+
+// resolveVoice swaps a handle this install owns for the provider's id, and passes anything else
+// through UNCHANGED — preset voices are not rows here, and rewriting them would break every
+// synthesis that never involved cloning.
+//
+// A handle that belongs to someone else simply does not match, so it travels on as a literal name
+// the provider will reject. That is the desired outcome: refusing loudly here would tell the caller
+// that some OTHER install owns that id.
+//
+// resolveVoice 把**本 install 拥有的**句柄换成供应商的 id,其余一律**原样透传**——预置音色不是这里的行,
+// 改写它们会弄坏每一次根本不涉及克隆的合成。
+//
+// 属于别人的句柄**匹配不上**,于是作为一个字面名字继续走下去、被供应商拒掉。这正是想要的结果:在这里
+// 大声拒绝,等于告诉调用方「那个 id 属于**另一个** install」。
+func (s *Service) resolveVoice(ctx context.Context, installID, voice string) string {
+	handle := strings.TrimSpace(voice)
+	if s == nil || s.voices == nil || handle == "" {
+		return voice
+	}
+	rows, err := s.voices.ListVoices(ctx, installID)
+	if err != nil {
+		return voice
+	}
+	for _, v := range rows {
+		if v.ID == handle && strings.TrimSpace(v.UpstreamID) != "" {
+			return v.UpstreamID
+		}
+	}
+	return voice
+}
+
+// Voices resolves a voice HANDLE this install owns into the id the provider knows.
+//
+// **The handle is deliberately not the provider's id, and that is an isolation boundary, not a
+// formality.** `GET /v1/voices` hands out the gateway's own row id; if the provider's id crossed
+// that line instead, any install could synthesize with any other install's cloned voice by naming
+// it — the same reasoning that made video hand back a signed handle rather than a bare task id
+// (ADR 0015). Resolution therefore happens HERE, scoped to the caller's install, or not at all.
+//
+// Voices 把**本 install 拥有的**音色句柄解析成供应商认识的 id。
+//
+// **句柄刻意不是供应商的 id,而这是一条隔离边界、不是形式。** `GET /v1/voices` 给出的是网关自己的行 id;
+// 若越过这条线交出供应商 id,任何 install 都能**指名**别人的克隆音色去合成——与视频交回**签名句柄**而非
+// 裸 task id 同一条理由(ADR 0015)。故解析发生在**这里**、按调用方的 install 收窄,否则就不发生。
+type Voices interface {
+	ListVoices(ctx context.Context, installID string) ([]domvoice.Voice, error)
 }
 
 type Deps struct {
@@ -79,12 +128,14 @@ type Deps struct {
 	RL       RateLimiter
 	Config   Config
 	Upstream Upstream
+	Voices   Voices
 	Clock    Clock
 	Metrics  Metrics
 }
 
 func New(d Deps) *Service {
-	s := &Service{auth: d.Auth, quota: d.Quota, rl: d.RL, cfg: d.Config, upstream: d.Upstream, clock: d.Clock, mx: d.Metrics}
+	s := &Service{auth: d.Auth, quota: d.Quota, rl: d.RL, cfg: d.Config, upstream: d.Upstream,
+		voices: d.Voices, clock: d.Clock, mx: d.Metrics}
 	if s.mx == nil {
 		s.mx = noopMetrics{}
 	}
@@ -157,6 +208,7 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 	if strings.TrimSpace(voice) == "" {
 		voice = strings.TrimSpace(c.TTSDefaultVoice)
 	}
+	voice = s.resolveVoice(ctx, installID, voice)
 	audio, unbilled, err := s.upstream.GenerateSpeech(ctx, model, text, voice)
 	if err != nil {
 		if unbilled {

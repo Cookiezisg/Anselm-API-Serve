@@ -11,6 +11,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
+	domvoice "github.com/sunweilin/anselm/gateway/internal/domain/voice"
 )
 
 type fakeAuth struct{ status dominstall.Status }
@@ -225,5 +226,58 @@ func TestSynthesize_BannedInstall(t *testing.T) {
 	}
 	if q.reservation != nil {
 		t.Fatal("reserved for a banned install")
+	}
+}
+
+// stubVoices is one install's inventory, keyed by install so the ownership half can be asserted.
+// stubVoices 是逐 install 的库存,按 install 索引,使**归属**那半可断言。
+type stubVoices map[string][]domvoice.Voice
+
+func (s stubVoices) ListVoices(_ context.Context, installID string) ([]domvoice.Voice, error) {
+	return s[installID], nil
+}
+
+// TestResolveVoice_HandleIsScopedToTheInstall guards both halves of the voice handle contract.
+//
+// The FIRST half is why cloning works at all: `GET /v1/voices` hands out this gateway's own row id,
+// and the provider has never heard of it — so without this resolution every synthesis in a cloned
+// voice fails at the upstream with a generic engine error, which is exactly what the real-money
+// acceptance found after enrollment had already succeeded and been paid for.
+//
+// The SECOND half is why the handle is not simply the provider's id: another install's handle must
+// NOT resolve. It travels on as a literal name and the provider rejects it — refusing loudly here
+// would confirm to the caller that the id exists and belongs to someone else (the same reasoning
+// that made video hand back a signed handle, ADR 0015).
+//
+// TestResolveVoice_HandleIsScopedToTheInstall 守住音色句柄契约的两半。
+//
+// **第一半**是克隆为什么能用:`GET /v1/voices` 给出的是本网关自己的行 id,而供应商从没听说过它——没有这
+// 一次解析,每一次用克隆音色的合成都会在上游以一个笼统的引擎错误失败,而那正是真钱验收在**登记已经成功
+// 且已付费之后**撞见的东西。
+//
+// **第二半**是句柄为什么不直接是供应商的 id:**别人的**句柄必须解析不出来。它作为字面名字继续走、被供应商
+// 拒掉——在这里大声拒绝,等于向调用方确认那个 id 存在且属于另一个人(与视频交回签名句柄同一条理由,ADR 0015)。
+func TestResolveVoice_HandleIsScopedToTheInstall(t *testing.T) {
+	voices := stubVoices{
+		"ins_mine":  {{ID: "vce_1", Name: "narrator", UpstreamID: "qwen-audio-3.0-tts-flash-anselm-abc"}},
+		"ins_other": {{ID: "vce_9", Name: "theirs", UpstreamID: "qwen-audio-3.0-tts-flash-anselm-xyz"}},
+	}
+	s := &Service{voices: voices}
+	for _, tc := range []struct{ install, in, want string }{
+		{"ins_mine", "vce_1", "qwen-audio-3.0-tts-flash-anselm-abc"},
+		{"ins_mine", " vce_1 ", "qwen-audio-3.0-tts-flash-anselm-abc"},
+		{"ins_mine", "vce_9", "vce_9"},                     // another install's handle — never resolved
+		{"ins_mine", "longanhuan_v3.6", "longanhuan_v3.6"}, // a preset — never ours to rewrite
+		{"ins_mine", "", ""},
+		{"ins_nobody", "vce_1", "vce_1"},
+	} {
+		if got := s.resolveVoice(context.Background(), tc.install, tc.in); got != tc.want {
+			t.Fatalf("resolveVoice(%q, %q) = %q, want %q", tc.install, tc.in, got, tc.want)
+		}
+	}
+	// No inventory port at all (older assemblies, tests) must not panic and must not eat the choice.
+	// 完全没有库存端口时(旧装配、测试)不得 panic,也不得吞掉调用方的选择。
+	if got := (&Service{}).resolveVoice(context.Background(), "ins_mine", "vce_1"); got != "vce_1" {
+		t.Fatalf("a service without a voice port must pass the handle through, got %q", got)
 	}
 }

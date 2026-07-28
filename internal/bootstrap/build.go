@@ -298,12 +298,18 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// from live config (capability off → TTS_UNAVAILABLE).
 	// 语音合成(批C):图像的孪生件,同一把 key、同一个原生 origin,自己的能力开关。同样无条件
 	// 构造——可用性由 Available() 按 live 配置回答(能力关 → TTS_UNAVAILABLE)。
+	// One store instance, two consumers: TTS resolves a voice handle it did not create, and voice
+	// creates handles it does not speak with. Two instances would be two truths about one table.
+	// **一个** store 实例、两个消费方:TTS 解析它没创建的句柄,voice 创建它不拿来说话的句柄。两个实例
+	// 就是同一张表的两份真相。
+	voiceStore := voicestore.New(db.Writer, db.Reader)
 	ttsSvc := apptts.New(apptts.Deps{
 		Auth:     installSvc,
 		Quota:    quotaSvc,
 		RL:       rl,
 		Config:   cfgP,
 		Upstream: upstream.NewTTSGen(effective.DashScopeNativeBase, imageKey),
+		Voices:   voiceStore,
 		Clock:    systemClock{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
@@ -335,7 +341,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Quota:    quotaSvc,
 		RL:       rl,
 		Config:   cfgP,
-		Store:    voicestore.New(db.Writer, db.Reader),
+		Store:    voiceStore,
 		Upstream: upstream.NewVoiceGen(effective.DashScopeNativeBase, imageKey),
 		Clock:    systemClock{},
 		IDs:      voiceIDs{},
