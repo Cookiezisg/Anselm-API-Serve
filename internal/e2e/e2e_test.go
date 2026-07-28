@@ -20,6 +20,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -38,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	appchat "github.com/sunweilin/anselm/gateway/internal/app/chat"
 	appdeviceproof "github.com/sunweilin/anselm/gateway/internal/app/deviceproof"
 	appimage "github.com/sunweilin/anselm/gateway/internal/app/image"
@@ -46,6 +48,7 @@ import (
 	appquota "github.com/sunweilin/anselm/gateway/internal/app/quota"
 	apptts "github.com/sunweilin/anselm/gateway/internal/app/tts"
 	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
+
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	domchat "github.com/sunweilin/anselm/gateway/internal/domain/chat"
@@ -126,13 +129,22 @@ func buildStack(t *testing.T, upstreamURL string) *stack {
 // buildStackWith is buildStack with an optional mutator on the assembled config
 // before the Provider is seeded — used to flip the M2 Sybil/PoW gates or shrink a
 // spend wallet end to end without forking the whole assembly.
+//
+// **The one fake serves BOTH provider slots, and that is not a shortcut.** The free tier resolves
+// every chat request to the multimodal model now (deepseek 撤除), so a stack with only the DeepSeek
+// slot wired answers 503 MULTIMODAL_UNAVAILABLE to everything — which is precisely what this whole
+// tagged package did after that change, unnoticed, because a build tag keeps it out of `go test ./...`.
+//
+// **一个假件同时坐两个 provider 槽,这不是图省事。** 免费档现在把**每一条** chat 都解析到多模态模型
+// (deepseek 已撤),故只接了 DeepSeek 槽的栈对什么都答 503 MULTIMODAL_UNAVAILABLE——而那正是这整个
+// 打标签的包在那次改动之后的状态,没人发现,因为 build tag 让它不进 `go test ./...`。
 func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config)) *stack {
-	return buildStackWithProviders(t, upstreamURL, "", mutate)
+	return buildStackWithProviders(t, upstreamURL, upstreamURL, mutate)
 }
 
-// buildStackWithProviders additionally wires a Qwen compatible endpoint.
-// Most legacy e2e cases leave it blank to prove text service remains independent;
-// multimodal cases opt in and exercise the same two-client registry as bootstrap.
+// buildStackWithProviders wires the Qwen compatible endpoint explicitly — for the cases that need
+// the two upstreams to be DISTINGUISHABLE (different fakes, different assertions on which one was
+// reached). Everything else goes through buildStackWith and lets one fake answer for both.
 func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate func(*config.Config)) *stack {
 	t.Helper()
 	cfg := baseConfig(t, upstreamURL)
@@ -324,8 +336,8 @@ func (q quotaCfg) Limits() appquota.Limits {
 // so it never imports infra).
 type videoUp struct{ g *upstream.VideoGen }
 
-func (v videoUp) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
-	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+func (v videoUp) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (string, bool, error) {
+	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution, firstFrame)
 }
 
 func (v videoUp) PollVideo(ctx context.Context, taskID string) (appvideo.VideoStatus, error) {
@@ -379,13 +391,13 @@ type powStub struct{}
 
 func (powStub) Inc(result string) {}
 
-// --- fake DeepSeek upstreams --------------------------------------------------
+// --- fake chat upstreams ------------------------------------------------------
 
-// fakeDeepSeek is an SSE upstream that streams one delta + an include_usage final
+// fakeChatUpstream is an SSE upstream that streams one delta + an include_usage final
 // frame + [DONE], recording what it received so the e2e flow can assert the gateway
 // sanitized the request (model rewrite, key injection, tools/tool_choice
 // passthrough) — and stripped the upstream Set-Cookie on the way back.
-func fakeDeepSeek(t *testing.T) (*httptest.Server, func() (auth, body string)) {
+func fakeChatUpstream(t *testing.T) (*httptest.Server, func() (auth, body string)) {
 	t.Helper()
 	var mu sync.Mutex
 	var gotAuth, gotBody string
@@ -398,9 +410,9 @@ func fakeDeepSeek(t *testing.T) (*httptest.Server, func() (auth, body string)) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
 		fw, _ := w.(http.Flusher)
-		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.DeepSeekV4Flash+"\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.Qwen37Plus+"\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
 		fw.Flush()
-		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.DeepSeekV4Flash+"\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8,\"total_tokens\":11}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"model\":\""+billing.Qwen37Plus+"\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8,\"total_tokens\":11}}\n\n")
 		fw.Flush()
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		fw.Flush()
@@ -413,13 +425,13 @@ func fakeDeepSeek(t *testing.T) (*httptest.Server, func() (auth, body string)) {
 	}
 }
 
-// fakeDeepSeekNonStream is a NON-streaming upstream (stream:false path). Modes:
+// fakeChatUpstreamNonStream is a NON-streaming upstream (stream:false path). Modes:
 //   - "ok":       a complete OpenAI JSON body with usage.total_tokens=usageTokens
 //   - "truncate": 2xx headers + a Content-Length larger than the bytes actually
 //     written, then the conn is hijacked & closed mid-body so the gateway's bounded
 //     ReadAll of the upstream body errors AFTER output is committed (exercises
 //     nonStreamThrough's post-output error branch that must still full-settle).
-func fakeDeepSeekNonStream(t *testing.T, mode string, usageTokens int64) *httptest.Server {
+func fakeChatUpstreamNonStream(t *testing.T, mode string, usageTokens int64) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "truncate" {
@@ -442,7 +454,7 @@ func fakeDeepSeekNonStream(t *testing.T, mode string, usageTokens int64) *httpte
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Set-Cookie", "leak=1") // must be stripped by the gateway
 		w.WriteHeader(http.StatusOK)
-		body := `{"id":"cmpl-1","object":"chat.completion","model":"` + billing.DeepSeekV4Flash + `","choices":[{"index":0,` +
+		body := `{"id":"cmpl-1","object":"chat.completion","model":"` + billing.Qwen37Plus + `","choices":[{"index":0,` +
 			`"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],` +
 			`"usage":{"prompt_tokens":3,"completion_tokens":` +
 			strconv.FormatInt(usageTokens-3, 10) + `,"total_tokens":` +
@@ -644,7 +656,7 @@ func qwenCostPUSD(t *testing.T, prompt, completion int64) int64 {
 // VERBATIM (the agentic contract), and stripped the upstream Set-Cookie — through
 // the real middleware chain.
 func TestE2EInstallChatQuotaFlow(t *testing.T) {
-	up, inspect := fakeDeepSeek(t)
+	up, inspect := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -688,7 +700,7 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	if !strings.Contains(string(body), "[DONE]") {
 		t.Fatalf("stream not relayed to [DONE]: %s", body)
 	}
-	if strings.Count(string(body), `"model":"anselm-auto"`) != 2 || strings.Contains(string(body), billing.DeepSeekV4Flash) {
+	if strings.Count(string(body), `"model":"anselm-auto"`) != 2 || strings.Contains(string(body), billing.Qwen37Plus) {
 		t.Fatalf("client stream must expose only PUBLIC_MODEL_ID, got: %s", body)
 	}
 	// X-Request-ID echoed back by the Recover middleware (chain is in play).
@@ -703,11 +715,11 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 	// Upstream received the injected key + rewritten model + tools/tool_choice
 	// passthrough, with the danger field logit_bias stripped.
 	gotAuth, gotBody := inspect()
-	if gotAuth != "Bearer sk-test-key-never-leaks" {
+	if gotAuth != "Bearer qwen-test-key-never-leaks" {
 		t.Fatalf("upstream key not injected: %q", gotAuth)
 	}
-	if !strings.Contains(gotBody, `"model":"`+billing.DeepSeekV4Flash+`"`) {
-		t.Fatalf("exact text upstream model not forced: %s", gotBody)
+	if !strings.Contains(gotBody, `"model":"`+billing.Qwen37Plus+`"`) {
+		t.Fatalf("exact upstream model not forced: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"get_weather"`) || !strings.Contains(gotBody, `"tool_choice":"auto"`) {
 		t.Fatalf("tools/tool_choice not passed through (agentic contract): %s", gotBody)
@@ -820,7 +832,7 @@ func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
 // the gateway forwards BOTH verbatim. Stripping either breaks the tool loop, so this
 // is the load-bearing agentic-contract assertion.
 func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
-	up, inspect := fakeDeepSeek(t)
+	up, inspect := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -857,7 +869,7 @@ func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
 // fields end to end: logit_bias / function_call / response_format never reach the
 // upstream, while the legitimate sibling (tool_choice) does.
 func TestE2EDangerFieldsStripped(t *testing.T) {
-	up, inspect := fakeDeepSeek(t)
+	up, inspect := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -899,7 +911,7 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 //     card, rather than retaining the pessimistic reservation quote.
 func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	const actualTokens = 11
-	up := fakeDeepSeekNonStream(t, "ok", actualTokens)
+	up := fakeChatUpstreamNonStream(t, "ok", actualTokens)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -925,7 +937,7 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	if !strings.Contains(string(body), `"content":"hello there"`) {
 		t.Fatalf("non-stream completion content not preserved: %s", body)
 	}
-	if !strings.Contains(string(body), `"model":"anselm-auto"`) || strings.Contains(string(body), billing.DeepSeekV4Flash) {
+	if !strings.Contains(string(body), `"model":"anselm-auto"`) || strings.Contains(string(body), billing.Qwen37Plus) {
 		t.Fatalf("non-stream response must expose only PUBLIC_MODEL_ID: %s", body)
 	}
 	if resp.Header.Get("Set-Cookie") != "" {
@@ -937,7 +949,7 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 
 	// (b) prompt=3 + completion=8 is converted to pUSD by the frozen rate card.
 	// Equality proves settle-to-actual-cost rather than retain-the-quote.
-	wantSpend := deepSeekCostPUSD(t, 3, 8)
+	wantSpend := qwenCostPUSD(t, 3, 8)
 	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
 		t.Fatalf("global spend settled to %d pUSD, want actual cost %d pUSD", got, wantSpend)
 	}
@@ -949,7 +961,7 @@ func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 // conservative; never under-charge / leak spend) and surface a normalized
 // UPSTREAM_ERROR. Asserts the full quote remains charged (no double-bill, no leak).
 func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
-	up := fakeDeepSeekNonStream(t, "truncate", 0)
+	up := fakeChatUpstreamNonStream(t, "truncate", 0)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1027,7 +1039,7 @@ func TestE2ENonStream8MBBodyLimit(t *testing.T) {
 // unauthenticated call → 401. Exercises the production routing + middleware chain
 // and the shared install auth without exposing either upstream model id.
 func TestE2EModelsDeclaration(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.PublicModelID = "anselm-test"
 	})
@@ -1097,7 +1109,7 @@ func TestE2EModelsDeclaration(t *testing.T) {
 // §5.3). Over a real socket the server caps the body and the handler returns a 4xx,
 // never 200.
 func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1125,7 +1137,7 @@ func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
 // with the cap at its 4KiB floor, a ~5KiB body is rejected while a small body
 // still reaches the normal pipeline.
 func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.MaxBodyBytes = 4096 // spec floor — far below the 256KiB default
 	})
@@ -1161,7 +1173,7 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 
 // TestE2EBadInstallUnauthorized: an unknown public id cannot resolve a verification key.
 func TestE2EBadInstallUnauthorized(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1189,7 +1201,7 @@ func TestE2EBadInstallUnauthorized(t *testing.T) {
 // TestE2EQuotaExhaustion: with MONTHLY_QUOTA=1, the first chat succeeds (200) and
 // the second is rejected 429 QUOTA_EXHAUSTED by the reserve gate — end to end.
 func TestE2EQuotaExhaustion(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) { c.MonthlyQuota = 1 })
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1227,7 +1239,7 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 // request's frozen rate-card quote, Reserve denies before any upstream call and
 // returns 402 BUDGET_EXHAUSTED over the real stack.
 func TestE2EBudgetExhaustion(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	// One pUSD is below every non-empty DeepSeek quote, isolating the shared
 	// operator monthly budget gate.
 	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalMonthlySpendPUSD = 1 })
@@ -1354,7 +1366,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 		t.Fatalf("upstream calls = %d want %d (rejections never retried, follow-up not shed)", got, rejectN+1)
 	}
 	// ...and settles to its ACTUAL priced usage only — the sole wallet spend.
-	wantSpend := deepSeekCostPUSD(t, 3, 8)
+	wantSpend := qwenCostPUSD(t, 3, 8)
 	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
 		t.Fatalf("spend after success = %d pUSD want %d pUSD", got, wantSpend)
 	}
@@ -1363,7 +1375,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 // TestE2ECORSPreflightForbidden: a browser preflight (OPTIONS + Origin) is 403'd by
 // the DenyCORS middleware over the real stack, with no Access-Control-* header.
 func TestE2ECORSPreflightForbidden(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1391,7 +1403,7 @@ func TestE2ECORSPreflightForbidden(t *testing.T) {
 //   - unknown path → 404
 //   - GET /healthz → 200 (liveness, the only public health surface) + X-Request-ID
 func TestE2EMethodAndRouteErrors(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1433,7 +1445,7 @@ func TestE2EMethodAndRouteErrors(t *testing.T) {
 // over the real chain (the Recover middleware reuses a safe id rather than always
 // minting), so a sidecar can correlate its own id end to end.
 func TestE2ERequestIDEchoed(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
@@ -1456,7 +1468,7 @@ func TestE2ERequestIDEchoed(t *testing.T) {
 // install over the real socket is rejected 429 + INSTALL_CAP_REACHED — the M2
 // coarse valve end to end through the real routing + middleware chain.
 func TestE2EInstallGlobalCapOverSocket(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	const capN = 3
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.InstallGlobalDailyCap = capN
@@ -1552,7 +1564,7 @@ func fetchChallenge(t *testing.T, srv *httptest.Server, client *http.Client) (ch
 // socket rejects a missing PoW (403) and a replayed proof (403 nonce-once), and
 // admits a genuinely-mined one (200) — the full challenge→solve→install journey.
 func TestE2EPoWEnforceOverSocket(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.InstallPowMode = config.PowModeEnforce
 		c.InstallPowDifficulty = 8 // low so the test mines quickly
@@ -1627,7 +1639,7 @@ func TestE2EPoWEnforceOverSocket(t *testing.T) {
 // real socket, and the challenge endpoint reports required=false — shadow never
 // breaks an existing client.
 func TestE2EPoWShadowDoesNotBreakExisting(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.InstallPowMode = config.PowModeShadow
 		c.InstallPowDifficulty = 20
@@ -1696,6 +1708,22 @@ func newFakeDashScope(t *testing.T) *fakeDashScopeNative {
 	t.Helper()
 	f := &fakeDashScopeNative{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Speech left HTTP entirely in H9: `qwen-audio-3.0-tts-flash` is served ONLY over
+		// `api-ws/v1/inference` (真机实测——两条 HTTP 形状都答 `url error`). It rides the SAME origin
+		// as the other three, which is why it belongs on this one fake rather than a second server:
+		// splitting them would hide a path mistake that production really can make.
+		// H9 之后语音整个离开了 HTTP:`qwen-audio-3.0-tts-flash` **只**在 `api-ws/v1/inference` 上提供
+		// (真机实测——两条 HTTP 形状都答 `url error`)。它与另外三条**同一个 origin**,故它属于这台假件
+		// 而不是第二台服务器:拆开会藏住一个生产上真会犯的 path 错误。
+		if r.URL.Path == "/api-ws/v1/inference" {
+			f.mu.Lock()
+			f.paths = append(f.paths, r.URL.Path)
+			f.authSeen = append(f.authSeen, r.Header.Get("Authorization"))
+			f.asyncSeen = append(f.asyncSeen, "")
+			f.mu.Unlock()
+			f.serveTTS(t, w, r)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.paths = append(f.paths, r.URL.Path)
@@ -1706,12 +1734,8 @@ func newFakeDashScope(t *testing.T) *fakeDashScopeNative {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v1/services/aigc/multimodal-generation/generation":
-			// Image and speech share this endpoint; the requested model tells them apart.
-			// 图像与语音共用此端点;按请求里的 model 区分。
-			if strings.Contains(string(body), billing.QwenAudio30TTSFlash) {
-				_, _ = io.WriteString(w, `{"output":{"audio":{"url":"https://oss.example/a.wav"}}}`)
-				return
-			}
+			// Image only — speech moved to the duplex socket above (H9).
+			// 只剩图像——语音已搬到上面那条双工套接字(H9)。
 			_, _ = io.WriteString(w, `{"output":{"choices":[{"message":{"content":[{"image":"https://oss.example/i.png"}]}}]}}`)
 		case r.URL.Path == "/api/v1/services/aigc/video-generation/video-synthesis":
 			_, _ = io.WriteString(w, `{"output":{"task_id":"task-e2e-1"}}`)
@@ -1727,6 +1751,67 @@ func newFakeDashScope(t *testing.T) *fakeDashScopeNative {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// ttsAudio is what the fake synthesizer "speaks". The real model answers 24kHz/16bit/mono WAV; the
+// bytes' CONTENT is irrelevant to the gateway (it relays them), their identity is not — the e2e
+// asserts the client got exactly what the upstream produced.
+// ttsAudio 是假合成器「说」出来的东西。真模型答 24kHz/16bit/mono WAV;字节**内容**与网关无关(它只
+// 是中继),字节**身份**有关——e2e 断言客户端拿到的正是上游产出的那些。
+var ttsAudio = []byte("RIFF....WAVEfake-e2e-audio")
+
+// serveTTS speaks the upstream's duplex protocol: run-task → task-started, continue-task carries
+// the text, finish-task closes, audio arrives as BINARY frames in between.
+//
+// serveTTS 说上游那套双工协议:run-task → task-started,continue-task 送文本,finish-task 收尾,
+// 音频以**二进制帧**夹在中间回来。
+func (f *fakeDashScopeNative) serveTTS(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var f2 struct {
+			Header struct {
+				Action string `json:"action"`
+				TaskID string `json:"task_id"`
+			} `json:"header"`
+			Payload struct {
+				Input map[string]any `json:"input"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(data, &f2); err != nil {
+			return
+		}
+		reply := func(event string) error {
+			return conn.WriteJSON(map[string]any{
+				"header":  map[string]any{"event": event, "task_id": f2.Header.TaskID},
+				"payload": map[string]any{},
+			})
+		}
+		switch f2.Header.Action {
+		case "run-task":
+			if err := reply("task-started"); err != nil {
+				return
+			}
+		case "continue-task":
+			f.mu.Lock()
+			f.bodies = append(f.bodies, string(data))
+			f.mu.Unlock()
+			if err := conn.WriteMessage(websocket.BinaryMessage, ttsAudio); err != nil {
+				return
+			}
+		case "finish-task":
+			_ = reply("task-finished")
+			return
+		}
+	}
 }
 
 func (f *fakeDashScopeNative) seen() (paths, auths, asyncs, bodies []string) {
@@ -1793,7 +1878,7 @@ func errorCode(t *testing.T, body []byte) string {
 // only a full-stack run can: the upstream key never reaches the client, and the
 // artifact URL is relayed verbatim (P13 URL 直通).
 func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
-	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
 	defer deepSeek.Close()
 	native := newFakeDashScope(t)
 	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
@@ -1806,9 +1891,16 @@ func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(string(body), "https://oss.example/i.png") {
 		t.Fatalf("image generate → %d %s", code, body)
 	}
+	// Speech answers with the AUDIO ITSELF, not a URL to it (H9: the model is duplex-WebSocket only,
+	// so there is no artifact URL in existence to relay). Asserting the exact bytes is the point —
+	// a response that merely 200s could be an empty body, and an empty body is what a client hears
+	// as silence.
+	// 语音答的是**音频本身**、不是指向它的 URL(H9:那个模型只有双工 WebSocket,故世上根本不存在一个
+	// 产物 URL 可以中继)。断言**逐字节相同**才是要点——一个只是 200 的响应可能是空 body,而空 body
+	// 在客户端听起来就是一片寂静。
 	code, body = postJSON(t, client, srv.URL+"/v1/audio/speech", installID, `{"input":"hello there"}`)
-	if code != http.StatusOK || !strings.Contains(string(body), "https://oss.example/a.wav") {
-		t.Fatalf("speech generate → %d %s", code, body)
+	if code != http.StatusOK || !bytes.Equal(body, ttsAudio) {
+		t.Fatalf("speech generate → %d %q, want the upstream's own bytes", code, body)
 	}
 
 	paths, auths, _, _ := native.seen()
@@ -1816,7 +1908,15 @@ func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
 		t.Fatalf("upstream calls = %v, want two", paths)
 	}
 	for _, a := range auths {
-		if a != "Bearer qwen-test-key-never-leaks" {
+		// EqualFold, not ==: the auth SCHEME is case-insensitive (RFC 7235 §2.1) and the two
+		// transports spell it differently — the HTTP generation path sends `Bearer`, the duplex
+		// socket sends `bearer`, which is the spelling DashScope's own WebSocket examples use and
+		// the one proven against the real API. What must be identical is the KEY, and that is what
+		// this loop is here to check.
+		// 用 EqualFold 而非 ==:鉴权**方案**大小写不敏感(RFC 7235 §2.1),而两种传输拼法不同——HTTP
+		// 生成路径发 `Bearer`,双工套接字发 `bearer`(那是 DashScope 自己 WebSocket 示例的拼法,也是
+		// 在真 API 上验过的那个)。必须逐字相同的是**那把 key**,而这正是本循环要查的东西。
+		if !strings.EqualFold(a, "Bearer qwen-test-key-never-leaks") {
 			t.Fatalf("upstream auth = %q", a)
 		}
 	}
@@ -1831,7 +1931,7 @@ func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
 // signed handle, polling that reports phases without moving money, and a second
 // install being unable to read the first one's task.
 func TestE2EVideoSubmitPollAndOwnership(t *testing.T) {
-	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
 	defer deepSeek.Close()
 	native := newFakeDashScope(t)
 	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
@@ -1906,10 +2006,14 @@ func TestE2EVideoSubmitPollAndOwnership(t *testing.T) {
 // 这条守卫正是 SPEECH_DAILY_LIMIT 那个 bug 会挂在上面的:它经真 socket 耗尽**一个**品类,并证明另外
 // 两个照常工作、且各自以**自己的** wire 码拒绝。
 func TestE2ECategoryLedgersAreIndependent(t *testing.T) {
-	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
 	defer deepSeek.Close()
 	native := newFakeDashScope(t)
-	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", func(c *config.Config) {
+	// Chat resolves to the multimodal model now, so the chat fake must sit in the QWEN slot — the
+	// final assertion here is "plain chat still works", and it can only mean that if chat has a
+	// reachable upstream at all. 现在 chat 解析到多模态模型,故 chat 假件必须坐在 **qwen** 槽上——本
+	// 用例最后那条断言是「普通 chat 照常」,而只有 chat 真有一个够得着的上游时它才可能有这个含义。
+	s := buildStackWith(t, deepSeek.URL, func(c *config.Config) {
 		generationEnabled(native.srv.URL)(c)
 		// One of each: the smallest cap that still admits exactly one call.
 		// 各留一发:恰好放行一次调用的最小上限。
@@ -1956,7 +2060,7 @@ func TestE2ECategoryLedgersAreIndependent(t *testing.T) {
 // OWN unavailable code when its switch is off, and that turning one off does not
 // take the others down.
 func TestE2ECapabilitiesOffDegradeHonestly(t *testing.T) {
-	deepSeek := fakeDeepSeekNonStream(t, "ok", 10)
+	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
 	defer deepSeek.Close()
 	native := newFakeDashScope(t)
 	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", func(c *config.Config) {
@@ -2061,7 +2165,7 @@ func TestE2EMixedModalitiesInOneRequest(t *testing.T) {
 // 另一半——两条请求都照样进了账。debug 是「永不拒绝」,绝不是「永不记账」:一个顺手停掉记账的
 // debug 模式,会让运营者自己的花费视图在整个开发期都在骗他。
 func TestE2EDebugModeOpensTheQuotaGateButStillBills(t *testing.T) {
-	up, _ := fakeDeepSeek(t)
+	up, _ := fakeChatUpstream(t)
 	s := buildStackWith(t, up.URL, func(c *config.Config) {
 		c.MonthlyQuota = 1
 		c.RuntimeMode = config.RuntimeModeDebug
@@ -2071,7 +2175,11 @@ func TestE2EDebugModeOpensTheQuotaGateButStillBills(t *testing.T) {
 	client := newProofClient(t, srv.Client())
 
 	installID := registerInstall(t, srv, client)
-	chat := func() int {
+	// The wire code travels with the status, because a bare "got 503" cannot tell a masked gate from
+	// an absent provider — and this test exists to distinguish exactly that kind of thing.
+	// 线缆码随状态一起带出来:光一句「got 503」分不清「闸被掩了」与「供应商根本不在」,而本用例存在
+	// 的意义正是分辨这一类差别。
+	chat := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		req.Header.Set("X-Anselm-Install-ID", installID)
@@ -2079,17 +2187,23 @@ func TestE2EDebugModeOpensTheQuotaGateButStillBills(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(b, &env)
 		resp.Body.Close()
-		return resp.StatusCode
+		return resp.StatusCode, env.Error.Code
 	}
 
-	if code := chat(); code != http.StatusOK {
-		t.Fatalf("first chat want 200 got %d", code)
+	if code, wire := chat(); code != http.StatusOK {
+		t.Fatalf("first chat want 200 got %d %q", code, wire)
 	}
 	// The one that 429s under production.
-	if code := chat(); code != http.StatusOK {
-		t.Fatalf("debug mode must not deny past MONTHLY_QUOTA: got %d", code)
+	if code, wire := chat(); code != http.StatusOK {
+		t.Fatalf("debug mode must not deny past MONTHLY_QUOTA: got %d %q", code, wire)
 	}
 
 	s.bgWG.Wait() // let the detached settles land before reading the ledger.
