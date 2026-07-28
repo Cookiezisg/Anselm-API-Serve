@@ -97,7 +97,6 @@ func (p *Provider) Snapshot() []any {
 		"daily_sublimit", c.DailySublimit,
 		"image_enabled", c.ImageEnabled,
 		"image_upstream_model", c.ImageUpstreamModel,
-		"image_edit_upstream_model", c.ImageEditUpstreamModel,
 		"image_daily_limit", c.ImageDailyLimit,
 		"voice_daily_limit", c.VoiceDailyLimit,
 		"voice_account_ceiling", c.VoiceAccountCeiling,

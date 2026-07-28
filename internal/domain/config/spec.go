@@ -384,7 +384,6 @@ func Specs() []Spec {
 		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
 		{Key: "IMAGE_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.ImageEnabled) }},
 		{Key: "IMAGE_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageUpstreamModel }},
-		{Key: "IMAGE_EDIT_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageEditUpstreamModel }},
 		{Key: "SPEECH_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.SpeechEnabled) }},
 		{Key: "TTS_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSUpstreamModel }},
 		{Key: "TTS_DEFAULT_VOICE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSDefaultVoice }},

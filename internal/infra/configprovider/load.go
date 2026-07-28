@@ -79,7 +79,6 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	// (官方文档核准 H9). It is priced on the same image card, so it needs no rate card of its own.
 	// 改图兄弟默认 qwen-image-edit——同一条端点上的**不同** model id(H9 官方文档核准)。它按同一张图像
 	// 价格卡计价,故不需要自己的费率卡。
-	c.ImageEditUpstreamModel = g.str("IMAGE_EDIT_UPSTREAM_MODEL", "qwen-image-edit")
 	// 0 by default: the provider's per-account voice ceiling is not documented, so pinning a number
 	// we invented would refuse enrollments the provider would have accepted. It is here so an
 	// operator who LEARNS the real ceiling can set it — the alternative to knowing is finding out

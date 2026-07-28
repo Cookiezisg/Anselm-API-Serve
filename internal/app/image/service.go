@@ -185,7 +185,7 @@ func (s *Service) run(ctx context.Context, installID, prompt, size, source strin
 	if source == "" {
 		imageURL, unbilled, err = s.upstream.GenerateImage(ctx, model, prompt, size)
 	} else {
-		imageURL, unbilled, err = s.upstream.EditImage(ctx, c.ImageEditUpstreamModel, prompt, size, source)
+		imageURL, unbilled, err = s.upstream.EditImage(ctx, model, prompt, size, source)
 	}
 	if err != nil {
 		if unbilled {

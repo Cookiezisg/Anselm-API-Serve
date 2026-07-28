@@ -201,12 +201,6 @@ type Config struct {
 	// per-install image-count cap (P8: default 10; 0 disables the gate).
 	ImageEnabled       bool   // IMAGE_ENABLED
 	ImageUpstreamModel string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
-	// ImageEditUpstreamModel is the EDITING sibling of the generation model — a different model id
-	// on the same endpoint (官方文档核准 WRK-082 H9). Reusing the generation id would post an edit
-	// payload to a model that cannot read the image chunk.
-	// ImageEditUpstreamModel 是生成模型的**改图**兄弟——同一条端点上的**不同** model id(H9 官方文档
-	// 核准)。沿用生成 id 会把改图载荷投给一个读不了图像块的模型。
-	ImageEditUpstreamModel string // IMAGE_EDIT_UPSTREAM_MODEL
 
 	// VoiceAccountCeiling caps how many cloned voices may exist in OUR provider account across ALL
 	// installs (WRK-082 H9). It is not a per-user limit and it is not a quota — every install's

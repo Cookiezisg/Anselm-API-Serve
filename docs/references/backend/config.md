@@ -103,7 +103,6 @@ Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `IMAGE_ENABLED` | `false` | 图像生成能力开关(WRK-082 批B);开启时要求 `DASHSCOPE_API_KEY` + 精确已编译图像 rate card + `DASHSCOPE_NATIVE_BASE`,缺一启动 fail-fast |
 | `IMAGE_UPSTREAM_MODEL` | `qwen-image-2.0` | 必须是精确已编译 DashScope 图像 rate card;按张计价(reserve==settle) |
-| `IMAGE_EDIT_UPSTREAM_MODEL` | `qwen-image-edit` | H9——改图模型:**同一条端点上的不同 model id**(官方文档核准);沿用生成 id 会把改图载荷投给一个读不了图像块的模型。按**同一张图像卡**计价,故不需要自己的费率卡 |
 | `SPEECH_ENABLED` | `false` | 语音**合成**能力开关(WRK-082 批C),与图像各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译 TTS rate card + `DASHSCOPE_NATIVE_BASE` + `TTS_DEFAULT_VOICE`,缺一启动 fail-fast |
 | `TTS_UPSTREAM_MODEL` | `qwen3-tts-flash` | 必须是精确已编译 DashScope TTS rate card;按**输入字符**计价(reserve==settle——字符数在调用前即精确已知) |
 | `VIDEO_ENABLED` | `false` | 视频生成能力开关(WRK-082 H1),与图像、语音各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译视频 rate card + `DASHSCOPE_NATIVE_BASE` + **`MEDIA_SIGNING_SECRET`**(句柄签名密钥由它域分离派生),缺一启动 fail-fast |
