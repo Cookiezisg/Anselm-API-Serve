@@ -34,57 +34,71 @@ func modelServer(t *testing.T, wantKey, modelID string) *httptest.Server {
 	}))
 }
 
-func probeConfig(deepSeekURL string) config.Config {
+// probeConfig builds the ONE target the prober still probes. DeepSeek dropped out after WRK-082 H9:
+// nothing routes there, and probing an unrouted upstream spends a live credential on an answer that
+// changes nothing.
+//
+// probeConfig 构造探测器**仍然会探的那唯一一个**目标。DeepSeek 在 H9 之后退出:没有流量去那儿,而
+// 探测一条无流量上游,是拿一把活凭证去换一个改变不了任何事的答案。
+func probeConfig(qwenURL string) config.Config {
 	return config.Config{
-		DeepSeekBaseURL:   deepSeekURL,
-		DeepSeekAPIKeys:   []string{"ds-key"},
-		TextUpstreamModel: billing.DeepSeekV4Flash,
+		QwenBaseURL:             qwenURL,
+		QwenAPIKeys:             []string{"qwen-key"},
+		MultimodalUpstreamModel: billing.Qwen37Plus,
 	}
 }
 
-func TestUpstreamProberAuthenticatesAndRequiresEveryConfiguredModel(t *testing.T) {
-	deepSeek := modelServer(t, "ds-key", billing.DeepSeekV4Flash)
-	t.Cleanup(deepSeek.Close)
+// TestUpstreamProberAuthenticatesTheRoutedModel: the probe must prove BOTH that the credential
+// works and that the exact configured model is advertised — a 200 from /models with the wrong
+// catalogue is not readiness.
+//
+// TestUpstreamProberAuthenticatesTheRoutedModel:探测必须同时证明**凭证能用**与**那个精确的模型被
+// 宣称**——/models 回 200 但目录里没有那个模型,不算就绪。
+func TestUpstreamProberAuthenticatesTheRoutedModel(t *testing.T) {
 	qwen := modelServer(t, "qwen-key", billing.Qwen37Plus)
 	t.Cleanup(qwen.Close)
 
-	cfg := probeConfig(deepSeek.URL)
-	cfg.QwenBaseURL = qwen.URL
-	cfg.QwenAPIKeys = []string{"qwen-key"}
-	cfg.MultimodalUpstreamModel = billing.Qwen37Plus
-	p := newUpstreamProber(cfg)
+	p := newUpstreamProber(probeConfig(qwen.URL))
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
-		t.Fatal("both authenticated provider/model probes should make readiness fresh")
+		t.Fatal("an authenticated provider/model probe should make readiness fresh")
 	}
 
-	bad := cfg
+	bad := probeConfig(qwen.URL)
 	bad.QwenAPIKeys = []string{"wrong-key"}
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured Qwen auth failure must keep aggregate readiness cold")
+		t.Fatal("an auth failure must keep readiness cold")
 	}
 
-	bad = cfg
+	bad = probeConfig(qwen.URL)
 	bad.MultimodalUpstreamModel = "model-not-advertised"
 	p = newUpstreamProber(bad)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); ok {
-		t.Fatal("a configured but unavailable Qwen model must fail readiness")
+		t.Fatal("a configured but unadvertised model must fail readiness")
 	}
 }
 
-func TestUpstreamProberAllowsTextOnlyDeploymentAndSiblingKey(t *testing.T) {
-	deepSeek := modelServer(t, "working-key", billing.DeepSeekV4Flash)
-	t.Cleanup(deepSeek.Close)
-	cfg := probeConfig(deepSeek.URL)
-	cfg.DeepSeekAPIKeys = []string{"expired-key", "working-key"}
+// TestUpstreamProberTriesEveryKeyBeforeFailing: the sibling-key property is what this test was
+// really about — one expired key among several must not sink readiness. Its old framing ("a
+// Qwen-disabled, text-only deployment") is gone: after WRK-082 H9 every chat request routes to
+// Qwen, so there is no text-only shape and DeepSeek is no longer probed at all.
+//
+// TestUpstreamProberTriesEveryKeyBeforeFailing:这个测试真正在意的是**兄弟 key**那条性质——一把过期
+// key 夹在几把里,不该把就绪拖下水。它旧的说法(「一个关掉 Qwen 的纯文本部署」)已经不存在了:H9 之后
+// 每次 chat 都路由到 Qwen,既没有纯文本形态,DeepSeek 也**根本不再被探测**。
+func TestUpstreamProberTriesEveryKeyBeforeFailing(t *testing.T) {
+	qwen := modelServer(t, "working-key", billing.Qwen37Plus)
+	t.Cleanup(qwen.Close)
+	cfg := probeConfig(qwen.URL)
+	cfg.QwenAPIKeys = []string{"expired-key", "working-key"}
 
 	p := newUpstreamProber(cfg)
 	p.probe(context.Background())
 	if ok, _ := p.LastOK(); !ok {
-		t.Fatal("one working DeepSeek key should make a Qwen-disabled deployment ready")
+		t.Fatal("one working key among several must make the deployment ready")
 	}
 }
 

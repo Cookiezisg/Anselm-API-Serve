@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
+Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat 都路由到多模态模型,没有它的部署什么也服务不了,故在启动时失败、不在每个请求上失败)、`DEEPSEEK_API_KEY`(**可选**,不再被路由,只为账本历史行与对账期的熔断器保留)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 

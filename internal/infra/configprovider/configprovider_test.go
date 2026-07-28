@@ -15,12 +15,21 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// minimalEnv supplies the sole required secret plus an explicit spend-wallet value
-// that satisfy the compiled model quotes. PUBLIC_MODEL_ID is included so its
-// default/override behavior remains visible in fixtures even though it is optional.
+// minimalEnv supplies the required secrets plus an explicit spend-wallet value that satisfy the
+// compiled model quotes. PUBLIC_MODEL_ID is included so its default/override behavior stays visible
+// in fixtures even though it is optional.
+//
+// **The Qwen credential is the required one now (WRK-082 H9)**: every chat request routes to the
+// multimodal model, so a deployment without it can serve nothing. DeepSeek stays in the fixture
+// because its ledger rows and probe path are still exercised — but it no longer gates boot.
+//
+// **现在必需的是 Qwen 那把(H9)**:每一次 chat 都路由到多模态模型,故没有它的部署什么也服务不了。
+// DeepSeek 留在夹具里是因为它的账本行与探测路径仍被覆盖——但它不再是启动门禁。
 func minimalEnv() map[string]string {
 	return map[string]string{
 		"DEEPSEEK_API_KEY":               "sk-a,sk-b",
+		"DASHSCOPE_API_KEY":              "qwen-key",
+		"DASHSCOPE_WORKSPACE_ID":         "ws-test",
 		"PUBLIC_MODEL_ID":                "anselm-auto",
 		"GLOBAL_MONTHLY_SPEND_MICRO_USD": "420000000",
 	}
@@ -193,15 +202,22 @@ func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	}
 }
 
-func TestLoadBaseQwenKeyIsOptionalAndWorkspaceDerived(t *testing.T) {
+// TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived: the Qwen credential went from optional to
+// mandatory when every chat request started routing to the multimodal model (WRK-082 H9). A
+// deployment without it can answer nothing, so boot is the honest place to fail — not per request.
+//
+// TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived:当每一次 chat 都开始路由到多模态模型时(H9),
+// Qwen 凭证从**可选**变成了**必需**。没有它的部署什么也答不了,故**启动**才是诚实的失败点——不是
+// 每个请求失败一次。
+func TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived(t *testing.T) {
 	env := minimalEnv()
-	c := mustLoad(t, env)
-	if len(c.QwenAPIKeys) != 0 {
-		t.Fatalf("unset Qwen key must keep multimodal disabled, got %d keys", len(c.QwenAPIKeys))
+	delete(env, "DASHSCOPE_API_KEY")
+	if _, err := LoadBase(envMap(env)); !errors.Is(err, ErrQwenKeyRequired) {
+		t.Fatalf("a deployment with no Qwen key must refuse to start, got %v", err)
 	}
 	env["DASHSCOPE_API_KEY"] = " qwen-a, ,qwen-b "
 	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test-1"
-	c = mustLoad(t, env)
+	c := mustLoad(t, env)
 	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[1] != "qwen-b" {
 		t.Fatalf("Qwen keys=%v", c.QwenAPIKeys)
 	}
@@ -217,10 +233,14 @@ func TestLoadBaseFailFast(t *testing.T) {
 		wantErr error // when non-nil, asserts errors.Is
 		wantSub string
 	}{
-		{"missing key", func(m map[string]string) { delete(m, "DEEPSEEK_API_KEY") }, ErrDeepSeekKeyRequired, ""},
-		{"blank key", func(m map[string]string) { m["DEEPSEEK_API_KEY"] = "  , " }, ErrDeepSeekKeyRequired, ""},
+		// The routed provider is the one that gates boot. A DeepSeek-less deployment is fine now;
+		// a Qwen-less one can answer nothing, so it must fail at boot rather than per request.
+		// **被路由到的那家**才是启动门禁。没有 DeepSeek 的部署现在没问题;没有 Qwen 的部署什么也答不了,
+		// 故它必须在**启动时**失败,而不是每个请求失败一次。
+		{"missing Qwen key", func(m map[string]string) { delete(m, "DASHSCOPE_API_KEY") }, ErrQwenKeyRequired, ""},
+		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "  , " }, ErrQwenKeyRequired, ""},
 		{"DashScope base URL userinfo", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "https://secret@example.com/compatible-mode/v1" }, nil, "absolute HTTPS base URL"},
-		{"Qwen key needs endpoint", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "qwen-key" }, nil, "DASHSCOPE_API_KEY requires"},
+		{"Qwen key needs endpoint", func(m map[string]string) { delete(m, "DASHSCOPE_WORKSPACE_ID") }, nil, "DASHSCOPE_API_KEY requires"},
 		{"invalid workspace id", func(m map[string]string) { m["DASHSCOPE_WORKSPACE_ID"] = "bad.example" }, nil, "DASHSCOPE_WORKSPACE_ID"},
 		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
 		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
@@ -266,18 +286,19 @@ func TestLoadBaseFailFast(t *testing.T) {
 	}
 }
 
-func TestLoadBaseTextOnlyBudgetDoesNotReserveInactiveQwen(t *testing.T) {
+// TestLoadBaseBudgetMustCoverTheRoutedModel: the wallet check used to skip Qwen when no key was
+// configured — a "text-only deployment" could boot on a small budget. That deployment shape no
+// longer exists (H9), so the multimodal card is ALWAYS the one the budget must cover, and a model
+// id with no compiled card fails at boot instead of at the first request.
+//
+// TestLoadBaseBudgetMustCoverTheRoutedModel:钱包校验此前在没配 Qwen key 时**跳过**它——一个「纯文本
+// 部署」可以靠小预算启动。那种部署形态**已经不存在**(H9),故多模态卡**永远**是预算必须覆盖的那张,
+// 而一个没有编译期卡的 model id 会在**启动时**失败、不是在第一个请求时。
+func TestLoadBaseBudgetMustCoverTheRoutedModel(t *testing.T) {
 	env := minimalEnv()
-	env["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
 	env["MULTIMODAL_UPSTREAM_MODEL"] = "inactive-unknown-model"
-	if _, err := LoadBase(envMap(env)); err != nil {
-		t.Fatalf("Qwen-disabled deployment should validate only active text cost: %v", err)
-	}
-
-	env["DASHSCOPE_API_KEY"] = "qwen-key"
-	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test"
 	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "MULTIMODAL_UPSTREAM_MODEL") {
-		t.Fatalf("enabling Qwen must activate its model checks, got %v", err)
+		t.Fatalf("an unknown routed model must fail at boot, got %v", err)
 	}
 }
 

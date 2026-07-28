@@ -147,11 +147,12 @@ type upstreamProbeTarget struct {
 }
 
 func newUpstreamProber(cfg config.Config) *upstreamProber {
-	targets := []upstreamProbeTarget{{
-		modelsURL: strings.TrimRight(cfg.DeepSeekBaseURL, "/") + "/models",
-		modelID:   cfg.TextUpstreamModel,
-		apiKeys:   append([]string(nil), cfg.DeepSeekAPIKeys...),
-	}}
+	// Probe only what traffic actually reaches. DeepSeek was probed because text routed there;
+	// after H9 nothing does, and a probe against an unrouted upstream spends a live credential on
+	// a network call whose answer changes nothing.
+	// **只探真有流量的那一家。** DeepSeek 此前被探是因为文本走那儿;H9 之后什么也不走,而对着一条
+	// 无流量上游的探测,是拿一把活凭证去打一个「答案改变不了任何事」的网络请求。
+	var targets []upstreamProbeTarget
 	if len(cfg.QwenAPIKeys) > 0 {
 		targets = append(targets, upstreamProbeTarget{
 			modelsURL: strings.TrimRight(cfg.QwenBaseURL, "/") + "/models",

@@ -32,7 +32,10 @@ import (
 // Named fail-fast errors for required env-only secrets, so callers and tests can
 // assert the precise cause without string matching.
 var (
+	// ErrDeepSeekKeyRequired is retained for the ledger/probe path only; nothing routes to DeepSeek.
+	// ErrDeepSeekKeyRequired 只为账本/探测那条路保留;没有任何东西路由到 DeepSeek。
 	ErrDeepSeekKeyRequired = errors.New("DEEPSEEK_API_KEY is required")
+	ErrQwenKeyRequired     = errors.New("DASHSCOPE_API_KEY is required: every chat request routes to the multimodal model")
 )
 
 // LoadBase reads EVERY env key (via the injected getenv so tests stay hermetic),
@@ -46,28 +49,35 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	g := &envReader{getenv: getenv}
 	c := config.Config{}
 
-	// DeepSeek key(s) remain required because the text route is the baseline
-	// capability. Qwen is optional: without a key only multimodal requests return
-	// MULTIMODAL_UNAVAILABLE; text service and readiness continue normally.
-	rawKeys := getenv("DEEPSEEK_API_KEY")
-	if strings.TrimSpace(rawKeys) == "" {
-		return config.Config{}, ErrDeepSeekKeyRequired
-	}
-	for _, k := range strings.Split(rawKeys, ",") {
+	// **The Qwen key is what a deployment now cannot start without** (WRK-082 H9): every chat
+	// request routes to the multimodal flagship, so a gateway with no Qwen credential can serve
+	// nothing at all. Failing at boot beats answering every request with an outage.
+	//
+	// DeepSeek is OPTIONAL and no longer routed. Its key is still read because the spend ledger
+	// carries real historical rows under that provider and an operator may want the breaker and
+	// probe wired while they reconcile — but nothing sends traffic there.
+	//
+	// **Qwen 的 key 才是一个部署没有它就起不来的那个**(H9):每一次 chat 都路由到多模态旗舰,故没有
+	// Qwen 凭证的网关**什么也服务不了**。在启动时失败,好过对每一个请求都答一次故障。
+	//
+	// DeepSeek **可选**且不再被路由。它的 key 仍然读,因为支出账本里有那家 provider 名下的**真实历史
+	// 行**,运营者对账期间可能还想让熔断器与探测挂着——但没有任何流量去那儿。
+	for _, k := range strings.Split(getenv("DEEPSEEK_API_KEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
 			c.DeepSeekAPIKeys = append(c.DeepSeekAPIKeys, k)
 		}
 	}
-	if len(c.DeepSeekAPIKeys) == 0 {
-		return config.Config{}, ErrDeepSeekKeyRequired
+	if len(c.DeepSeekAPIKeys) > 0 {
+		c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
+		validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
 	}
-
-	c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
-	validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
 	for _, k := range strings.Split(getenv("DASHSCOPE_API_KEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
 			c.QwenAPIKeys = append(c.QwenAPIKeys, k)
 		}
+	}
+	if len(c.QwenAPIKeys) == 0 {
+		return config.Config{}, ErrQwenKeyRequired
 	}
 	c.QwenBaseURL = qwenBaseURL(g, getenv)
 
