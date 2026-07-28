@@ -223,11 +223,30 @@ func runTaskFrame(taskID, model, voice string) wsFrame {
 	f.Payload.Task = "tts"
 	f.Payload.Function = "SpeechSynthesizer"
 	f.Payload.Model = model
-	// No `format` knob: the model answers 24kHz/16bit/mono WAV, and a format field on the gateway
-	// wire would be a promise the upstream cannot keep (代拍 C3 — unchanged by the transport swap).
-	// 不设 `format` 旋钮:模型恒返 24kHz/16bit/mono WAV,而网关线缆上的 format 字段是一个上游兑现不了
-	// 的承诺(代拍 C3——不因换传输而改变)。
-	f.Payload.Parameters = map[string]any{"text_type": "PlainText", "voice": voice}
+	// `format` and `sample_rate` are sent EXPLICITLY, and the reason is a defect this file used to
+	// have: without them the engine's default applies, and that default is **raw headerless PCM**
+	// (真机实测——首字节是裸样本,不是 `RIFF`)。The gateway labels the response `audio/wav`, and the
+	// desktop's chunk rejoin calls ParseWAV on it. So the old "no format knob" reasoning shipped
+	// bytes that no player can open and that the joiner rejects — a promise broken in two places at
+	// once, invisible to every mock because a fake answers whatever the code expects.
+	//
+	// **This is NOT a product knob** (代拍 C3 stands: the gateway wire has no format field). It is the
+	// pinning of one internal fact so the label and the bytes agree.
+	//
+	// `format` 与 `sample_rate` **显式**发出,理由是本文件曾有的一个缺陷:不发,引擎按自己的默认来,
+	// 而那个默认是**裸的、无头 PCM**(真机实测——首字节是裸样本,不是 `RIFF`)。而网关把响应标成
+	// `audio/wav`,桌面侧的分块重接又会对它调 ParseWAV。于是「不设 format 旋钮」那套说法发出去的字节
+	// **没有播放器打得开、拼接器也不收**——一次同时毁掉两处承诺,而任何 mock 都看不见,因为假件永远
+	// 答代码期待的东西。
+	//
+	// **这不是产品旋钮**(代拍 C3 依旧成立:网关线缆上没有 format 字段),它只是把一个内部事实钉死,
+	// 使**标签与字节一致**。
+	f.Payload.Parameters = map[string]any{
+		"text_type":   "PlainText",
+		"voice":       voice,
+		"format":      "wav",
+		"sample_rate": 24000,
+	}
 	f.Payload.Input = map[string]any{}
 	return f
 }

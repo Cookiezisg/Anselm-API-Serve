@@ -227,7 +227,15 @@ write_env IMAGE_ENABLED "true"
 write_env IMAGE_DAILY_LIMIT "10"
 write_env SPEECH_ENABLED "true"
 write_env SPEECH_DAILY_LIMIT "50000"
-write_env TTS_DEFAULT_VOICE "Cherry"
+# TTS_DEFAULT_VOICE is deliberately NOT written: the correct value belongs to the MODEL, and the
+# binary already knows it. Pinning it here is how production ended up overriding a working default
+# (`longanhuan_v3.6`) with `Cherry` — a qwen3-tts name that the cosyvoice engine behind
+# `qwen-audio-3.0-tts-flash` rejects outright, so **every** managed synthesis that omitted `voice`
+# failed with `[cosyvoice:]Engine error [411]`. Two places holding one fact is how they drift.
+# TTS_DEFAULT_VOICE 刻意**不写**:正确值属于**模型**,而二进制本来就知道它。在这里钉一个,正是生产用
+# `Cherry` 覆盖掉一个能用的默认值(`longanhuan_v3.6`)的原因——那是 qwen3-tts 那套名字,而
+# `qwen-audio-3.0-tts-flash` 背后的 cosyvoice 引擎**直接拒绝**它,于是**每一次**省略 `voice` 的受管合成
+# 都以 `[cosyvoice:]Engine error [411]` 失败。一个事实存两处,就是它们分岔的方式。
 write_env VIDEO_ENABLED "true"
 write_env VIDEO_DAILY_LIMIT "10"
 # DASHSCOPE_NATIVE_BASE is deliberately NOT written: it derives from the workspace

@@ -53,7 +53,7 @@ GW-INV-55/56/57,不在这里重复。
 - 请求(images):`{model?, prompt, size?, n=1}`——`n>1` 拒(既有关闭联合类纪律);size 由主仓
   三值枚举翻译后的具体值或缺省 1024×1024。
 - 响应(images):`{created, data:[{url}]}`;错误走既有 error envelope 与 code 闭集,新增码逐个登记。
-- 请求(speech):`{model?, input, voice="Cherry", format?}`;响应:音频 URL(直通)或字节(兜底)。
+- 请求(speech):`{model?, input, voice?}`;响应:**裸 `audio/wav` 字节**(H9 真机实测:该模型只有双工 WebSocket,世上不存在可直通的产物 URL)。`voice` 省略时用二进制自己的默认(属于**模型**、不由部署钉),线缆上**没有** format 字段。
 - 能力面:`Image.RouteProfile` / `Speech.RouteProfile`——Available = key && enabled 双半才真
   (`Multimodal.Available` 先例第二、三次应用);`IMAGE_ENABLED` / `SPEECH_ENABLED` 配置项
   (非 secret,入 config.Specs)。

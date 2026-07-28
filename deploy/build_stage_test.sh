@@ -54,7 +54,6 @@ for pair in \
 	'IMAGE_DAILY_LIMIT="10"' \
 	'SPEECH_ENABLED="true"' \
 	'SPEECH_DAILY_LIMIT="50000"' \
-	'TTS_DEFAULT_VOICE="Cherry"' \
 	'VIDEO_ENABLED="true"' \
 	'VIDEO_DAILY_LIMIT="10"' \
 	'RATE_PER_MIN="0"' \
@@ -208,6 +207,12 @@ fi
 # 东西比对过它们,于是 H9b 的 `meta/media-domain` 发了三个提交、服务器每一次都以「stage file set differs
 # from the reviewed payload」拒收——一句离病因十万八千里的部署失败。这条检查就是那次缺失的比对,放在这里
 # 是因为只有这里手上有一个**真的** stage。
+# The stage must NOT pin the default voice: that value belongs to the model and lives in the binary.
+# 舞台**不得**钉默认音色:那个值属于模型、住在二进制里。
+if grep -q '^TTS_DEFAULT_VOICE=' "${STAGE}/gateway.env"; then
+	fail "the stage pins TTS_DEFAULT_VOICE — the model's own default must win (a wrong name fails every synthesis)"
+fi
+
 EXPECTED_FROM_ENTRYPOINT="$(sed -n "/^EXPECTED_FILES=/,/LC_ALL=C sort)/p" "${SCRIPT_DIR}/remote-entrypoint.sh" |
 	grep -oE "'[^']+'" | tr -d "'" | grep -v '%' | LC_ALL=C sort)"
 [[ -n "${EXPECTED_FROM_ENTRYPOINT}" ]] || fail "could not read EXPECTED_FILES out of remote-entrypoint.sh"

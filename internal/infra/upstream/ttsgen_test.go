@@ -208,3 +208,30 @@ func TestInferenceWSURL_DerivesFromTheCredentialOrigin(t *testing.T) {
 		t.Fatal("a malformed base must fail rather than dial something unintended")
 	}
 }
+
+// TestTTS_RunTaskPinsTheAudioFormat: the gateway labels its response `audio/wav` and the desktop's
+// chunk rejoin parses it as WAV, so the bytes MUST be WAV — and they only are because this frame
+// asks for it. Left to the engine's own default the answer is raw headerless PCM, which no player
+// opens and the joiner rejects; on the wire it looks like a perfectly successful synthesis. That is
+// exactly the shape of defect a fake upstream can never show you, so the frame itself is the thing
+// under assertion here.
+//
+// TestTTS_RunTaskPinsTheAudioFormat:网关把响应标成 `audio/wav`、桌面侧分块重接又按 WAV 解析它,故字节
+// **必须**是 WAV——而它们之所以是,只因为这个帧**要了**。交给引擎自己的默认,答案是裸的无头 PCM:没有
+// 播放器打得开、拼接器也不收,而在线缆上它看起来是一次**完全成功**的合成。这正是假上游永远给不出的那类
+// 缺陷,故这里被断言的东西就是**这个帧本身**。
+func TestTTS_RunTaskPinsTheAudioFormat(t *testing.T) {
+	f := runTaskFrame("task-1", "qwen-audio-3.0-tts-flash", "longanhuan_v3.6")
+	if got := f.Payload.Parameters["format"]; got != "wav" {
+		t.Fatalf("format = %v, want wav — the response is labeled audio/wav", got)
+	}
+	if got := f.Payload.Parameters["sample_rate"]; got != 24000 {
+		t.Fatalf("sample_rate = %v, want 24000", got)
+	}
+	// The voice still travels verbatim: a name the caller chose must never be rewritten here, and a
+	// cloned voice's id is exactly such a name.
+	// 音色仍逐字传递:调用方选的名字绝不能在这里被改写,而克隆音色的 id 正是这样一个名字。
+	if got := f.Payload.Parameters["voice"]; got != "longanhuan_v3.6" {
+		t.Fatalf("voice = %v, want it passed through verbatim", got)
+	}
+}
