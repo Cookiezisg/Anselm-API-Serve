@@ -96,7 +96,7 @@ func newSvc(cfg *fakeCfg, q *fakeQuota, up Upstream) *Service {
 }
 
 // TestGenerate_SuccessSettlesDeterministicCost: the happy path settles exactly the frozen
-// per-image cost (reserve == settle) and relays the upstream URL untouched (P13).
+// per-image cost (reserve == settle) and relays the upstream URL untouched.
 func TestGenerate_SuccessSettlesDeterministicCost(t *testing.T) {
 	q := &fakeQuota{}
 	svc := newSvc(enabledCfg(), q, fakeUpstream{url: "https://oss.example/img.png?Expires=1"})

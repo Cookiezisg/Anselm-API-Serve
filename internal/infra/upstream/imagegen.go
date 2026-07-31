@@ -12,7 +12,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 )
 
-// ImageGen is the sync DashScope image-generation client (WRK-082 批B, 代拍 B1):
+// ImageGen is the sync DashScope image-generation client:
 // one POST to the NATIVE multimodal-generation endpoint returns the artifact's
 // 24h OSS URL — no task polling. It follows the package's iron rules: the key is
 // injected only into the outgoing request, upstream body/header text never
@@ -20,7 +20,7 @@ import (
 // sentinel with a provable unbilled classification (explicit 4xx reject = the
 // provider generated nothing; everything ambiguous keeps the charge).
 //
-// ImageGen 是同步 DashScope 图像生成 client(批B,代拍 B1):一次 POST 原生
+// ImageGen 是同步 DashScope 图像生成 client:一次 POST 原生
 // multimodal-generation 端点直接返回产物 24h OSS URL——无任务轮询。守本包铁律:key 只注入
 // 出站请求、上游 body/header 文本绝不经错误透传、非 2xx 一律归一 apierr sentinel 并给出可证明
 // 的 unbilled 分类(显式 4xx 拒=上游没生成;歧义一律保留计费)。
@@ -85,10 +85,10 @@ func (g *ImageGen) GenerateImage(ctx context.Context, model, prompt, size string
 }
 
 // EditImage is GenerateImage with the source image as one more content chunk — literally the same
-// endpoint (官方文档核准 WRK-082 H9). The source arrives already validated as a data URL by the app
+// endpoint (官方文档核准). The source arrives already validated as a data URL by the app
 // layer; this file only puts it on the wire in the documented order (image first, then text).
 //
-// EditImage 是「多一个 content 块」的 GenerateImage——**字面意义上的同一条端点**(H9 官方文档核准)。
+// EditImage 是「多一个 content 块」的 GenerateImage——**字面意义上的同一条端点**(官方文档核准)。
 // 源图抵达时已由 app 层验过是 data URL;本文件只负责按文档给的顺序把它放上线缆(先图后文)。
 func (g *ImageGen) EditImage(ctx context.Context, model, prompt, size, sourceDataURL string) (string, bool, error) {
 	return g.imageCall(ctx, model, prompt, size, sourceDataURL)
@@ -143,10 +143,10 @@ func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDat
 
 // parseDashScopeImageURL extracts the single artifact URL from the sync
 // response (output.choices[0].message.content[*].image) and requires it to be a
-// well-formed absolute https URL — the only thing the gateway relays (P13).
+// well-formed absolute https URL — the only thing the gateway relays.
 //
 // parseDashScopeImageURL 从同步响应取唯一产物 URL,并要求是合法绝对 https URL——网关直通的
-// 唯一之物(P13)。
+// 唯一之物。
 func parseDashScopeImageURL(body []byte) (string, error) {
 	var wire struct {
 		Output struct {

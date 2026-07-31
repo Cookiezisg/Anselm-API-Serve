@@ -1,4 +1,4 @@
-// Package voice holds the cloned-voice vocabulary shared by the use case and its store (WRK-082 H9).
+// Package voice holds the cloned-voice vocabulary shared by the use case and its store.
 //
 // The two sentinels here exist because the SAME two refusals arise in two places that cannot see
 // each other: the service checks both preconditions before it spends money, and the store's
@@ -6,7 +6,7 @@
 // visible. A caller must not be able to tell which layer refused — losing a race and arriving late
 // are the same fact about the world, and one wire code says it.
 //
-// Package voice 持有用例与其 store 共用的克隆音色词汇(H9)。
+// Package voice 持有用例与其 store 共用的克隆音色词汇。
 //
 // 这里的两个 sentinel 存在,是因为**同样的两条拒绝**出现在两个互相看不见的地方:service 在花钱之前
 // 查两个前置条件,而 store 的事务在 BEGIN IMMEDIATE 里**重查**一遍——并发登记只有在那里才终于可见。

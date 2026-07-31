@@ -354,7 +354,7 @@ func (c *client) attempt(ctx context.Context, payload []byte, stream bool, first
 }
 
 // tryOnce performs ONE connect→first-byte attempt: build a fresh upstream
-// request, bound connect→first-byte with an idempotently-disarmed timer (B6),
+// request, bound connect→first-byte with an idempotently-disarmed timer,
 // and on a 2xx peek the first stream byte. It returns the resolved outcome plus
 // any upstream Retry-After hint for the caller's backoff math.
 func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, firstByteTimeout time.Duration, endpoint string) (*Stream, outcome, time.Duration) {
@@ -362,7 +362,7 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, first
 
 	// First-byte timer (GW-INV-27): bounds connect→header→first-byte so an
 	// upstream that connects but never replies cannot pin a slot / virtually
-	// occupy budget. armed makes the disarm IDEMPOTENT (B6): the AfterFunc cancels
+	// occupy budget. armed makes the disarm IDEMPOTENT: the AfterFunc cancels
 	// ONLY while still armed, and every success path clears armed BEFORE the timer
 	// can fire — so the timer can never cancel an already-started stream even if
 	// it fires concurrently with output starting.
@@ -375,7 +375,7 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, first
 	fbTimer := time.AfterFunc(firstByteTimeout, func() {
 		// Only the racer that wins the armed true→false transition acts. If the
 		// success path already disarmed, this CAS fails and the timer is a no-op —
-		// so it can never cancel an already-started stream (B6).
+		// so it can never cancel an already-started stream.
 		if !armed.takeArmed() {
 			return
 		}
@@ -386,7 +386,7 @@ func (c *client) tryOnce(ctx context.Context, payload []byte, stream bool, first
 	// the armed true→false CAS. won==true ⇒ the AfterFunc's own CAS will fail, so
 	// the timer can NEVER cancel upCtx — safe to hand off the stream. won==false ⇒
 	// the timer already won the CAS and WILL cancelUp, so a stream handed off now
-	// would read on a doomed context (B6): the caller must NOT hand it off.
+	// would read on a doomed context: the caller must NOT hand it off.
 	// Keying the decision on the CAS result (not the separate timedOut flag) closes
 	// the gap between the timer winning the CAS and it setting timedOut. Idempotent.
 	disarm := func() bool {

@@ -67,10 +67,10 @@ func (q quotaCfgSource) Limits() appquota.Limits {
 		// ledger and a categoryCap case — but it was never copied here, so the store
 		// read a zero cap and the daily character gate has never once fired. Nothing
 		// was red: every layer was individually correct and the wire between two of
-		// them was simply absent (WRK-082 H1 找到的真 bug).
+		// them was simply absent (找到的真 bug).
 		// SPEECH 有配置、在 /v1/models 里对外宣告、有品类账本、也有 categoryCap 分支——**唯独没有
 		// 被抄到这里**,于是 store 读到的上限恒为 0,那道日字符闸**一次都没生效过**。没有任何东西
-		// 是红的:每一层各自都对,只是其中两层之间的那根线**根本不存在**(H1 找到的真 bug)。
+		// 是红的:每一层各自都对,只是其中两层之间的那根线**根本不存在**(找到的真 bug)。
 		SpeechDailyLimit: c.SpeechDailyLimit,
 		VideoDailyLimit:  c.VideoDailyLimit,
 		VoiceDailyLimit:  c.VoiceDailyLimit,
@@ -87,7 +87,7 @@ type systemClock struct{}
 func (systemClock) Now() time.Time { return time.Now() }
 
 // chatLogger adapts the request-scoped logx logger into chat.Logger. WARN is
-// never sampled (security/B2), so it goes straight through the ctx logger.
+// never sampled (security/), so it goes straight through the ctx logger.
 type chatLogger struct{}
 
 func (chatLogger) Warn(ctx context.Context, msg string, args ...any) {
@@ -233,7 +233,7 @@ func (v videoUpstream) PollVideo(ctx context.Context, taskID string) (appvideo.V
 	return appvideo.VideoStatus{Phase: st.Phase, URL: st.URL}, nil
 }
 
-// --- voice adapters (WRK-082 H9) ---------------------------------------------
+// --- voice adapters ---------------------------------------------
 
 // voiceIDs mints voice ids.
 type voiceIDs struct{}

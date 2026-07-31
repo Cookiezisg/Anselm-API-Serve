@@ -25,7 +25,7 @@ valid_hostname() {
 	local value="$1" label
 	[[ ${#value} -ge 1 && ${#value} -le 253 ]] || return 1
 	[[ "${value}" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
-	[[ "${value}" != .* && "${value}" != *. && "${value}" != *..* ]] || return 1
+	[[ "${value}" !=.* && "${value}" != *. && "${value}" != *..* ]] || return 1
 	IFS=. read -r -a labels <<<"${value}"
 	for label in "${labels[@]}"; do
 		[[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
@@ -195,11 +195,11 @@ write_env MEDIA_LEASE_TTL_SEC "3600"
 # VOICE_UNAVAILABLE,与「本部署关掉了语音」无从分辨。一个只给了代理、没给应用的值,正是**从外面看很
 # 健康**的那类错配:vhost 会应答、证书有效,而唯一需要这个名字的东西从来没拿到它。
 write_env MEDIA_DOMAIN "${MEDIA_DOMAIN}"
-# The three generation capabilities (WRK-082). They ship DEFAULT-OFF in code — a
+# The three generation capabilities. They ship DEFAULT-OFF in code — a
 # capability, not a birthright — which means an unlisted one is simply absent in
 # production no matter how complete its code is. Each carries its own daily cap in
 # its own unit: images per PICTURE, speech per CHARACTER, video per CLIP.
-# 三个生成能力(WRK-082)。代码里默认**关**——能力非天赋——也就是说没在这里列出的那个,无论代码写得
+# 三个生成能力。代码里默认**关**——能力非天赋——也就是说没在这里列出的那个,无论代码写得
 # 多完整,在生产上**根本不存在**。各自带自己的日上限、各自的单位:图像按**张**、语音按**字符**、
 # 视频按**条**。
 write_env IMAGE_ENABLED "true"
@@ -256,7 +256,7 @@ write_meta sha "${SHA}"
 
 (
 	cd "${STAGE}"
-	find . -type f ! -name manifest.sha256 -print0 |
+	find. -type f ! -name manifest.sha256 -print0 |
 		LC_ALL=C sort -z |
 		xargs -0 sha256sum >manifest.sha256
 )

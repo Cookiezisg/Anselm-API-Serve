@@ -8,7 +8,7 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 )
 
-// This guard exists because of a bug it would have caught (WRK-082 H1).
+// This guard exists because of a bug it would have caught.
 //
 // SPEECH_DAILY_LIMIT was read from env, bounded, advertised in /v1/models, given
 // its own quota.Category, its own install_category_daily ledger, its own
@@ -21,7 +21,7 @@ import (
 // SURVIVES the adapter. A test that checks the config parses, or that the store
 // enforces a cap it was handed, cannot see the missing line between them.
 //
-// 这条守卫的存在,是因为它本可以抓住的一个 bug(H1)。
+// 这条守卫的存在,是因为它本可以抓住的一个 bug。
 //
 // SPEECH_DAILY_LIMIT 从 env 读出、设了界、在 /v1/models 里对外宣告、有自己的 quota.Category、
 // 自己的 install_category_daily 账本、自己的 categoryCap 分支、自己的 wire sentinel——然后**没有**

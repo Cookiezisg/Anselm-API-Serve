@@ -23,7 +23,7 @@ import (
 )
 
 // LastSeenRefreshInterval is the minimum gap between last_seen_at writes for one
-// install. The app's in-Go LRU throttles BEFORE the write pool (B9) and the
+// install. The app's in-Go LRU throttles BEFORE the write pool and the
 // store's UPDATE carries a matching WHERE predicate as a backstop, so a burst of
 // auth lookups for one install collapses to one write per interval.
 const LastSeenRefreshInterval = 10 * time.Minute
@@ -48,7 +48,7 @@ type Service struct {
 	// assertions deterministically.
 	now func() time.Time
 
-	// lastSeen is the in-Go refresh throttle (B9): a bounded map of install id →
+	// lastSeen is the in-Go refresh throttle: a bounded map of install id →
 	// last-refresh time. The hot path checks it BEFORE touching the write pool, so
 	// the single serialized writer is never contended by cosmetic timestamp writes.
 	lastSeenMu sync.Mutex
@@ -192,7 +192,7 @@ func gateError(g install.Gate) *apierr.APIError {
 }
 
 // LookupInstall resolves a public install id to its status and opportunistically refreshes
-// last_seen_at — but THROTTLED IN-GO (B9): a bounded LRU of last-refresh stamps
+// last_seen_at — but THROTTLED IN-GO: a bounded LRU of last-refresh stamps
 // gates the write so the single serialized writer sees at most one cosmetic write
 // per install per LastSeenRefreshInterval, NOT a write per auth. A refresh failure
 // never fails the lookup (a missed activity timestamp is purely cosmetic).

@@ -17,11 +17,11 @@ import (
 
 func ptrInt64(v int64) *int64 { return &v }
 
-// qwenInPUSD / qwenOutPUSD are the first-tier rates of the model every chat request now routes to
-// (WRK-082 H9 收敛到一个模型). They are named rather than inlined so a card change fails these tests
-// with a number the reader can trace, instead of a bare mismatch.
+// qwenInPUSD / qwenOutPUSD are the first-tier rates of the one model every chat request routes
+// to. They are named rather than inlined so a card change fails these tests with a number the
+// reader can trace, instead of a bare mismatch.
 //
-// qwenInPUSD / qwenOutPUSD 是**现在每一次 chat 都路由过去的那个模型**的第一档费率(H9 收敛到一个
+// qwenInPUSD / qwenOutPUSD 是**每一次 chat 都路由过去的那个模型**的第一档费率(全仓收敛到一个
 // 模型)。写成具名常量而不是内联数字,使换卡时这些测试报出的是一个**读者追得回去**的数,而不是一次
 // 光秃秃的不匹配。
 const (
@@ -472,7 +472,7 @@ func TestSettleErrorObservability_B2(t *testing.T) {
 	svc.Handle(context.Background(), HandleInput{InstallID: "t", Body: []byte(goodBody)}, sink)
 	wg.Wait()
 	if mx.settleFailures() != 1 {
-		t.Fatalf("a failed settle must be COUNTED (B2), got %d", mx.settleFailures())
+		t.Fatalf("a failed settle must be COUNTED, got %d", mx.settleFailures())
 	}
 }
 
@@ -719,15 +719,15 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			var upstreamBody, wantClientBody string
 			if tc.stream {
-				upstreamBody = `data: {"id":"chunk-1", "model" : "` + tc.upstreamModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+				upstreamBody = `data: {"id":"chunk-1", "model": "` + tc.upstreamModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
 					`data: {"model":"` + tc.upstreamModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
 					"data: [DONE]\n"
-				wantClientBody = `data: {"id":"chunk-1", "model" : "` + publicModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+				wantClientBody = `data: {"id":"chunk-1", "model": "` + publicModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
 					`data: {"model":"` + publicModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
 					"data: [DONE]\n"
 			} else {
-				upstreamBody = `{"id":"cmpl-1", "model" : "` + tc.upstreamModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
-				wantClientBody = `{"id":"cmpl-1", "model" : "` + publicModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+				upstreamBody = `{"id":"cmpl-1", "model": "` + tc.upstreamModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+				wantClientBody = `{"id":"cmpl-1", "model": "` + publicModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
 			}
 
 			cfg := testCfg()

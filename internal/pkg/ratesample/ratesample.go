@@ -1,7 +1,7 @@
 // Package ratesample computes a recent-window QPS and error-rate server-side,
 // independent of who reads it.
 //
-// WHY (B16): the legacy design kept ONE mutable sampler that every /api/overview
+// WHY: the legacy design kept ONE mutable sampler that every /api/overview
 // poll overwrote by diffing cumulative counters against the last poll's snapshot.
 // Two concurrent pollers stole each other's "last" point, halving/spiking the dt
 // and corrupting QPS. Here observation (Observe) and reading (Snapshot) are fully
@@ -105,7 +105,7 @@ func (s *Sampler) Observe(status int) {
 }
 
 // Snapshot returns the current sliding-window rates. Concurrent callers each get
-// a correct, independent view (B16 invariant).
+// a correct, independent view (invariant).
 func (s *Sampler) Snapshot() Snapshot {
 	nowSec := s.now().Unix()
 	s.mu.Lock()

@@ -104,7 +104,7 @@ func TestPoWEnforceInvalid(t *testing.T) {
 	}
 }
 
-// TestPoWShadowDisjointLabels (B12): shadow always admits, and every shadow outcome
+// TestPoWShadowDisjointLabels: shadow always admits, and every shadow outcome
 // uses a DISJOINT label — never double-counting "missing"/"failed" alongside a
 // shadow label. Exactly one label per request.
 func TestPoWShadowDisjointLabels(t *testing.T) {
@@ -121,7 +121,7 @@ func TestPoWShadowDisjointLabels(t *testing.T) {
 		t.Fatalf("shadow missing labels = %v want exactly {shadow_missing:1}", mx.counts)
 	}
 	if mx.counts["missing"] != 0 {
-		t.Fatal("B12: shadow must NOT also emit the enforce 'missing' label")
+		t.Fatal(": shadow must NOT also emit the enforce 'missing' label")
 	}
 
 	// shadow + invalid → admit + WARN, exactly one "shadow_invalid" (NOT "failed").
@@ -136,7 +136,7 @@ func TestPoWShadowDisjointLabels(t *testing.T) {
 		t.Fatalf("shadow invalid labels = %v want exactly {shadow_invalid:1}", mx2.counts)
 	}
 	if mx2.counts["failed"] != 0 {
-		t.Fatal("B12: shadow must NOT also emit the enforce 'failed' label")
+		t.Fatal(": shadow must NOT also emit the enforce 'failed' label")
 	}
 	assertShadowWarn(t, &buf)
 }

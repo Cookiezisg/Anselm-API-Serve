@@ -34,7 +34,7 @@ type ConfigSource interface {
 // Repository is the atomic-op port. Each method is ONE aggregate transaction in
 // infra/store/quotastore (BEGIN IMMEDIATE on the writer); *sql.Tx never leaks
 // here. Denials surface as the typed Err* sentinels above; the Reservation's
-// SublimitApplied flag is set by the store IFF the gated +1 fired (B1).
+// SublimitApplied flag is set by the store IFF the gated +1 fired.
 type Repository interface {
 	Reserve(ctx context.Context, installID string, plan billing.Plan, p quota.Period, lim Limits) (*quota.Reservation, error)
 	Settle(ctx context.Context, r *quota.Reservation, actualPUSD int64) error
@@ -112,7 +112,7 @@ func mapReserveErr(err error) error {
 }
 
 // Settle reconciles a reservation against actual usage. Errors are returned (not
-// swallowed) so the caller can count SettleFailures + WARN (B2): a failed settle
+// swallowed) so the caller can count SettleFailures + WARN: a failed settle
 // must be observable, not silently left for the orphan scanner to finalize at the
 // full reservation.
 func (s *Service) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int64) error {
@@ -120,7 +120,7 @@ func (s *Service) Settle(ctx context.Context, r *quota.Reservation, actualPUSD i
 }
 
 // Rollback reverses all reservations for a pre-output failure. Returned errors
-// are likewise the caller's to observe (B2).
+// are likewise the caller's to observe.
 func (s *Service) Rollback(ctx context.Context, r *quota.Reservation) error {
 	return s.repo.Rollback(ctx, r)
 }

@@ -50,7 +50,7 @@ type Authenticator interface {
 // Quota is the accounting port. Satisfied by *app/quota.Service. The use case
 // snapshots the period ONCE (entry) and threads the *Reservation through
 // settle/rollback unchanged (GW-INV-05). Settle/Rollback errors are RETURNED
-// (not swallowed) so the use case can count + WARN them (B2).
+// (not swallowed) so the use case can count + WARN them.
 type Quota interface {
 	SnapshotPeriod(now time.Time) domquota.Period
 	Reserve(ctx context.Context, installID string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error)
@@ -92,7 +92,7 @@ type UpstreamStream interface {
 
 // RateLimiter is the per-install minute bucket. Satisfied by
 // *infra/ratelimit.RateLimiter. Allow meters one request; SetKeyLimit is the M2
-// throttle primitive the anomaly Throttle reaches through (same bucket, B1).
+// throttle primitive the anomaly Throttle reaches through (same bucket).
 type RateLimiter interface {
 	Allow(key string) bool
 	SetKeyLimit(key string, limit int, until time.Time)
@@ -127,7 +127,7 @@ type Clock interface {
 }
 
 // Logger is the request-scoped structured logger port. WARN is never sampled
-// (security/B2 events use it directly); the use case never logs prompt/key text.
+// (security/ events use it directly); the use case never logs prompt/key text.
 type Logger interface {
 	Warn(ctx context.Context, msg string, args ...any)
 }
@@ -140,8 +140,8 @@ type Metrics interface {
 	Inflight(n int)                                     // current N_global occupancy gauge.
 	Upstream(provider billing.Provider, outcome string) // gateway_upstream_requests_total{provider,outcome}.
 	BillingDrift(provider billing.Provider)             // actual provider cost exceeded its hard quote.
-	SettleFailure()                                     // a detached Settle returned an error (B2).
-	RollbackFailure()                                   // a detached Rollback returned an error (B2).
+	SettleFailure()                                     // a detached Settle returned an error.
+	RollbackFailure()                                   // a detached Rollback returned an error.
 }
 
 // WaitGroupLike is the REL-4 shutdown barrier the detached settle/rollback

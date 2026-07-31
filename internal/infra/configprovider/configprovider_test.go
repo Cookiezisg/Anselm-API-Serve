@@ -196,7 +196,7 @@ func TestLoadBaseInputTokenCapZeroCompatibilityValue(t *testing.T) {
 func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	env := minimalEnv()
 	env["DASHSCOPE_BASE_URL"] = "https://x.example/"
-	env["DASHSCOPE_API_KEY"] = " sk-1 , , sk-2 "
+	env["DASHSCOPE_API_KEY"] = " sk-1,, sk-2 "
 	c := mustLoad(t, env)
 	if c.QwenBaseURL != "https://x.example" {
 		t.Fatalf("base url not trimmed: %q", c.QwenBaseURL)
@@ -207,10 +207,10 @@ func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 }
 
 // TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived: the Qwen credential went from optional to
-// mandatory when every chat request started routing to the multimodal model (WRK-082 H9). A
+// mandatory when every chat request started routing to the multimodal model. A
 // deployment without it can answer nothing, so boot is the honest place to fail — not per request.
 //
-// TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived:当每一次 chat 都开始路由到多模态模型时(H9),
+// TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived:当每一次 chat 都开始路由到多模态模型时,
 // Qwen 凭证从**可选**变成了**必需**。没有它的部署什么也答不了,故**启动**才是诚实的失败点——不是
 // 每个请求失败一次。
 func TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived(t *testing.T) {
@@ -219,7 +219,7 @@ func TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived(t *testing.T) {
 	if _, err := LoadBase(envMap(env)); !errors.Is(err, ErrQwenKeyRequired) {
 		t.Fatalf("a deployment with no Qwen key must refuse to start, got %v", err)
 	}
-	env["DASHSCOPE_API_KEY"] = " qwen-a, ,qwen-b "
+	env["DASHSCOPE_API_KEY"] = " qwen-a,,qwen-b "
 	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test-1"
 	c := mustLoad(t, env)
 	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[1] != "qwen-b" {
@@ -242,7 +242,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 		// 凭证是启动门禁,因为**每一条**路由都要它:没有它的网关什么也答不了,故必须在**启动时**
 		// 失败,而不是每个请求失败一次。
 		{"missing Qwen key", func(m map[string]string) { delete(m, "DASHSCOPE_API_KEY") }, ErrQwenKeyRequired, ""},
-		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "  , " }, ErrQwenKeyRequired, ""},
+		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = ", " }, ErrQwenKeyRequired, ""},
 		{"DashScope base URL userinfo", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "https://secret@example.com/compatible-mode/v1" }, nil, "absolute HTTPS base URL"},
 		{"Qwen key needs endpoint", func(m map[string]string) { delete(m, "DASHSCOPE_WORKSPACE_ID") }, nil, "DASHSCOPE_API_KEY requires"},
 		{"invalid workspace id", func(m map[string]string) { m["DASHSCOPE_WORKSPACE_ID"] = "bad.example" }, nil, "DASHSCOPE_WORKSPACE_ID"},
@@ -287,11 +287,11 @@ func TestLoadBaseFailFast(t *testing.T) {
 
 // TestLoadBaseBudgetMustCoverTheRoutedModel: the wallet check used to skip Qwen when no key was
 // configured — a "text-only deployment" could boot on a small budget. That deployment shape no
-// longer exists (H9), so the multimodal card is ALWAYS the one the budget must cover, and a model
+// longer exists, so the multimodal card is ALWAYS the one the budget must cover, and a model
 // id with no compiled card fails at boot instead of at the first request.
 //
 // TestLoadBaseBudgetMustCoverTheRoutedModel:钱包校验此前在没配 Qwen key 时**跳过**它——一个「纯文本
-// 部署」可以靠小预算启动。那种部署形态**已经不存在**(H9),故多模态卡**永远**是预算必须覆盖的那张,
+// 部署」可以靠小预算启动。那种部署形态**已经不存在**,故多模态卡**永远**是预算必须覆盖的那张,
 // 而一个没有编译期卡的 model id 会在**启动时**失败、不是在第一个请求时。
 func TestLoadBaseBudgetMustCoverTheRoutedModel(t *testing.T) {
 	env := minimalEnv()
@@ -643,7 +643,7 @@ func TestProviderDebugMasksLoadButNotConfigured(t *testing.T) {
 	if eff.MonthlyQuota != config.MaxMonthlyQuota {
 		t.Fatalf("debug MonthlyQuota = %d, want ceiling", eff.MonthlyQuota)
 	}
-	// ...while the operator's real numbers survive untouched behind it.
+	//...while the operator's real numbers survive untouched behind it.
 	cfgd := p.Configured()
 	if cfgd.RatePerMin != 8 || cfgd.DailySublimit != 100 || cfgd.MonthlyQuota != 5000 {
 		t.Fatalf("configured values corrupted by the mask: %+v", cfgd)
@@ -689,7 +689,7 @@ func TestHotFlipToProductionArmsConfiguredValuesAndBack(t *testing.T) {
 		t.Fatalf("mode not persisted: %v", ss.data)
 	}
 
-	// ...and back, still without losing anything.
+	//...and back, still without losing anything.
 	if _, err := p.ApplyOverrides(context.Background(),
 		map[string]string{"GATEWAY_MODE": "debug"}, ss); err != nil {
 		t.Fatalf("flip back to debug: %v", err)

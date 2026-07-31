@@ -167,7 +167,7 @@ staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能
 | 表 | 状态闭集 | 关键唯一性 / 索引 |
 |---|---|---|
 | `media_uploads` | `open`,`completed`,`aborted`,`expired` | `idx_media_uploads_expiry(state,expires_at)`；`idx_media_uploads_install(install_id,created_at)` |
-| `media_leases` | `active`,`expired`,`deleted` | `upload_id UNIQUE`、`fetch_token_hash UNIQUE`；expiry/install 索引。**逐 lease 撤销**(H9 `RevokeLease`):音色登记把取回 URL 交给上游**恰好取一次**,取完即置 `expired`——那个 URL 是持有型凭据,**撤销比缩短 TTL 紧且不依赖时钟**;按归属、幂等(未知/别人的/已退役一律返 false 而非报错) |
+| `media_leases` | `active`,`expired`,`deleted` | `upload_id UNIQUE`、`fetch_token_hash UNIQUE`；expiry/install 索引。**逐 lease 撤销**(`RevokeLease`):音色登记把取回 URL 交给上游**恰好取一次**,取完即置 `expired`——那个 URL 是持有型凭据,**撤销比缩短 TTL 紧且不依赖时钟**;按归属、幂等(未知/别人的/已退役一律返 false 而非报错) |
 
 `received_bytes` 是进度，不是完成证明；完成时必须从暂存文件重算 SHA-256 后才能转 `completed` 并创建 lease。
 过期/删除必须先撤销 DB capability，再删除文件、最后 acknowledge；崩溃恢复会截去 fsync 后但 cursor 未推进的尾部，绝不因无法证明成功而把媒体跨 install 复用。

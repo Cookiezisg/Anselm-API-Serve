@@ -78,17 +78,17 @@ func (c *Catalog) List() model.ListEnvelope {
 					Available:   cfg.MultimodalAvailable(),
 				},
 				// Image generation follows the same whole-path rule: the flag is true only
-				// when the capability is on AND a credential exists (WRK-082 批B).
-				// 图像生成同守整条路法则:能力开 **且** 凭证在才 true(批B)。
+				// when the capability is on AND a credential exists.
+				// 图像生成同守整条路法则:能力开 **且** 凭证在才 true。
 				ImageGeneration: &model.GenProfile{
 					Available:  cfg.ImageAvailable(),
 					DailyLimit: cfg.ImageDailyLimit,
 				},
 				// Speech synthesis, same whole-path rule and its OWN switch: an operator may
 				// run one capability without the other, so a client must not infer either
-				// from the other (WRK-082 批C). DailyLimit here is CHARACTERS.
+				// from the other. DailyLimit here is CHARACTERS.
 				// 语音合成同守整条路法则、且是**自己的**开关:运营者可能只开其中一个,客户端不得
-				// 从一个推另一个(批C)。此处 DailyLimit 的单位是**字符**。
+				// 从一个推另一个。此处 DailyLimit 的单位是**字符**。
 				SpeechGeneration: &model.GenProfile{
 					Available:  cfg.SpeechAvailable(),
 					DailyLimit: cfg.SpeechDailyLimit,
@@ -96,9 +96,9 @@ func (c *Catalog) List() model.ListEnvelope {
 				// Video is the third generation capability, same whole-path rule with one
 				// extra half: the handle-signing key. A gateway that could submit but never
 				// let the caller poll would advertise a feature that eats a daily clip and
-				// returns nothing (WRK-082 H1). DailyLimit here is CLIPS.
+				// returns nothing. DailyLimit here is CLIPS.
 				// 视频是第三个生成能力,同守整条路法则、外加一半:句柄签名密钥。一个「提交得了、却
-				// 永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能(H1)。
+				// 永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。
 				// 此处 DailyLimit 的单位是**条**。
 				VideoGeneration: &model.GenProfile{
 					Available:  cfg.VideoAvailable(),

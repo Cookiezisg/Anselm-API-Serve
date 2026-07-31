@@ -56,7 +56,7 @@ type Metrics struct {
 	TokenThrottled       prometheus.Counter     // gateway_token_throttled_total (M2 auto-throttle activations)
 	TokensThrottledNow   prometheus.Gauge       // gateway_tokens_throttled (installs CURRENTLY throttled)
 
-	// SettleFailures / RollbackFailures (B2 NEW): a failed terminal write used to
+	// SettleFailures / RollbackFailures (NEW): a failed terminal write used to
 	// be swallowed. The orphan scanner conservatively finalizes an aged open row at
 	// its full reservation, so these counters expose the loss of actual-usage
 	// reconciliation instead of letting it vanish into a silent finalize.
@@ -154,11 +154,11 @@ func New() *Metrics {
 		}),
 		SettleFailures: f.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_settle_failures_total",
-			Help: "Failed ledger Settle calls (B2): exposes reservations that may later be conservatively finalized at their full quote instead of actual usage.",
+			Help: "Failed ledger Settle calls: exposes reservations that may later be conservatively finalized at their full quote instead of actual usage.",
 		}),
 		RollbackFailures: f.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_rollback_failures_total",
-			Help: "Failed ledger Rollback calls (B2): a non-nil Rollback error, formerly swallowed — keeps a stuck reservation visible.",
+			Help: "Failed ledger Rollback calls: a non-nil Rollback error, formerly swallowed — keeps a stuck reservation visible.",
 		}),
 		InstallPoW: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_install_pow_total",

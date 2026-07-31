@@ -122,20 +122,20 @@ var (
 	// (IMAGE_ENABLED off or no upstream credential). Distinct from a quota denial:
 	// retrying tomorrow cannot repair a disabled capability.
 	ErrImageUnavailable = NewError(statusServiceUnavailable, "IMAGE_UNAVAILABLE", "image generation is not available on this deployment")
-	// ErrImageSourceInvalid — the edit source is not a base64 data URL (WRK-082 H9). It is a SHAPE
+	// ErrImageSourceInvalid — the edit source is not a base64 data URL. It is a SHAPE
 	// refusal, not a validation nicety: ADR 0011 forbids a managed media input carrying a scheme or
 	// a host, because an address this gateway would fetch is an SSRF primitive aimed at our own
 	// network. Requiring `data:` IS the mitigation — a data URL cannot be fetched, it is the bytes.
 	//
-	// ErrImageSourceInvalid——改图的源不是 base64 data URL(H9)。这是一次**形状**拒绝、不是校验的
+	// ErrImageSourceInvalid——改图的源不是 base64 data URL。这是一次**形状**拒绝、不是校验的
 	// 客套:ADR 0011 禁止带 scheme 或 host 的受管媒体输入,因为一个本网关会去取的地址,是指向**我们自己
 	// 网络**的 SSRF 原语。要求 `data:` **就是**那个缓解——data URL 取不了,它就是字节本身。
 	ErrImageSourceInvalid = NewError(statusBadRequest, "IMAGE_SOURCE_INVALID", "the edit source must be a base64 data URL, not an address")
-	// ErrVideoFrameInvalid — the image-to-video first frame is not a base64 data URL (WRK-082 H9).
+	// ErrVideoFrameInvalid — the image-to-video first frame is not a base64 data URL.
 	// Its own code rather than reusing IMAGE_SOURCE_INVALID: a client animating a picture that gets
 	// told "the EDIT source is invalid" would go looking at the wrong request.
 	//
-	// ErrVideoFrameInvalid——图生视频的首帧不是 base64 data URL(H9)。**自己的码**而非复用
+	// ErrVideoFrameInvalid——图生视频的首帧不是 base64 data URL。**自己的码**而非复用
 	// IMAGE_SOURCE_INVALID:一个在让图动起来的客户端被告知「**改图**的源无效」,会去查错的那个请求。
 	ErrVideoFrameInvalid = NewError(statusBadRequest, "VIDEO_FRAME_INVALID", "the first frame must be a base64 data URL, not an address")
 	// ErrVoiceUnavailable — voice cloning is not configured on this deployment (it rides the speech
@@ -167,7 +167,7 @@ var (
 	// ErrVoiceNotFound — no such voice for this install.
 	ErrVoiceNotFound = NewError(statusNotFound, "VOICE_NOT_FOUND", "voice not found")
 	// ErrImageQuotaExhausted — the per-install daily image-generation cap is
-	// reached (WRK-082 P8). Distinct from RATE_LIMITED (a pacing denial) and from
+	// reached. Distinct from RATE_LIMITED (a pacing denial) and from
 	// QUOTA_EXHAUSTED (the monthly request entitlement): the client should offer
 	// "try again tomorrow", not back off and retry.
 	ErrImageQuotaExhausted = NewError(statusTooManyRequests, "IMAGE_QUOTA_EXHAUSTED", "daily image generation quota reached, try again tomorrow")
@@ -183,7 +183,7 @@ var (
 	// 无从区分。
 	ErrTTSUnavailable = NewError(statusServiceUnavailable, "TTS_UNAVAILABLE", "speech synthesis is not available on this deployment")
 	// ErrTTSQuotaExhausted — the per-install daily speech-character cap is
-	// reached (WRK-082 P8). The image twin's reasoning: distinct from
+	// reached. The image twin's reasoning: distinct from
 	// RATE_LIMITED (pacing) and QUOTA_EXHAUSTED (the monthly entitlement)
 	// because the honest client action is "try again tomorrow".
 	ErrTTSQuotaExhausted = NewError(statusTooManyRequests, "TTS_QUOTA_EXHAUSTED", "daily speech synthesis quota reached, try again tomorrow")
@@ -194,7 +194,7 @@ var (
 	// video would degrade the wrong feature.
 	ErrVideoUnavailable = NewError(statusServiceUnavailable, "VIDEO_UNAVAILABLE", "video generation is not available on this deployment")
 	// ErrVideoQuotaExhausted — the per-install daily video-CLIP cap is reached
-	// (WRK-082 H1, 用户拍板 10/day). The unit is clips, not seconds: the honest
+	// (用户拍板 10/day). The unit is clips, not seconds: the honest
 	// client message is "you have used today's 10 videos", not a duration budget.
 	ErrVideoQuotaExhausted = NewError(statusTooManyRequests, "VIDEO_QUOTA_EXHAUSTED", "daily video generation quota reached, try again tomorrow")
 

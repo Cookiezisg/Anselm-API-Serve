@@ -125,7 +125,7 @@ func TestConcurrentSnapshotsAgree(t *testing.T) {
 	want := Snapshot{QPS: 5.0, ErrorRate: 0, WindowSec: 10} // 50/10
 	for r, got := range results {
 		if got != want {
-			t.Fatalf("reader %d got %+v, want %+v (B16: concurrent reads must agree)", r, got, want)
+			t.Fatalf("reader %d got %+v, want %+v (concurrent reads must agree)", r, got, want)
 		}
 	}
 }

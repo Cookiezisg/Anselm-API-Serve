@@ -133,7 +133,7 @@ func TestImageGen_Busy429(t *testing.T) {
 }
 
 // TestImageGen_MalformedArtifactURLRejected: a non-https or relative artifact URL never
-// reaches the client (the gateway relays only well-formed absolute https URLs, P13).
+// reaches the client (the gateway relays only well-formed absolute https URLs).
 func TestImageGen_MalformedArtifactURLRejected(t *testing.T) {
 	bad := `{"output":{"choices":[{"message":{"content":[{"image":"http://insecure.example/a.png"}]}}]}}`
 	srv := fakeDashScope(t, http.StatusOK, bad)

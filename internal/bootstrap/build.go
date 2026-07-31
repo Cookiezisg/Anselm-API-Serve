@@ -59,9 +59,9 @@ type App struct {
 	cfg *configprovider.Provider
 	db  *sqlite.DB
 
-	bizSrv   *http.Server // business :8080
-	adminSrv *http.Server // admin/metrics :9090 (loopback-only)
-	dashSrv  *http.Server // dashboard :8081 (loopback-only; always mounted)
+	bizSrv   *http.Server // business:8080
+	adminSrv *http.Server // admin/metrics:9090 (loopback-only)
+	dashSrv  *http.Server // dashboard:8081 (loopback-only; always mounted)
 
 	bgWG       *sync.WaitGroup
 	loopCtx    context.Context
@@ -223,7 +223,7 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	providers := chatprovider.New(qwenClient)
 
 	// 9) Shared rate limiter: the SAME bucket the chat RL gate AND the M2 throttle
-	// reach through, so SetKeyLimit tightens the bucket Allow meters (B1). An LRU
+	// reach through, so SetKeyLimit tightens the bucket Allow meters. An LRU
 	// eviction bumps the churn counter (rate-limit-skirt signal).
 	rl := ratelimit.New(effective.RatePerMin)
 	rl.SetOnEvict(func(string) { mx.RateLimiterEvictions.Inc() })
@@ -264,11 +264,11 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:   systemClock{},
 		Metrics: chatMetrics{m: mx, inflight: inflight},
 	})
-	// Image generation (WRK-082 批B): the sync native-DashScope client over ONE key —
+	// Image generation: the sync native-DashScope client over ONE key —
 	// no failover pool, a deterministic reservation maps to a single upstream attempt.
 	// Constructed unconditionally; the service itself answers Available() from the
 	// live config (capability off → IMAGE_UNAVAILABLE, never a nil deref).
-	// 图像生成(批B):单 key 上的同步原生 DashScope client——无 failover 池,确定性预留对应单次
+	// 图像生成:单 key 上的同步原生 DashScope client——无 failover 池,确定性预留对应单次
 	// 上游尝试。无条件构造;可用性由服务自己按 live 配置回答(能力关 → IMAGE_UNAVAILABLE,绝无 nil 解引用)。
 	imageKey := ""
 	if len(effective.QwenAPIKeys) > 0 {
@@ -283,10 +283,10 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:    systemClock{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
-	// Speech synthesis (WRK-082 批C): the image twin, same key and same native
+	// Speech synthesis: the image twin, same key and same native
 	// origin, its own capability switch. Also unconditional — Available() answers
 	// from live config (capability off → TTS_UNAVAILABLE).
-	// 语音合成(批C):图像的孪生件,同一把 key、同一个原生 origin,自己的能力开关。同样无条件
+	// 语音合成:图像的孪生件,同一把 key、同一个原生 origin,自己的能力开关。同样无条件
 	// 构造——可用性由 Available() 按 live 配置回答(能力关 → TTS_UNAVAILABLE)。
 	// One store instance, two consumers: TTS resolves a voice handle it did not create, and voice
 	// creates handles it does not speak with. Two instances would be two truths about one table.
@@ -303,10 +303,10 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Clock:    systemClock{},
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
-	// Video generation (WRK-082 H1): the async sibling. Same key, same native origin,
+	// Video generation: the async sibling. Same key, same native origin,
 	// its own capability switch — and the only one whose client comes BACK, which is
 	// why its handle is signed. Unconditional construction like the other two.
-	// 视频生成(H1):异步的那个兄弟。同一把 key、同一个原生 origin、自己的能力开关——也是唯一一个
+	// 视频生成:异步的那个兄弟。同一把 key、同一个原生 origin、自己的能力开关——也是唯一一个
 	// 客户端**会回来**的能力,故它的句柄要签名。与另两个一样无条件构造。
 	videoSvc := appvideo.New(appvideo.Deps{
 		Auth:     installSvc,
@@ -318,11 +318,11 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		Metrics:  chatMetrics{m: mx, inflight: inflight},
 	})
 
-	// Voice cloning (WRK-082 H9): the enrollment sibling — same key and origin, but the ONLY one
+	// Voice cloning: the enrollment sibling — same key and origin, but the ONLY one
 	// that leaves something behind. It rides the speech capability switch (a deployment that cannot
 	// speak has no use for a voice), and like the others it is constructed unconditionally so
 	// Available() answers from live config rather than a nil deref.
-	// 音色克隆(H9):登记那个兄弟——同一把 key、同一个 origin,但**唯一一个会留下东西**的。它搭在语音
+	// 音色克隆:登记那个兄弟——同一把 key、同一个 origin,但**唯一一个会留下东西**的。它搭在语音
 	// 能力开关上(说不了话的部署要音色没有用),且与其余一样无条件构造,使可用性由 Available() 按 live
 	// 配置回答、而不是一次 nil 解引用。
 	voiceSvc := appvoice.New(appvoice.Deps{

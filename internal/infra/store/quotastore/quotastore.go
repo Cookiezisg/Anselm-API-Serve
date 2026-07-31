@@ -100,7 +100,7 @@ func (s *Store) Reserve(ctx context.Context, installID string, plan billing.Plan
 			r.SublimitApplied = true
 		}
 
-		// Gate 2c (WRK-082 批B): the per-category daily unit ledger. An image plan consumes
+		// Gate 2c: the per-category daily unit ledger. An image plan consumes
 		// `units` = the plan's own unit (image count / speech characters) against that category's
 		// cap inside this SAME transaction; a disabled limit (0) still records consumption so
 		// enabling the cap later starts from truth.
@@ -291,7 +291,7 @@ func (s *Store) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int
 }
 
 // Rollback exactly reverses every reservation for a definitely non-billable
-// pre-output failure. No MAX(0, ...) is used: missing rows or underflow are
+// pre-output failure. No MAX(0,...) is used: missing rows or underflow are
 // accounting corruption and roll the entire transaction back, including CAS.
 func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
 	if err := validateReservation(r); err != nil {

@@ -79,15 +79,15 @@ func post(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
 // TestHandler_SuccessIsRawAudio: the body IS the audio (OpenAI's own shape for this endpoint), and
 // an omitted voice reaches the upstream as the configured default.
 //
-// The envelope changed in H9 because the upstream did: a duplex WebSocket streams frames, so there
-// is no artifact URL for P13's passthrough to relay. Asserting the content type matters as much as
+// The envelope follows the upstream: a duplex WebSocket streams frames, so there
+// is no artifact URL for the passthrough to relay. Asserting the content type matters as much as
 // asserting the bytes — a client that receives WAV bytes labeled `application/json` cannot play
 // them without sniffing.
 //
 // TestHandler_SuccessIsRawAudio:响应体**就是**音频(OpenAI 在这条端点上自己的形状),且省略 voice
 // 时抵达上游的是配置的默认音色。
 //
-// 信封在 H9 变了是因为上游变了:双工 WebSocket 流的是帧,没有产物 URL 可供 P13 直通。**断言
+// 信封跟着上游走:双工 WebSocket 流的是帧,没有产物 URL 可供直通。**断言
 // content type 与断言字节同样要紧**——一个收到被标成 `application/json` 的 WAV 字节的客户端,不去
 // 嗅探就播不了。
 func TestHandler_SuccessIsRawAudio(t *testing.T) {
@@ -109,10 +109,10 @@ func TestHandler_SuccessIsRawAudio(t *testing.T) {
 
 // TestHandler_ClosedShapeRejections: every invalid-shape axis dies as BAD_REQUEST before any
 // money path runs. `format` is in this list on purpose: the upstream always answers WAV, so
-// accepting the field would be a promise it cannot keep (代拍 C3) — DisallowUnknownFields is
+// accepting the field would be a promise it cannot keep — DisallowUnknownFields is
 // what makes that refusal explicit rather than a silently ignored parameter.
 //
-// `format` 刻意在这张表里:上游恒返 WAV,收下这个字段就是许一个它兑现不了的诺(代拍 C3)——
+// `format` 刻意在这张表里:上游恒返 WAV,收下这个字段就是许一个它兑现不了的诺——
 // DisallowUnknownFields 让这次拒绝是明说的,而不是一个被静默忽略的参数。
 func TestHandler_ClosedShapeRejections(t *testing.T) {
 	long := strings.Repeat("好", maxInputChars+1)
@@ -120,7 +120,7 @@ func TestHandler_ClosedShapeRejections(t *testing.T) {
 		"badJSON":        `{`,
 		"unknownField":   `{"input":"hi","speed":1.2}`,
 		"formatRejected": `{"input":"hi","format":"mp3"}`,
-		"emptyInput":     `{"input":"   "}`,
+		"emptyInput":     `{"input":" "}`,
 		"missingInput":   `{"voice":"longanhuan_v3.6"}`,
 		"oversizedInput": `{"input":"` + long + `"}`,
 		"oversizedVoice": `{"input":"hi","voice":"` + strings.Repeat("v", maxVoiceChars+1) + `"}`,

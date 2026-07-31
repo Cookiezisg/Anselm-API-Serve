@@ -11,14 +11,14 @@
 
 1. **正确性 > 架构纯度 > 速度**。这是花 operator 真钱的网关:记账永不超卖、崩溃只多扣不少扣、key 永不出端、admin 面绝不公网。不变式登记册 [`docs/references/backend/invariants.md`](docs/references/backend/invariants.md)(GW-INV-NN)是一切改动的**验收准绳**——动代码前先看它要守哪几条。
 2. **文档与代码物理同步**(doc-code parity):碰了 GOVERNANCE §7 触发表里的东西(API/config/DB/error-code/不变量/行为/provider·rate-card·pUSD 账务/ADR/前端 wire)却没在**同一提交**同步对应文档 → 改动**未完成**。
-3. **每片绿了再下一片**:`go build ./... && go vet ./... && gofmt -l(空) && go test -race ./...` 全绿 + 相关 GW-INV 验收过，才算完成。
+3. **每片绿了再下一片**:`go build./... && go vet./... && gofmt -l(空) && go test -race./...` 全绿 + 相关 GW-INV 验收过，才算完成。
 
-## 2. 依赖方向铁律(import-lint 强制，见 architecture §3 + .golangci.yml depguard)
+## 2. 依赖方向铁律(import-lint 强制，见 architecture §3 +.golangci.yml depguard)
 
 ```
 cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
                  └─▶ infra ───────────────▶ domain
-        transport, app, infra, domain  ─▶ pkg
+        transport, app, infra, domain ─▶ pkg
 ```
 - `domain` 只依赖 stdlib + pkg;`app` 在本包声明 infra 端口(interface)，**禁** import infra/`database/sql`/HTTP server;`infra` 结构化满足端口、唯一碰 OS/DB/网络;`bootstrap` 唯一可跨全层、**无人 import 它**;`pkg` 叶内核谁都不依赖。
 - **事务聚合**(quota/install):事务边界 owned 在 `infra/store/*`(`orm.DB.Transaction`/`BEGIN IMMEDIATE`)，app 端口只暴露**一个原子聚合操作**，`*sql.Tx` 永不漏出 infra。
@@ -34,14 +34,14 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ## 4. 工作流(切片纪律)
 
 地基优先的 Clean Arch 重写**已完成**并落 `main`;后续每处改动仍按同一纪律走:`domain → app → infra → transport → 测试 → ref 文档`，GW-INV 当验收。
-- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 中重写期抽取契约已 landed/superseded 作历史参考,**现行进行中工单**:[`working/repo-governance.md`](docs/working/repo-governance.md)(仓库治理战役)与 [`working/multimodal-generation.md`](docs/working/multimodal-generation.md)(生成能力,主仓 WRK-082)。capability/provider/pUSD 主决策见 ADR-0017，上下文准入与 route profile 由 ADR-0016 定向补充；ADR-001 raw-token 账本及 ADR-005/006 被取代部分只是历史。
+- **唯一事实源是代码 + `docs/references/backend/*`**(逐字契约);`docs/working/*` 中重写期抽取契约已 landed/superseded 作历史参考,**现行进行中工单**:[`working/repo-governance.md`](docs/working/repo-governance.md)(仓库治理战役)与 [`working/multimodal-generation.md`](docs/working/multimodal-generation.md)(生成能力,主仓)。capability/provider/pUSD 主决策见 ADR-0017，上下文准入与 route profile 由 ADR-0016 定向补充；ADR-001 raw-token 账本及 ADR-005/006 被取代部分只是历史。
 
 ## 5. 门禁命令
 
 ```sh
-make verify   # vet + build + test -race + e2e(-tags=integration)+ lint + docs(本地门禁,与 CI 同一套规则)
-make docs     # cmd/docs:frontmatter/类型·状态·目录/review-due/INDEX≤50/孤儿链接/working 90 天
-make lint     # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
+make verify # vet + build + test -race + e2e(-tags=integration)+ lint + docs(本地门禁,与 CI 同一套规则)
+make docs # cmd/docs:frontmatter/类型·状态·目录/review-due/INDEX≤50/孤儿链接/working 90 天
+make lint # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
 ```
 提交前:`gofmt -l`(空)+ build/vet/test-race 绿 + GOVERNANCE §12 收尾清单逐条勾。CI(`.github/workflows/ci.yml`)另跑 go mod verify / govulncheck / integration e2e / fuzz smoke / SBOM / 前端漂移门 / 覆盖率地板(quota ≥70%、chat ≥65%)。
 

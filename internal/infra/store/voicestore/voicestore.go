@@ -1,4 +1,4 @@
-// Package voicestore persists the per-install cloned-voice inventory (WRK-082 H9). It structurally
+// Package voicestore persists the per-install cloned-voice inventory. It structurally
 // satisfies the app/voice Store port and never imports app.
 //
 // **Create is a transaction for one reason: the ceiling check and the INSERT must not straddle a
@@ -7,7 +7,7 @@
 // and the UNIQUE index catches the name race the count cannot. Losing here costs a rollback of an
 // already-paid registration; losing WITHOUT this costs a permanently unaddressable orphan.
 //
-// Package voicestore 持久化逐 install 的克隆音色库存(H9)。它结构化满足 app/voice 的 Store 端口,
+// Package voicestore 持久化逐 install 的克隆音色库存。它结构化满足 app/voice 的 Store 端口,
 // 且从不 import app。
 //
 // **Create 是一个事务,理由只有一个:上限检查与 INSERT 之间不能跨着一个窗口。** 两条上限都由 service

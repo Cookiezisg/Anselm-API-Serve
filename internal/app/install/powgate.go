@@ -28,9 +28,9 @@ const (
 // unchanged. powHeader is the raw X-PoW header value (the transport reads it; the
 // app stays HTTP-free).
 //
-//   - off/dormant: admit immediately.
-//   - enforce: missing → INSTALL_POW_REQUIRED; present-invalid → INSTALL_POW_INVALID.
-//   - shadow:  verify if present; on miss/failure admit (disjoint shadow label) + WARN on a bad solve.
+// - off/dormant: admit immediately.
+// - enforce: missing → INSTALL_POW_REQUIRED; present-invalid → INSTALL_POW_INVALID.
+// - shadow: verify if present; on miss/failure admit (disjoint shadow label) + WARN on a bad solve.
 func (s *Service) PoWGate(ctx context.Context, powHeader, ipKey string) *apierr.APIError {
 	cfg := s.cfg.Load()
 	mode := cfg.InstallPowMode

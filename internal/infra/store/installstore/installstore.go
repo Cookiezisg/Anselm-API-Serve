@@ -3,9 +3,8 @@
 // imports app). All multi-row writes go through one BEGIN IMMEDIATE transaction
 // on the writer pool (ADR-005): Issue runs the enabled Sybil gates AND the
 // installs INSERT atomically, so a later-gate reject leaves NO earlier-gate
-// counter consumed (B11), regenerates the install id once on a UNIQUE collision
-// (B13), and opportunistically prunes stale rate-bucket windows inside the same
-// tx (B8). *sql.Tx never leaks out of this package.
+// counter consumed, regenerates the install id once on a UNIQUE collision,
+// and opportunistically prunes stale rate-bucket windows inside the same tx. *sql.Tx never leaks out of this package.
 package installstore
 
 import (
@@ -38,8 +37,8 @@ func New(writer, reader *orm.DB) *Store {
 // daily → per-fp daily+cooldown → INSERT. Each gate is a single conditional
 // UPDATE (never read-modify-write) so concurrent issuances serialize on the write
 // pool and a loser sees RowsAffected==0; on a 0 the whole tx rolls back (deferred)
-// and NO counter persists (B11). A disabled gate is skipped before any DB work
-// (dormant zero-cost). The install id regenerates once on a UNIQUE conflict (B13).
+// and NO counter persists. A disabled gate is skipped before any DB work
+// (dormant zero-cost). The install id regenerates once on a UNIQUE conflict.
 func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.IssueResult, error) {
 	var result dinstall.IssueResult
 	err := s.w.Transaction(ctx, func(tx *orm.DB) error {
@@ -54,7 +53,7 @@ func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.Iss
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		// gate 1: per-IP hourly (skipped when disabled). Prunes stale windows (B8).
+		// gate 1: per-IP hourly (skipped when disabled). Prunes stale windows.
 		if p.IPGate.Enabled {
 			ok, err := bumpIPRate(ctx, tx, p.IPGate)
 			if err != nil {
@@ -91,7 +90,7 @@ func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.Iss
 		}
 
 		// admit: insert the brand-new install row, regenerating the id once on a
-		// UNIQUE collision (B13). A second collision is astronomically improbable
+		// UNIQUE collision. A second collision is astronomically improbable
 		// with a 16-byte id and surfaces as a real error rather than an infinite loop.
 		actualID := p.InstallID
 		if err := insertInstall(ctx, tx, actualID, p); err != nil {
@@ -123,7 +122,7 @@ func (s *Store) Issue(ctx context.Context, p dinstall.IssueParams) (dinstall.Iss
 var errGateReject = errors.New("installstore: gate reject")
 
 // bumpIPRate enforces the per-IP hourly bucket and prunes this key's stale
-// windows (B8: retain only the current window). A conditional UPDATE bumps only
+// windows (retain only the current window). A conditional UPDATE bumps only
 // while below the cap; RowsAffected==0 means the limit is hit.
 func bumpIPRate(ctx context.Context, tx *orm.DB, g dinstall.IPGate) (bool, error) {
 	// B8 prune: drop older windows for this key so an enabled install_ip_rate gate
@@ -151,7 +150,7 @@ func bumpIPRate(ctx context.Context, tx *orm.DB, g dinstall.IPGate) (bool, error
 }
 
 // bumpGlobalRate enforces the global daily cap via a conditional UPDATE and prunes
-// older days (B8).
+// older days.
 func bumpGlobalRate(ctx context.Context, tx *orm.DB, g dinstall.GlobalGate) (bool, error) {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM install_global_rate WHERE window_day < ?`, g.WindowDay); err != nil {
@@ -176,7 +175,7 @@ func bumpGlobalRate(ctx context.Context, tx *orm.DB, g dinstall.GlobalGate) (boo
 // (never read-modify-write): the INSERT path is the first issuance this day
 // (count=1); the ON CONFLICT path bumps only when BOTH the daily cap and the
 // cooldown allow, so two concurrent same-fp requests serialize and the loser sees
-// RowsAffected==0. Prunes older days first (B8). A disabled sub-gate is made
+// RowsAffected==0. Prunes older days first. A disabled sub-gate is made
 // non-binding via the sentinel cap / far-future cutoff resolved in the app.
 func bumpFPRate(ctx context.Context, tx *orm.DB, g dinstall.FPGate) (bool, error) {
 	if _, err := tx.Exec(ctx,
@@ -238,7 +237,7 @@ func (s *Store) PublicKey(ctx context.Context, installID string) ([]byte, bool, 
 }
 
 // RefreshLastSeen bumps installs.last_seen_at, DB-side throttled by the WHERE
-// predicate as a backstop to the app's in-Go throttle (B9). Best-effort: the
+// predicate as a backstop to the app's in-Go throttle. Best-effort: the
 // caller swallows the error (a missed activity timestamp is cosmetic).
 func (s *Store) RefreshLastSeen(ctx context.Context, id string, now time.Time, interval time.Duration) error {
 	cutoff := now.UTC().Add(-interval)
@@ -272,7 +271,7 @@ func nullStr(s string) any {
 }
 
 // isUniqueConflict reports whether err is a SQLite UNIQUE constraint violation
-// (the install id or key thumbprint collision path, B13). The pure-Go driver
+// (the install id or key thumbprint collision path). The pure-Go driver
 // surfaces it in the error text; matching on the substring keeps this driver-
 // agnostic without importing the driver's error type.
 func isUniqueConflict(err error) bool {

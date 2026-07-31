@@ -240,7 +240,7 @@ func (t *redactingTransport) accountLevelFault(ks *keyState, r *http.Response, n
 	}
 }
 
-// atomicBool is a tiny set-once flag used by the first-byte timer disarm (B6).
+// atomicBool is a tiny set-once flag used by the first-byte timer disarm.
 type atomicBool struct{ v atomic.Bool }
 
 func (b *atomicBool) set()      { b.v.Store(true) }

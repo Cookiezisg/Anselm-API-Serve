@@ -1,4 +1,4 @@
-// Package voices is the thin HTTP handler for the cloned-voice lifecycle (WRK-082 H9):
+// Package voices is the thin HTTP handler for the cloned-voice lifecycle:
 // POST /v1/voices (enroll), GET /v1/voices (list), POST /v1/voices:delete.
 //
 // **Delete is a POST with the id in the body, not DELETE /v1/voices/{id}, and that is deliberate.**
@@ -8,7 +8,7 @@
 // own convention for exactly this (N5), and it keeps voice ids out of URLs — out of proxy logs,
 // browser history and referrers — for a resource that costs real money to recreate.
 //
-// Package voices 是克隆音色生命周期的薄 HTTP handler(H9):POST /v1/voices(登记)、
+// Package voices 是克隆音色生命周期的薄 HTTP handler:POST /v1/voices(登记)、
 // GET /v1/voices(列出)、POST /v1/voices:delete(删除)。
 //
 // **删除是「POST + id 在体里」而非 DELETE /v1/voices/{id},这是刻意的。** 本网关上每一条受管路由都由

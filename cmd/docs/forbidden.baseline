@@ -6,3 +6,6 @@
 # 本闸要求本文件与现实**逐条精确**吻合:删了命中却不收缩本文件会失败,反之亦然。终局:空。
 #
 # token	path	count
+build-batch	docs/working/multimodal-generation.md	10
+build-item	docs/working/multimodal-generation.md	12
+wrk-ticket	docs/working/multimodal-generation.md	2

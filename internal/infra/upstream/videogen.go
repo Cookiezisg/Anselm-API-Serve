@@ -12,14 +12,14 @@ import (
 	domvideo "github.com/sunweilin/anselm/gateway/internal/domain/video"
 )
 
-// VideoGen is the ASYNC DashScope video client (WRK-082 H1). Unlike its image and
+// VideoGen is the ASYNC DashScope video client. Unlike its image and
 // speech siblings it has two verbs, because the video family has no synchronous
 // form at all: submission returns a task id, and the artifact appears minutes
 // later. The gateway never waits — it hands the task back and the desktop polls,
 // so a 3-minute generation does not occupy a gateway request slot (N_GLOBAL is 8;
 // three simultaneous videos would be a third of the whole box).
 //
-// VideoGen 是**异步** DashScope 视频 client(H1)。与图像、语音两个兄弟不同,它有**两个**动词——
+// VideoGen 是**异步** DashScope 视频 client。与图像、语音两个兄弟不同,它有**两个**动词——
 // 因为视频族**根本没有**同步形态:提交返回一个 task id,产物几分钟后才出现。网关**从不等待**——
 // 它把任务交回、由桌面端轮询,于是一次 3 分钟的生成不会占住一个网关请求位(N_GLOBAL 是 8;三条
 // 同时在跑的视频就是整台机器的三分之一)。
@@ -82,9 +82,9 @@ func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, second
 	case firstFrame != "":
 		// Image-to-video: the frame goes in `img_url` (data URL accepted) and the geometry keys are
 		// OMITTED entirely — the clip takes the frame's own aspect and size. Sending ours anyway is
-		// how a user's 3:2 photo silently becomes a letterboxed 16:9 clip (WRK-082 H9).
+		// how a user's 3:2 photo silently becomes a letterboxed 16:9 clip.
 		// 图生视频:首帧走 `img_url`(收 data URL),几何键**整个略去**——片子取首帧自己的比例与尺寸。
-		// 照旧递我们的过去,正是用户那张 3:2 的照片静默变成加了黑边的 16:9 的方式(H9)。
+		// 照旧递我们的过去,正是用户那张 3:2 的照片静默变成加了黑边的 16:9 的方式。
 		input["img_url"] = firstFrame
 	case strings.HasPrefix(model, "wan2.7"):
 		// wan2.7 replaced the single `size` with resolution + ratio; 2.6 and earlier still

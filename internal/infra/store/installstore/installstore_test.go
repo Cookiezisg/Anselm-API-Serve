@@ -227,10 +227,10 @@ func TestB11NoCounterConsumedOnLaterGateReject(t *testing.T) {
 	ipAfter := readCount(t, ctx, db, `SELECT count FROM install_ip_rate WHERE ip_key='ipk-shared'`)
 	globalAfter := readCount(t, ctx, db, `SELECT count FROM install_global_rate WHERE window_day=?`, day)
 	if ipAfter != ipBefore {
-		t.Fatalf("B11: per-IP counter consumed on fp reject: before=%d after=%d", ipBefore, ipAfter)
+		t.Fatalf(": per-IP counter consumed on fp reject: before=%d after=%d", ipBefore, ipAfter)
 	}
 	if globalAfter != globalBefore {
-		t.Fatalf("B11: global counter consumed on fp reject: before=%d after=%d", globalBefore, globalAfter)
+		t.Fatalf(": global counter consumed on fp reject: before=%d after=%d", globalBefore, globalAfter)
 	}
 
 	// And exactly one installs row exists (the reject wrote nothing).
@@ -364,13 +364,13 @@ func TestB13IDRegenerateOnConflict(t *testing.T) {
 	p.IPGate.Key = "ipk-dupe"
 	r, err := st.Issue(ctx, p)
 	if err != nil {
-		t.Fatalf("B13: id collision must be recovered, got err=%v", err)
+		t.Fatalf(": id collision must be recovered, got err=%v", err)
 	}
 	if !r.Admitted {
-		t.Fatal("B13: should admit after regenerating id")
+		t.Fatal(": should admit after regenerating id")
 	}
 	if r.InstallID == dupID {
-		t.Fatal("B13: result returned the colliding id instead of the regenerated id")
+		t.Fatal(": result returned the colliding id instead of the regenerated id")
 	}
 	// Two rows now (the seed + the regenerated one), both with distinct ids.
 	if n := readCount(t, ctx, db, `SELECT COUNT(*) FROM installs`); n != 2 {

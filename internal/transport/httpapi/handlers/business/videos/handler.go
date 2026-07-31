@@ -1,10 +1,10 @@
-// Package videos is the thin HTTP surface for the async video capability
-// (WRK-082 H1): POST /v1/videos/generations submits and returns a signed handle,
+// Package videos is the thin HTTP surface for the async video capability:
+// POST /v1/videos/generations submits and returns a signed handle, and
 // GET /v1/videos/{videoId} reports that handle's phase and, once succeeded, the
 // artifact URL. Two routes because the family has no synchronous form — the
 // minutes of generation live on the CLIENT's clock, never in a gateway request.
 //
-// videos 包是异步视频能力的薄 HTTP 面(H1):POST /v1/videos/generations 提交并返回签名句柄,
+// videos 包是异步视频能力的薄 HTTP 面:POST /v1/videos/generations 提交并返回签名句柄,
 // GET /v1/videos/{videoId} 报该句柄的状态,成功后带产物 URL。两条路由,因为本族没有同步形态——
 // 那几分钟的生成活在**客户端**的钟上,绝不活在一次网关请求里。
 package videos
@@ -60,7 +60,6 @@ var resolutions = map[string]string{
 	"1080p": "1080P",
 }
 
-// Handler serves both video routes.
 // Handler serves both /v1/videos/generations and /v1/videos/animations. One handler, one flag —
 // the two requests differ by one field and share every other guard (prompt bound, the seconds
 // window refused BEFORE the reservation, the aspect and resolution vocabularies).
@@ -75,7 +74,7 @@ type Handler struct {
 // New wires the text-to-video handler.
 func New(svc *appvideo.Service) *Handler { return &Handler{svc: svc} }
 
-// NewAnimate wires the image-to-video handler (WRK-082 H9).
+// NewAnimate wires the image-to-video handler.
 func NewAnimate(svc *appvideo.Service) *Handler { return &Handler{svc: svc, animate: true} }
 
 // maxFrameChars bounds the base64 first frame before the app layer sees it. 10MB of image is
@@ -90,11 +89,11 @@ type generateRequest struct {
 	Prompt  string `json:"prompt"`
 	Seconds *int   `json:"seconds"`
 	Aspect  string `json:"aspect"`
-	// Image is the first frame for image-to-video: a base64 data URL, never an address (WRK-082 H9,
-	// ADR 0011). Present only on /videos/animations — the generations route rejects it via
+	// Image is the first frame for image-to-video: a base64 data URL, never an address
+	// (ADR 0011). Present only on /videos/animations — the generations route rejects it via
 	// DisallowUnknownFields, which is what keeps the two shapes from quietly merging into one
 	// permissive one.
-	// Image 是图生视频的首帧:base64 data URL、绝不是地址(H9,ADR 0011)。**只**出现在
+	// Image 是图生视频的首帧:base64 data URL、绝不是地址(ADR 0011)。**只**出现在
 	// /videos/animations 上——generations 那条经 DisallowUnknownFields 拒掉它,正是这一点让两个形状
 	// 不会悄悄并成一个更宽松的。
 	Image      string `json:"image"`

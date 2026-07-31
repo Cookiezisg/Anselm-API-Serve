@@ -43,12 +43,12 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 | `N_GLOBAL_CONCURRENCY` | 8 | 1 | 100,000 | **是** | 两 provider 共享的总 upstream 在飞 cap |
 | `RATE_PER_MIN` | 0 | 0 | 10,000,000 | 否 | per-install 分钟令牌桶；0=禁用 |
 | `DAILY_SUBLIMIT` | 0 | 0 | 1,000,000,000 | 否 | per-install 日请求次数子限；0=禁用 |
-| `IMAGE_DAILY_LIMIT` | 10 | 0 | 100,000 | 否 | per-install 日图像生成张数上限(品类日闸,WRK-082 批B);0=禁用(仍记账) |
-| `SPEECH_DAILY_LIMIT` | 50,000 | 0 | 100,000,000 | 否 | per-install 日语音合成**字符数**上限(品类日闸,WRK-082 批C);0=禁用(仍记账) |
-| `VIDEO_DAILY_LIMIT` | 10 | 0 | 10,000 | 否 | per-install 日视频**条数**上限(品类日闸,WRK-082 H1,用户拍板);**不是秒**——钱按秒报价,人配给的是整条片子;0=禁用(仍记账) |
+| `IMAGE_DAILY_LIMIT` | 10 | 0 | 100,000 | 否 | per-install 日图像生成张数上限(品类日闸);0=禁用(仍记账) |
+| `SPEECH_DAILY_LIMIT` | 50,000 | 0 | 100,000,000 | 否 | per-install 日语音合成**字符数**上限(品类日闸);0=禁用(仍记账) |
+| `VIDEO_DAILY_LIMIT` | 10 | 0 | 10,000 | 否 | per-install 日视频**条数**上限(品类日闸,用户拍板);**不是秒**——钱按秒报价,人配给的是整条片子;0=禁用(仍记账) |
 | `MEDIA_DOMAIN` | 空 | — | — | 是(启动硬) | 上游来取 lease 字节的**公开主机**(裸主机名、无 scheme;空=音色登记不可用)。**绝不能是 `api.` 前缀**——ADR 0012 生产判别实验:同一 lease 路径与 token,`api.<域>` 连续三次 400 且 Caddy 日志证明**源站从未收到请求**,普通主机答 200;拉取器在**它自己的边缘**拉黑 API 形主机,不可见不可申诉,故配错**在任何地方都不留诊断**。三处 fail-closed:config 校验、`render-caddy.sh`、`secureurl.PublicFetchURL`。**范围:只给音色登记**(`voice-enrollment` 不收 base64);chat 与图像输入继续内联字节(ADR 0012 不变)。部署侧**必填**(Caddy 渲染不了空主机名),缺省取 `media.<root>` |
-| `VOICE_DAILY_LIMIT` | 2 | 0 | 100 | 否 | per-install 日音色**登记**次数上限(品类日闸,WRK-082 H9)。默认 2 = 库存大小,故空库存可在一天内填满、而 delete→重登记 的循环代价是**一天**、不是每圈 $0.2。**这条与另三条性质不同**:它不是「可再生额度的公平」,它是免费档 install 与无界花费之间唯一站着的东西;上限刻意只到 100——这里每个单位都是一笔永不过期的 $0.2 购买,上千的值不是慷慨、是一个附带账单的笔误。0=禁用(仍记账) |
-| `VOICE_ACCOUNT_CEILING` | 0 | 0 | 1,000,000 | 否 | **账号级**克隆音色总数上限(WRK-082 H9)。**是库存、不是配额**:没有周期、没有重置,一个音色占着位直到有人删掉。默认 0 = **不强制**,因为供应商没有文档写出真实上限;运营者从一次拒绝里学到之后再设。满时拒 `VOICE_CAPACITY_REACHED` + WARN,绝不驱逐 |
+| `VOICE_DAILY_LIMIT` | 2 | 0 | 100 | 否 | per-install 日音色**登记**次数上限(品类日闸)。默认 2 = 库存大小,故空库存可在一天内填满、而 delete→重登记 的循环代价是**一天**、不是每圈 $0.2。**这条与另三条性质不同**:它不是「可再生额度的公平」,它是免费档 install 与无界花费之间唯一站着的东西;上限刻意只到 100——这里每个单位都是一笔永不过期的 $0.2 购买,上千的值不是慷慨、是一个附带账单的笔误。0=禁用(仍记账) |
+| `VOICE_ACCOUNT_CEILING` | 0 | 0 | 1,000,000 | 否 | **账号级**克隆音色总数上限。**是库存、不是配额**:没有周期、没有重置,一个音色占着位直到有人删掉。默认 0 = **不强制**,因为供应商没有文档写出真实上限;运营者从一次拒绝里学到之后再设。满时拒 `VOICE_CAPACITY_REACHED` + WARN,绝不驱逐 |
 | `INSTALL_PER_IP_HOUR` | 0 | 0 | 1,000,000 | 否 | `/install` per-IP 小时上限；0=禁用 |
 | `INSTALL_GLOBAL_DAILY_CAP` | 0 | 0 | 100,000,000 | 否 | 全局日领号 cap；0=禁用 |
 | `INSTALL_PER_FP_DAILY` | 0 | 0 | 1,000,000 | 否 | per-fingerprint 日领号；0=禁用 |
@@ -101,14 +101,14 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 | key | 默认 | 约束 / 语义 |
 |---|---|---|
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
-| `IMAGE_ENABLED` | `false` | 图像生成能力开关(WRK-082 批B);开启时要求 `DASHSCOPE_API_KEY` + 精确已编译图像 rate card + `DASHSCOPE_NATIVE_BASE`,缺一启动 fail-fast |
+| `IMAGE_ENABLED` | `false` | 图像生成能力开关;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译图像 rate card + `DASHSCOPE_NATIVE_BASE`,缺一启动 fail-fast |
 | `IMAGE_UPSTREAM_MODEL` | `qwen-image-2.0` | 必须是精确已编译 DashScope 图像 rate card;按张计价(reserve==settle) |
-| `SPEECH_ENABLED` | `false` | 语音**合成**能力开关(WRK-082 批C),与图像各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译 TTS rate card + `DASHSCOPE_NATIVE_BASE` + `TTS_DEFAULT_VOICE`,缺一启动 fail-fast |
+| `SPEECH_ENABLED` | `false` | 语音**合成**能力开关,与图像各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译 TTS rate card + `DASHSCOPE_NATIVE_BASE` + `TTS_DEFAULT_VOICE`,缺一启动 fail-fast |
 | `TTS_UPSTREAM_MODEL` | `qwen-audio-3.0-tts-flash` | 必须是精确已编译 DashScope TTS rate card;按**输入字符**计价(reserve==settle——字符数在调用前即精确已知) |
-| `VIDEO_ENABLED` | `false` | 视频生成能力开关(WRK-082 H1),与图像、语音各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译视频 rate card + `DASHSCOPE_NATIVE_BASE` + **`MEDIA_SIGNING_SECRET`**(句柄签名密钥由它域分离派生),缺一启动 fail-fast |
+| `VIDEO_ENABLED` | `false` | 视频生成能力开关,与图像、语音各自独立;开启时要求 `DASHSCOPE_API_KEY` + 精确已编译视频 rate card + `DASHSCOPE_NATIVE_BASE` + **`MEDIA_SIGNING_SECRET`**(句柄签名密钥由它域分离派生),缺一启动 fail-fast |
 | `VIDEO_UPSTREAM_MODEL` | `wan2.7-t2v` | 必须是精确已编译 DashScope 视频 rate card;按**秒**计价(reserve==settle——请求的时长**就是**计费量) |
-| `TTS_DEFAULT_VOICE` | `longanhuan_v3.6` | 请求未带 `voice` 时用的音色(P10:参数留在线缆上,桌面设置页不开) |
-| `DASHSCOPE_NATIVE_BASE` | 由 `DASHSCOPE_BASE_URL`/workspace 派生(剥掉 `/compatible-mode/v1`);无凭证时兜底 `https://dashscope-intl.aliyuncs.com` | **原生** DashScope API origin(multimodal-generation、video-synthesis、tasks)。它与凭证**共享 host、只在 path 上不同**,故默认值**从凭证派生**而不是写死一个区域:一把新加坡 workspace key 打到 `dashscope.aliyuncs.com`(北京)会答 401 `Incorrect API key provided`——同一把 key,一个区域 200、另一个 401,而报文里没有一个字暗示这跟地理有关(WRK-082 桌面侧实测到的真 401)。显式配置仍然优先 |
+| `TTS_DEFAULT_VOICE` | `longanhuan_v3.6` | 请求未带 `voice` 时用的音色(参数留在线缆上,桌面设置页不开) |
+| `DASHSCOPE_NATIVE_BASE` | 由 `DASHSCOPE_BASE_URL`/workspace 派生(剥掉 `/compatible-mode/v1`);无凭证时兜底 `https://dashscope-intl.aliyuncs.com` | **原生** DashScope API origin(multimodal-generation、video-synthesis、tasks)。它与凭证**共享 host、只在 path 上不同**,故默认值**从凭证派生**而不是写死一个区域:一把新加坡 workspace key 打到 `dashscope.aliyuncs.com`(北京)会答 401 `Incorrect API key provided`——同一把 key,一个区域 200、另一个 401,而报文里没有一个字暗示这跟地理有关(桌面侧实测到的真 401)。显式配置仍然优先 |
 | `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen3-asr-flash-realtime` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |

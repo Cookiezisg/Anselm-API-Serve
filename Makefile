@@ -48,12 +48,12 @@ docs:
 # 本地门禁:vet + build + race 测试 + 打标签 e2e + lint + docs 全绿。
 #
 # **lint 在这里,是因为 CI 里有它。** 少了这一条,本地 verify 会对着一份比 CI 宽的规则说「全绿」,而
-# 差额只在推上去之后才现形——H9 那次正是如此:本地四项全过,CI 一次抓出一个真的连接泄漏(bodyclose)
+# 差额只在推上去之后才现形——真发生过:本地四项全过,CI 一次抓出一个真的连接泄漏(bodyclose)
 # 加七处英式拼写。一个比 CI 宽松的本地门禁不是快,是**把发现时间挪到最贵的地方**。
 #
 # The local gate mirrors CI on purpose: without `lint` here, `make verify` says green against a
-# LOOSER ruleset than CI's, and the difference only shows up after a push — which is exactly how H9
-# shipped a real connection leak (bodyclose) plus seven British spellings past a four-green local
+# LOOSER ruleset than CI's, and the difference only shows up after a push — which is exactly how a
+# real connection leak (bodyclose) plus seven British spellings once got past a four-green local
 # run. A local gate laxer than CI is not faster; it moves discovery to the most expensive place.
 verify: vet build test e2e lint docs
 

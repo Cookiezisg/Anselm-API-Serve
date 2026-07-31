@@ -16,25 +16,24 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 )
 
-// TTSGen is the DashScope speech-synthesis client (WRK-082 批C; rewritten onto the duplex
-// WebSocket protocol in H9).
+// TTSGen is the DashScope speech-synthesis client, spoken over the duplex WebSocket protocol.
 //
 // **It returns BYTES, not a URL, and the upstream forced that — we did not choose it.**
 // `qwen-audio-3.0-tts-flash` is served ONLY over `api-ws/v1/inference`; both HTTP shapes answer
 // `url error, please check url` (真机实测 2026-07-28). A duplex stream has no artifact URL to pass
-// through, so P13's URL-relay contract cannot apply to speech at all. It still applies to images
-// and video, whose upstreams really do hand back URLs.
+// through, so the URL-passthrough contract cannot apply to speech at all. It still applies to
+// images and video, whose upstreams really do hand back URLs.
 //
 // **Why that model**: it is the one model that synthesizes with BOTH preset voices and voices
 // minted by `voice-enrollment` (实测:预置三个 + 克隆一个,全部出真音频). Keeping the older
 // `qwen3-tts-flash` beside it would mean two models and two dialects serving one capability — and
 // the older one is marked 即将部分下线 anyway.
 //
-// TTSGen 是 DashScope 语音合成 client(批C;H9 重写到双工 WebSocket 协议上)。
+// TTSGen 是 DashScope 语音合成 client,说的是双工 WebSocket 协议。
 //
 // **它返回字节、不是 URL,而这是上游逼的、不是我们选的。** `qwen-audio-3.0-tts-flash` **只**在
 // `api-ws/v1/inference` 上提供服务,两种 HTTP 形状都答 `url error, please check url`(真机实测
-// 2026-07-28)。一条双工流**没有产物 URL 可以直通**,故 P13 的 URL 直通契约在语音上根本无从适用;
+// 2026-07-28)。一条双工流**没有产物 URL 可以直通**,故 URL 直通契约在语音上根本无从适用;
 // 它对图像与视频依然成立——那两家上游真的给 URL。
 //
 // **为什么是这个模型**:它是唯一一个既能用预置音色、又能用 `voice-enrollment` 铸出的音色合成的模型
@@ -230,8 +229,8 @@ func runTaskFrame(taskID, model, voice string) wsFrame {
 	// bytes that no player can open and that the joiner rejects — a promise broken in two places at
 	// once, invisible to every mock because a fake answers whatever the code expects.
 	//
-	// **This is NOT a product knob** (代拍 C3 stands: the gateway wire has no format field). It is the
-	// pinning of one internal fact so the label and the bytes agree.
+	// **This is NOT a product knob** — the gateway wire has no format field. It is the pinning of
+	// one internal fact so the label and the bytes agree.
 	//
 	// `format` 与 `sample_rate` **显式**发出,理由是本文件曾有的一个缺陷:不发,引擎按自己的默认来,
 	// 而那个默认是**裸的、无头 PCM**(真机实测——首字节是裸样本,不是 `RIFF`)。而网关把响应标成
@@ -239,7 +238,7 @@ func runTaskFrame(taskID, model, voice string) wsFrame {
 	// **没有播放器打得开、拼接器也不收**——一次同时毁掉两处承诺,而任何 mock 都看不见,因为假件永远
 	// 答代码期待的东西。
 	//
-	// **这不是产品旋钮**(代拍 C3 依旧成立:网关线缆上没有 format 字段),它只是把一个内部事实钉死,
+	// **这不是产品旋钮**——网关线缆上没有 format 字段,它只是把一个内部事实钉死,
 	// 使**标签与字节一致**。
 	f.Payload.Parameters = map[string]any{
 		"text_type":   "PlainText",
@@ -291,10 +290,10 @@ func newTaskID() string {
 // inferenceWSURL turns the native HTTPS origin into the duplex inference endpoint. It derives from
 // the CREDENTIAL's own origin rather than a constant, for the same reason every other generation
 // route does: the region is a property of the key, and a hardcoded host once really did send a
-// Singapore key to Beijing (WRK-082 H0).
+// Singapore key to Beijing.
 //
 // inferenceWSURL 把原生 HTTPS origin 变成双工推理端点。它从**凭证自己的** origin 派生、不用常量,
-// 理由与其余每条生成路由相同:区域是 key 的属性,而写死主机曾真的把一把新加坡的 key 送去北京(H0)。
+// 理由与其余每条生成路由相同:区域是 key 的属性,而写死主机曾真的把一把新加坡的 key 送去北京。
 func inferenceWSURL(nativeBase string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(nativeBase))
 	if err != nil || u.Host == "" {

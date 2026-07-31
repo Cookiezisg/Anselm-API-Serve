@@ -159,7 +159,7 @@ func TestDashboardAPIIsDirectAndHasNoSessionEndpoint(t *testing.T) {
 func TestQuotaResetRequiresAnAuditableReason(t *testing.T) {
 	srv := newDashHandler(t, ratesample.New(60))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"  "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":" "}`))
 	req.RemoteAddr = "127.0.0.1:5000"
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -183,7 +183,7 @@ func TestQuotaResetRequiresAnAuditableReason(t *testing.T) {
 	}
 }
 
-// TestOverviewQPSConcurrentPolls (B16): two concurrent /api/overview pollers each
+// TestOverviewQPSConcurrentPolls: two concurrent /api/overview pollers each
 // get a correct, independent recent-window snapshot (no shared last-point to steal).
 func TestOverviewQPSConcurrentPolls(t *testing.T) {
 	sampler := ratesample.New(60)

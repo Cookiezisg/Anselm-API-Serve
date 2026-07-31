@@ -51,15 +51,15 @@ const (
 	Qwen37OutputLimit  = int64(65_536)
 	QwenASRInputLimit  = int64(120) // seconds; bounded by the speech WebSocket session cap.
 	QwenASROutputLimit = int64(0)
-	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1
-	// (WRK-082 P12); the small headroom only bounds the card, it does not widen the wire.
-	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1(P12);小余量只界卡、不放宽线缆。
+	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1;
+	// the small headroom only bounds the card, it does not widen the wire.
+	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1;小余量只界卡、不放宽线缆。
 	QwenImageInputLimit  = int64(6)
 	QwenImageOutputLimit = int64(0)
 	// QwenTTSInputLimit bounds characters per reservation. The gateway wire caps one request at
-	// maxInputChars (WRK-082 代拍 C5: the desktop chunks long text, the gateway stays one
+	// maxInputChars (the desktop chunks long text, the gateway stays one
 	// request = one reservation = one settle); the headroom only bounds the card.
-	// QwenTTSInputLimit 界定单次预留的字符数。网关线缆单请求上限为 maxInputChars(代拍 C5:长文本由
+	// QwenTTSInputLimit 界定单次预留的字符数。网关线缆单请求上限为 maxInputChars(长文本由
 	// 桌面端切块,网关恒守「一请求=一预留=一结算」);余量只界卡。
 	QwenTTSInputLimit  = int64(4_000)
 	QwenTTSOutputLimit = int64(0)
@@ -213,11 +213,11 @@ var rateCards = map[Provider]map[string]RateCard{
 		QwenImage20: {
 			ID: "qwen-image-2.0-assumed-2026-07-27", Provider: ProviderQwen, Model: QwenImage20,
 			InputLimit: QwenImageInputLimit, OutputLimit: QwenImageOutputLimit,
-			// WORKING ASSUMPTION (WRK-082 代拍 B3): ¥0.25/image ≈ $0.035 = 35e9 pUSD. This card
+			// WORKING ASSUMPTION: ¥0.25/image ≈ $0.035 = 35e9 pUSD. This card
 			// only budgets the operator's own wallet gate (reserve == settle, deterministic);
 			// the upstream bills its真实 list price regardless. MUST be reconciled against the
 			// official pricing page before launch — the "assumed" ID keeps that debt visible.
-			// 工作假设(代拍 B3):¥0.25/张≈$0.035=35e9 pUSD。此卡只作 operator 自家钱包预算闸
+			// 工作假设:¥0.25/张≈$0.035=35e9 pUSD。此卡只作 operator 自家钱包预算闸
 			// (reserve==settle,确定性成本);上游按真实价目计费不受影响。上线前必须对官方价页
 			// 对账——ID 里的 "assumed" 让这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenImageInputLimit, InputPUSD: 35_000_000_000, OutputPUSD: 0}},
@@ -225,13 +225,13 @@ var rateCards = map[Provider]map[string]RateCard{
 		QwenAudio30TTSFlash: {
 			ID: "qwen-audio-3.0-tts-flash-assumed-2026-07-28", Provider: ProviderQwen, Model: QwenAudio30TTSFlash,
 			InputLimit: QwenTTSInputLimit, OutputLimit: QwenTTSOutputLimit,
-			// WORKING ASSUMPTION (WRK-082 代拍 C2, model swapped H9): ¥1 / 10K characters ≈ $0.0000139/char
+			// WORKING ASSUMPTION (model swapped): ¥1 / 10K characters ≈ $0.0000139/char
 			// = 14e6 pUSD. The official price page renders its table in JS and could not be read
 			// verbatim; the third-party figure is what this card encodes. Same discipline as the
 			// image card: this budgets the operator's OWN wallet gate (reserve == settle, cost is
 			// deterministic in the request's own character count) while the upstream bills its real
 			// list price regardless. The "assumed" ID keeps the reconciliation debt visible.
-			// 工作假设(代拍 C2):¥1/万字符≈$0.0000139/字符=14e6 pUSD。官方价目表由 JS 渲染、取不到
+			// 工作假设:¥1/万字符≈$0.0000139/字符=14e6 pUSD。官方价目表由 JS 渲染、取不到
 			// 逐字数值,此卡编码的是第三方数字。与图像卡同纪律:它只作 operator 自家钱包闸(reserve==
 			// settle,成本在本请求字符数上确定),上游按真实价目计费不受影响。ID 里的 "assumed" 让这
 			// 笔对账债保持可见。
@@ -240,11 +240,11 @@ var rateCards = map[Provider]map[string]RateCard{
 		Wan27T2V: {
 			ID: "wan2.7-t2v-assumed-2026-07-27", Provider: ProviderQwen, Model: Wan27T2V,
 			InputLimit: QwenVideoInputLimit, OutputLimit: QwenVideoOutputLimit,
-			// WORKING ASSUMPTION (WRK-082 H1): ¥0.6 per second at 720P ≈ $0.083 = 83e9 pUSD.
+			// WORKING ASSUMPTION: ¥0.6 per second at 720P ≈ $0.083 = 83e9 pUSD.
 			// Video is the most expensive thing this gateway can be asked to do — a single 5-second
 			// clip costs more than a whole day's image allowance — so this card is also the one
 			// whose reconciliation matters most. The "assumed" ID keeps that debt visible.
-			// 工作假设(H1):720P ¥0.6/秒 ≈ $0.083 = 83e9 pUSD。视频是本网关能被要求做的最贵的事——
+			// 工作假设:720P ¥0.6/秒 ≈ $0.083 = 83e9 pUSD。视频是本网关能被要求做的最贵的事——
 			// 一条 5 秒片子比一整天的图像额度还贵——故这张卡也是最该对账的一张。ID 里的 "assumed" 让
 			// 这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenVideoInputLimit, InputPUSD: 83_000_000_000, OutputPUSD: 0}},
@@ -253,7 +253,7 @@ var rateCards = map[Provider]map[string]RateCard{
 			ID: "qwen-tts-clone-2026-07-28", Provider: ProviderQwen, Model: QwenTTSClone,
 			InputLimit: QwenVoiceInputLimit, OutputLimit: QwenVoiceOutputLimit,
 			// $0.2 per voice created = 200e9 pUSD. NOT an "assumed" card: this figure is printed
-			// verbatim on the official pricing page (H9 第0步核准 2026-07-28), which is why the ID
+			// verbatim on the official pricing page (官方价目表核对 2026-07-28), which is why the ID
 			// carries no `assumed-` marker — the other three generation cards do, and the absence
 			// here is the claim that this one is reconciled.
 			//
@@ -264,7 +264,7 @@ var rateCards = map[Provider]map[string]RateCard{
 			// that actually bound it.
 			//
 			// 每创建一个音色 $0.2 = 200e9 pUSD。**不是** assumed 卡:这个数字逐字印在官方价目页上
-			// (H9 第0步核准 2026-07-28),故 ID 里没有 `assumed-` 标记——另外三张生成卡都有,而这里
+			// (官方价目表核对 2026-07-28),故 ID 里没有 `assumed-` 标记——另外三张生成卡都有,而这里
 			// 的**缺席**本身就是「这一张已对账」的断言。
 			//
 			// 预留才是让这个能力**有界**的东西。它那两条上限是**库存**(一个人能持有几个),而库存界的

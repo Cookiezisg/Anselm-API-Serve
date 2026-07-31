@@ -108,7 +108,7 @@ type Reservation struct {
 	ReservedPUSD int64
 
 	// SublimitApplied records whether the optional daily-sublimit +1 actually
-	// fired at reserve time (B1). Rollback reverses that +1 IFF this flag is set,
+	// fired at reserve time. Rollback reverses that +1 IFF this flag is set,
 	// rather than re-reading live config — so a DailySublimit hot-reload between
 	// reserve and rollback can never make rollback reverse a count it never took
 	// (or skip one it did). Same entry-snapshot discipline as Period.
@@ -128,19 +128,19 @@ type Reservation struct {
 // Limits is the consistency snapshot of the live runtime guardrails a single
 // reserve/view needs. Snapshotting them together (not field-by-field) means a
 // concurrent hot-reload can never mix an old budget with a new cap mid-operation
-// (the generalized B1 fix: one config snapshot per request). It lives in domain
+// (the generalized fix: one config snapshot per request). It lives in domain
 // so the app port and the infra store agree on the type without infra importing
 // app.
 type Limits struct {
 	MonthlyQuota           int64
 	GlobalMonthlySpendPUSD int64
 	DailySublimit          int64 // 0 disables the per-install daily request sublimit.
-	ImageDailyLimit        int64 // 0 disables the per-install daily image-count cap (WRK-082 P8: default 10).
-	SpeechDailyLimit       int64 // 0 disables the per-install daily speech-character cap (WRK-082 P8: default 50000).
-	// VideoDailyLimit counts CLIPS, not seconds — the user's cap is 一人一天 10 条 (WRK-082 H1).
+	ImageDailyLimit        int64 // 0 disables the per-install daily image-count cap (default 10).
+	SpeechDailyLimit       int64 // 0 disables the per-install daily speech-character cap (default 50000).
+	// VideoDailyLimit counts CLIPS, not seconds — the user's cap is 一人一天 10 条.
 	// Billing quotes video by the second, but the thing a person rations is whole videos, so the
 	// category ledger and the money ledger deliberately count different units here.
-	// VideoDailyLimit 数的是**条**、不是秒——用户定的额度是「一人一天 10 条」(H1)。计费按秒报价,
+	// VideoDailyLimit 数的是**条**、不是秒——用户定的额度是「一人一天 10 条」。计费按秒报价,
 	// 但人心里配给的是**整条片子**,故品类账本与钱账本在此刻意数不同的单位。
 	VideoDailyLimit int64 // 0 disables the per-install daily video-clip cap (default 10).
 	// VoiceDailyLimit counts ENROLLMENTS per day. Default 2 = the inventory size, so a person can

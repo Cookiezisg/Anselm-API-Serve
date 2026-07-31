@@ -62,6 +62,21 @@ var forbidden = []struct {
 	// 该模式**刻意不写出**部署主机名,故本闸不会变成它要抓的那个泄漏本身。
 	{"deployment-domain", regexp.MustCompile(`(?i)\banselm\.[a-z]{2,10}\b`),
 		"real deployment hostname belongs in GitHub secrets, not the repo; 阶段 1"},
+	// Construction-ticket scars. Every one of these — WRK-082 and its 批/H/P/B
+	// sub-numbers — is defined in exactly one place: docs/working/, which 阶段 6
+	// lands into references/ and empties. The moment that happens, each citation
+	// becomes a pointer to a document nobody can open. A comment must say WHAT IS,
+	// not which batch built it; the git history already answers "when".
+	// 施工工单疤痕。这些——WRK-082 与它的 批/H/P/B 子编号——的定义**只在一个地方**:
+	// docs/working/,而阶段 6 要把它落进 references/ 并清空。那一刻起,每一处引用都变成一个
+	// 谁也打不开的文档的指针。注释该说**现在是什么**,不是哪一批把它造出来的;「什么时候」
+	// git 历史已经答了。
+	{"wrk-ticket", regexp.MustCompile(`WRK-\d+`),
+		"the ticket closes in 阶段 6; a comment states what IS, not which ticket built it"},
+	{"build-batch", regexp.MustCompile(`批[A-Z]|代拍`),
+		"WRK-082 construction batch labels; defined only in docs/working/, which 阶段 6 empties"},
+	{"build-item", regexp.MustCompile(`\bH\d+\b|\bP\d+\b|\(B\d\)`),
+		"WRK-082 item numbers (H/P/B); defined only in docs/working/, which 阶段 6 empties"},
 }
 
 // skipDirs are never walked: VCS internals, dependency trees, and build output

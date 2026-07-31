@@ -223,7 +223,7 @@ func TestClientCancelNoBreakerTrip(t *testing.T) {
 		cancel()
 	}
 	if c.BreakerOpen() {
-		t.Fatal("B5: client cancel must NEVER trip the process breaker")
+		t.Fatal(": client cancel must NEVER trip the process breaker")
 	}
 }
 
@@ -404,7 +404,7 @@ func TestFirstByteTimerDisarmIdempotentUnderRace(t *testing.T) {
 			// Once started, the body must relay to completion uninterrupted.
 			body := drain(t, s)
 			if !strings.Contains(body, "[DONE]") {
-				t.Errorf("started stream was truncated by the timer (B6): %q", body[:min(40, len(body))])
+				t.Errorf("started stream was truncated by the timer: %q", body[:min(40, len(body))])
 			}
 		}()
 	}

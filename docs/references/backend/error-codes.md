@@ -43,8 +43,8 @@ audience: [human, ai]
 | `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
 | `MEDIA_UNAVAILABLE` | 503 | durable media upload is not enabled on this deployment | `MEDIA_ENABLED=false`；同一 attachment 重试无效，operator 必须完成 staging/secret 配置 |
 | `IMAGE_UNAVAILABLE` | **503** | image generation is not available on this deployment | `IMAGE_ENABLED=false` 或无 Qwen 凭证；重试无效,区别于日额度 |
-| `IMAGE_SOURCE_INVALID` | **400** | the edit source must be a base64 data URL, not an address | H9——**形状**拒绝、非校验客套:ADR 0011 禁止带 scheme/host 的受管媒体输入,因为一个本网关会去取的地址是指向**我们自己网络**的 SSRF 原语;要求 `data:` **就是**那个缓解(data URL 取不了、它就是字节)。缺席的源同码 |
-| `VIDEO_FRAME_INVALID` | **400** | the first frame must be a base64 data URL, not an address | H9——与 `IMAGE_SOURCE_INVALID` 同一条形状闸、**自己的码**:一个在让图动起来的客户端被告知「改图的源无效」,会去查错的那个请求。缺席的首帧同码 |
+| `IMAGE_SOURCE_INVALID` | **400** | the edit source must be a base64 data URL, not an address | **形状**拒绝、非校验客套:ADR 0011 禁止带 scheme/host 的受管媒体输入,因为一个本网关会去取的地址是指向**我们自己网络**的 SSRF 原语;要求 `data:` **就是**那个缓解(data URL 取不了、它就是字节)。缺席的源同码 |
+| `VIDEO_FRAME_INVALID` | **400** | the first frame must be a base64 data URL, not an address | 与 `IMAGE_SOURCE_INVALID` 同一条形状闸、**自己的码**:一个在让图动起来的客户端被告知「改图的源无效」,会去查错的那个请求。缺席的首帧同码 |
 | `IMAGE_QUOTA_EXHAUSTED` | 429 | daily image generation quota reached, try again tomorrow | 品类日闸(`IMAGE_DAILY_LIMIT`)拒;区别于 RATE_LIMITED(节流)与 QUOTA_EXHAUSTED(月请求额) |
 | `TTS_UNAVAILABLE` | **503** | speech synthesis is not available on this deployment | `SPEECH_ENABLED=false` 或无 Qwen 凭证。**刻意不叫 `SPEECH_UNAVAILABLE`**——那个码是实时 ASR(语音→**文本**)的拒绝,一个码答两个方向会让「麦克风没了」与「读不出这条消息」在线缆上无从区分 |
 | `TTS_QUOTA_EXHAUSTED` | 429 | daily speech synthesis quota reached, try again tomorrow | 品类日闸(`SPEECH_DAILY_LIMIT`,单位**字符**)拒;与 IMAGE_QUOTA_EXHAUSTED 同理但各记各账 |

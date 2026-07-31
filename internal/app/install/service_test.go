@@ -223,7 +223,7 @@ func TestIssueFPGateResolvesSentinels(t *testing.T) {
 	}
 }
 
-// --- LookupInstall throttle (B9) ---
+// --- LookupInstall throttle ---
 
 func TestLookupThrottleNotWritePerCall(t *testing.T) {
 	store := &fakeStore{lookupID: "ins_x", lookupStatus: install.StatusActive, lookupFound: true}

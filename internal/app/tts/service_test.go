@@ -61,9 +61,9 @@ func (f *fakeQuota) Rollback(context.Context, *domquota.Reservation) error {
 }
 
 // wantAudio stands in for a synthesized utterance. It is BYTES because the upstream is a duplex
-// WebSocket that streams frames — there is no artifact URL to assert on any more (H9).
+// WebSocket that streams frames — there is no artifact URL to assert on any more.
 // wantAudio 代表一段合成出来的话。它是**字节**,因为上游是一条流帧的双工 WebSocket——已经没有产物
-// URL 可供断言了(H9)。
+// URL 可供断言了。
 var wantAudio = []byte("RIFF....WAVEfake-pcm")
 
 type fakeUpstream struct {
@@ -97,7 +97,7 @@ func newSvc(cfg *fakeCfg, q *fakeQuota, up Upstream) *Service {
 }
 
 // TestSynthesize_SuccessSettlesDeterministicCost: the happy path settles exactly the frozen
-// per-character cost (reserve == settle) and relays the upstream URL untouched (P13).
+// per-character cost (reserve == settle) and relays the upstream URL untouched.
 func TestSynthesize_SuccessSettlesDeterministicCost(t *testing.T) {
 	q := &fakeQuota{}
 	up := &fakeUpstream{audio: wantAudio}
@@ -132,11 +132,11 @@ func TestSynthesize_BillsRunesNotBytes(t *testing.T) {
 }
 
 // TestSynthesize_DefaultVoiceFillsIn: an omitted voice becomes the configured default rather
-// than an empty string on the wire (P10: the parameter stays, the picker does not).
+// than an empty string on the wire (the parameter stays, the picker does not).
 func TestSynthesize_DefaultVoiceFillsIn(t *testing.T) {
 	up := &fakeUpstream{audio: wantAudio}
 	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
-	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", "  "); ae != nil {
+	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", " "); ae != nil {
 		t.Fatalf("synthesize: %v", ae)
 	}
 	if up.gotVoice != "longanhuan_v3.6" {

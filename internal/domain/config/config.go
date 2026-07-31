@@ -91,7 +91,7 @@ const (
 	MaxMediaUploadBytes int64 = 1024 * 1024 * 1024
 )
 
-// PoW mode enum (reviewer B3 — three-state, not bool). off is the default and
+// PoW mode enum — three states, not a bool. off is the default and
 // keeps the whole PoW path dormant (byte-for-byte unchanged /v1/install).
 //
 // 领号 PoW 三态:off(dormant)/ shadow(验但失败仍放行,灰度观测)/ enforce。
@@ -661,10 +661,10 @@ func (e *ErrMemoryBudget) Error() string {
 // MemSafetyMarginMiB headroom under MemBudgetMiB.
 //
 // Pure three-state result (no stderr — stays I/O-free; infra logs the advisory):
-//   - pass within budget                          → (false, nil)
-//   - GOMEMLIMIT_MIB==0 and over budget           → (true,  nil)  ADVISORY: heap
-//     unbounded so the estimate is advisory; infra should WARN-but-allow.
-//   - GOMEMLIMIT_MIB>0  and over budget           → (false, *ErrMemoryBudget) fail-fast.
+// - pass within budget → (false, nil)
+// - GOMEMLIMIT_MIB==0 and over budget → (true, nil) ADVISORY: heap
+// unbounded so the estimate is advisory; infra should WARN-but-allow.
+// - GOMEMLIMIT_MIB>0 and over budget → (false, *ErrMemoryBudget) fail-fast.
 //
 // 纯函数三态:在预算内 → (false,nil);GOMEMLIMIT=0 且超 → (true,nil) 只警告;
 // GOMEMLIMIT>0 且超 → fail-fast。绝不直接写 stderr(由 infra 记录 advisory)。

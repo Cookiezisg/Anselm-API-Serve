@@ -13,12 +13,12 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 )
 
-// The duplex dialect is new in H9 and nothing else in the repo speaks it, so these tests pin the
+// Nothing else in the repo speaks the duplex dialect, so these tests pin the
 // protocol shape itself: what we SEND in what order, and how each way the stream can end maps onto
 // the billed/unbilled decision. A transport swap that silently stopped sending `finish-task` would
 // hang forever against a real upstream and look fine in every artifact-side assertion.
 //
-// 双工方言是 H9 才有的,仓库里没有别的东西说它,故这些测试钉的是**协议形状本身**:我们**按什么顺序
+// 仓库里没有别的东西说这门双工方言,故这些测试钉的是**协议形状本身**:我们**按什么顺序
 // 发什么**,以及流的每一种结束方式如何映射到「计不计费」。一次悄悄不再发 `finish-task` 的传输改动,
 // 对着真上游会永远挂住,而在一切**产物侧**断言里都看着没事。
 
@@ -188,11 +188,11 @@ func TestTTS_UnconfiguredIsUnbilled(t *testing.T) {
 }
 
 // TestInferenceWSURL_DerivesFromTheCredentialOrigin: the region is a property of the key. A
-// hardcoded host once really did send a Singapore key to Beijing (WRK-082 H0), so the endpoint is
+// hardcoded host once really did send a Singapore key to Beijing, so the endpoint is
 // derived, never constant — and http→ws is kept so a local test server is reachable.
 //
 // TestInferenceWSURL_DerivesFromTheCredentialOrigin:区域是 key 的属性。写死主机曾真的把一把新加坡
-// 的 key 送去北京(H0),故端点是**派生**的、绝不是常量——且保留 http→ws,使本地测试服务器可达。
+// 的 key 送去北京,故端点是**派生**的、绝不是常量——且保留 http→ws,使本地测试服务器可达。
 func TestInferenceWSURL_DerivesFromTheCredentialOrigin(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"https://ws-abc.ap-southeast-1.maas.aliyuncs.com", "wss://ws-abc.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference"},

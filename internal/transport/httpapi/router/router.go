@@ -1,7 +1,7 @@
 // Package router assembles the single public business HTTP handler: the Go 1.22
 // method+path ServeMux route table (install / challenge / chat / quota / models /
 // healthz) wrapped by the shared middleware chain exactly as the gateway serves
-// it. It is the ONE source of truth for the :8080 stack so main and the e2e
+// it. It is the ONE source of truth for the:8080 stack so main and the e2e
 // harness exercise IDENTICAL routing + middleware ordering — no hand-copied twin
 // that can drift (测试装配漂移红线). Each business route (NOT /healthz) is wrapped
 // for HTTP RED (OBS-2) under a fixed low-cardinality label via the Wrapper port —
@@ -74,13 +74,13 @@ type Deps struct {
 	Speech  *appspeech.Service // GET /v1/speech/asr
 	Images  *appimage.Service  // POST /v1/images/generations
 	TTS     *apptts.Service    // POST /v1/audio/speech
-	// Video is the only TWO-route capability: submit + poll (WRK-082 H1).
-	// Video 是唯一的**两路由**能力:提交 + 轮询(H1)。
+	// Video is the only TWO-route capability: submit + poll.
+	// Video 是唯一的**两路由**能力:提交 + 轮询。
 	Video *appvideo.Service // POST /v1/videos/generations + GET /v1/videos/{videoId}
 	// Voices is the only capability whose resource OUTLIVES its request: an enrollment creates a
-	// registration in our own provider account that persists until deleted (WRK-082 H9).
+	// registration in our own provider account that persists until deleted.
 	// Voices 是唯一一个**资源比请求活得久**的能力:一次登记在我们自己的 provider 账号里造出一份
-	// 留到被删为止的登记(H9)。
+	// 留到被删为止的登记。
 	Voices *appvoice.Service // POST /v1/voices + GET /v1/voices + POST /v1/voices:delete
 	// Media is nil while MEDIA_ENABLED=false; routes remain proof-gated and
 	// return MEDIA_UNAVAILABLE rather than silently accepting an unusable upload.

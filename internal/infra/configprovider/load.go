@@ -64,8 +64,8 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
 	c.ImageUpstreamModel = g.str("IMAGE_UPSTREAM_MODEL", billing.QwenImage20)
 	// The editing sibling defaults to qwen-image-edit — a DIFFERENT model id on the same endpoint
-	// (官方文档核准 H9). It is priced on the same image card, so it needs no rate card of its own.
-	// 改图兄弟默认 qwen-image-edit——同一条端点上的**不同** model id(H9 官方文档核准)。它按同一张图像
+	// (官方文档核准). It is priced on the same image card, so it needs no rate card of its own.
+	// 改图兄弟默认 qwen-image-edit——同一条端点上的**不同** model id(官方文档核准)。它按同一张图像
 	// 价格卡计价,故不需要自己的费率卡。
 	// 0 by default: the provider's per-account voice ceiling is not documented, so pinning a number
 	// we invented would refuse enrollments the provider would have accepted. It is here so an
@@ -88,9 +88,9 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", nativeBaseFrom(c.QwenBaseURL))
 	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.QwenAudio30TTSFlash)
 	c.VideoUpstreamModel = g.str("VIDEO_UPSTREAM_MODEL", billing.Wan27T2V)
-	// Cherry is the cross-generation default voice (WRK-082 P10: the parameter stays on the wire,
-	// the desktop settings page does not expose it — one good default beats a picker nobody tunes).
-	// Cherry 是跨代默认音色(P10:参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。
+	// Cherry is the cross-generation default voice. The parameter stays on the wire; the desktop
+	// settings page does not expose it — one good default beats a picker nobody tunes.
+	// Cherry 是跨代默认音色(参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。
 	// The default voice belongs to the MODEL, not to the product: qwen-audio-3.0's voices carry a
 	// `_v3.6` suffix and it rejects qwen3-tts's names outright (实测). A stale default here is not a
 	// cosmetic mismatch — every synthesis that omits `voice` would fail at the upstream.
@@ -138,17 +138,17 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.MediaEnabled = g.boolean("MEDIA_ENABLED", false)
 	c.MediaFetchDomain = strings.TrimSpace(g.str("MEDIA_DOMAIN", ""))
 	// Image generation defaults off (a capability, not a birthright); the daily cap defaults to
-	// the WRK-082 P8 product number so enabling the capability alone ships the intended budget.
-	// 图像生成默认关(能力非天赋);日限默认取 P8 产品数,单开能力即得预期预算。
+	// the intended product budget, so enabling the capability alone ships a working allowance.
+	// 图像生成默认关(能力非天赋);日限默认取产品预算,单开能力即得可用额度。
 	c.ImageEnabled = g.boolean("IMAGE_ENABLED", false)
 	c.ImageDailyLimit = g.boundedInt64("IMAGE_DAILY_LIMIT", 10, 0, config.MaxImageDailyLimit)
-	// Speech is its own switch with its own unit: 50K characters/day (P8), not 10 of anything.
-	// 语音是自己的开关、自己的单位:5 万字符/天(P8),不是十个什么东西。
+	// Speech is its own switch with its own unit: 50K characters/day, not 10 of anything.
+	// 语音是自己的开关、自己的单位:5 万字符/天,不是十个什么东西。
 	c.SpeechEnabled = g.boolean("SPEECH_ENABLED", false)
 	c.SpeechDailyLimit = g.boundedInt64("SPEECH_DAILY_LIMIT", 50_000, 0, config.MaxSpeechDailyLimit)
-	// Video is the third switch, its own unit again: 10 CLIPS a day (WRK-082 H1, 用户拍板).
+	// Video is the third switch, its own unit again: 10 CLIPS a day (用户拍板).
 	// Not seconds — the thing a person rations is whole videos.
-	// 视频是第三个开关,又是自己的单位:一天 10 **条**(H1,用户拍板)。不是秒——人配给的是**整条**片子。
+	// 视频是第三个开关,又是自己的单位:一天 10 **条**(用户拍板)。不是秒——人配给的是**整条**片子。
 	c.VideoEnabled = g.boolean("VIDEO_ENABLED", false)
 	c.VideoDailyLimit = g.boundedInt64("VIDEO_DAILY_LIMIT", 10, 0, config.MaxVideoDailyLimit)
 	// Default 2 = the inventory size: an empty inventory can be filled in one day, and a
@@ -459,9 +459,9 @@ func (r *envReader) boundedInt64(key string, def, min, max int64) int64 {
 // nativeBaseFrom derives the native DashScope origin from the credential's own
 // compatible-mode base URL. Both APIs live on the SAME host and differ only by
 // path, so the region is a property of the credential — never of a constant in
-// this file. Hardcoding one produced a real 401 on the desktop side of WRK-082:
-// a Singapore workspace key answered 200 in Singapore and "Incorrect API key
-// provided" in Beijing, with nothing in the message hinting at geography.
+// this file. Hardcoding one produced a real 401 on the desktop side: a Singapore
+// workspace key answered 200 in Singapore and "Incorrect API key provided" in
+// Beijing, with nothing in the message hinting at geography.
 //
 // With no credential configured the fallback is the international host, because
 // the only base URL this gateway can derive on its own (the DASHSCOPE_WORKSPACE_ID
@@ -470,7 +470,7 @@ func (r *envReader) boundedInt64(key string, def, min, max int64) int64 {
 //
 // nativeBaseFrom 从凭证自己的 compatible-mode base URL 派生原生 DashScope origin。两套 API 在
 // **同一个 host** 上、只在 path 上不同,故区域是**凭证的属性**——绝不是本文件里一个常量的属性。
-// 写死一个区域在 WRK-082 桌面侧造成过一次真 401:一把新加坡 workspace key 在新加坡答 200、在北京答
+// 写死一个区域在桌面侧造成过一次真 401:一把新加坡 workspace key 在新加坡答 200、在北京答
 // "Incorrect API key provided",而报文里没有任何一个字暗示这跟地理有关。
 //
 // 没配凭证时兜底取国际 host,因为本网关唯一能自行派生的 base URL(DASHSCOPE_WORKSPACE_ID 那一形)

@@ -1,5 +1,5 @@
-// Package video owns the two pure rules the asynchronous video capability needs
-// (WRK-082 H1): the closed phase vocabulary the wire reports, and the SIGNED
+// Package video owns the two pure rules the asynchronous video capability
+// needs: the closed phase vocabulary the wire reports, and the SIGNED
 // HANDLE that binds one upstream task to the install that paid for it.
 //
 // Video is the gateway's only two-request capability. Everything else here
@@ -8,7 +8,7 @@
 // desktop polls minutes later — and between those two requests the answer has to
 // be carried by something.
 //
-// video 包持有异步视频能力所需的两条**纯**规则(H1):线缆上报的封闭状态词表,以及把一个上游任务
+// video 包持有异步视频能力所需的两条**纯**规则:线缆上报的封闭状态词表,以及把一个上游任务
 // 绑到**为它付过钱**的那个 install 上的**签名句柄**。
 //
 // 视频是本网关唯一的**两次请求**能力。别的(chat/image/speech)都在一次 HTTP 请求里开始并结束,

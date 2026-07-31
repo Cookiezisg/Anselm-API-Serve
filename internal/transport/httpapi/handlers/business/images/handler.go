@@ -1,7 +1,7 @@
 // Package images is the thin HTTP handler for POST /v1/images/generations and
-// POST /v1/images/edits (WRK-082 批B, edits added in H9): decode + validate the closed request shape (n=1, bounded
+// POST /v1/images/edits (edits added in): decode + validate the closed request shape (n=1, bounded
 // prompt, WxH size within the pixel envelope), run app/image.Generate, and
-// render the OpenAI-form url response ({created, data:[{url}]} — URL 直通, P13).
+// render the OpenAI-form url response ({created, data:[{url}]} — URL 直通).
 package images
 
 import (
@@ -45,7 +45,7 @@ type Handler struct {
 // New wires the generation handler.
 func New(svc *appimage.Service) *Handler { return &Handler{svc: svc} }
 
-// NewEdit wires the editing handler (WRK-082 H9).
+// NewEdit wires the editing handler.
 func NewEdit(svc *appimage.Service) *Handler { return &Handler{svc: svc, edit: true} }
 
 type requestBody struct {
@@ -79,10 +79,10 @@ type responseImageItem struct {
 
 // ServeHTTP guards method + shape then delegates. The request `model` is a
 // logical alias and never selects an upstream (the same rule as chat); `n` must
-// be absent or exactly 1 (closed union, P12).
+// be absent or exactly 1 (closed union).
 //
 // ServeHTTP 守方法与形状后委派。请求 `model` 是逻辑别名、绝不选上游(与 chat 同律);`n` 缺席
-// 或恒 1(关闭联合,P12)。
+// 或恒 1(关闭联合)。
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.WriteErrorWith(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "method not allowed")

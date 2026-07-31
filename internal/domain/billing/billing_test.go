@@ -322,13 +322,13 @@ func TestImagesPlanAndCost(t *testing.T) {
 	}
 }
 
-// TestCharactersPlanAndCost pins the speech rate-card pair (WRK-082 批C): a frozen per-character
+// TestCharactersPlanAndCost pins the speech rate-card pair: a frozen per-character
 // plan whose reserve equals its settle for the same count, the Validate roundtrip the persistence
 // boundary relies on, and the closed-set rejections. The cross-class assertions matter most: a
 // characters plan must not answer ImagesCost and an images plan must not answer CharactersCost —
 // the two are priced in different units and a silent crossover would bill audio at 35e9 per unit.
 //
-// TestCharactersPlanAndCost 钉语音卡对(批C)。最要紧的是**跨类**断言:字符 plan 不得答 ImagesCost、
+// TestCharactersPlanAndCost 钉语音卡对。最要紧的是**跨类**断言:字符 plan 不得答 ImagesCost、
 // 图像 plan 不得答 CharactersCost——两者单位不同,静默串线会把音频按每单位 35e9 计费。
 func TestCharactersPlanAndCost(t *testing.T) {
 	p, err := NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, 100)
