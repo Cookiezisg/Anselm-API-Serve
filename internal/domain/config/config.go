@@ -261,12 +261,12 @@ type Config struct {
 	// MediaFetchDomain is the PUBLIC host an upstream may fetch a lease's bytes from — and it must
 	// NOT be the `api.` host, because that is the one shape the fetcher rejects.
 	//
-	// ADR 0012 removed the old MEDIA_PUBLIC_BASE_URL after a生产环境判别实验: the same lease URL on
+	// The `api.` prohibition comes from a live experiment (ADR 0012): the same lease URL on
 	// `api.<domain>` failed 400 three times over while Caddy's access log proved the origin never
 	// received a request, whereas identical bytes, path and token on a plain host answered 200. The
-	// fetcher blacklists API-shaped hosts at its own edge — invisible, uncontestable. That ADR's
-	// clause 4 explicitly parked a dedicated media subdomain for "if some provider ever truly needs
-	// a URL". Voice enrollment IS that provider: `voice-enrollment` accepts no base64 at all.
+	// fetcher blacklists API-shaped hosts at its own edge — invisible, uncontestable. That ADR
+	// parked a dedicated media subdomain for "if some provider ever truly needs a URL". Voice
+	// enrollment IS that provider: `voice-enrollment` accepts no base64 at all.
 	//
 	// **Scope: enrollment only.** Chat and image inputs keep inlining their bytes (ADR 0012), so
 	// this host is not a general re-opening of URL relay — it exists for the one upstream that
@@ -275,11 +275,11 @@ type Config struct {
 	// MediaFetchDomain 是上游可以来取 lease 字节的**公开**主机——且它**绝不能**是 `api.` 那台,因为
 	// 那正是拉取器唯一会拒的形状。
 	//
-	// ADR 0012 当初拆掉了 MEDIA_PUBLIC_BASE_URL,依据是一次生产环境判别实验:同一个 lease URL 放在
-	// `api.<域>` 上连续三次 400,而 Caddy 访问日志证明**源站从未收到请求**;同样的字节、同样的路径、
-	// 同样的 token 放在普通主机上答 200。拉取器在**它自己的边缘**把 API 形主机拉黑——不可见、不可
-	// 申诉。那篇 ADR 的第 4 条明文为「将来某个 provider 确需 URL 形态」留了一个专用媒体子域的门。
-	// 音色登记**就是**那个 provider:`voice-enrollment` 根本不收 base64。
+	// 禁 `api.` 这条来自一次线上判别实验(ADR 0012):同一个 lease URL 放在 `api.<域>` 上连续三次
+	// 400,而 Caddy 访问日志证明**源站从未收到请求**;同样的字节、同样的路径、同样的 token 放在普通
+	// 主机上答 200。拉取器在**它自己的边缘**把 API 形主机拉黑——不可见、不可申诉。那篇 ADR 为「将来
+	// 某个 provider 确需 URL 形态」留了一个专用媒体子域的门。音色登记**就是**那个 provider:
+	// `voice-enrollment` 根本不收 base64。
 	//
 	// **范围:只给登记用。** chat 与图像输入继续内联字节(ADR 0012),故这台主机**不是**对 URL 直通的
 	// 全面重开——它只为那个别无他法的上游而存在。

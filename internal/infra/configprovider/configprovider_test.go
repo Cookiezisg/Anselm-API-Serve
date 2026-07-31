@@ -163,11 +163,10 @@ func TestLoadBaseDurableMediaIsExplicitAndComplete(t *testing.T) {
 	env["MEDIA_SIGNING_SECRET"] = "01234567890123456789012345678901"
 	env["MAX_BODY_BYTES"] = "4194304"
 	env["MEDIA_CHUNK_MAX_BYTES"] = "4194304"
-	// ADR 0012 removed MEDIA_PUBLIC_BASE_URL entirely: verified lease content is INLINED into the
-	// upstream request, so the gateway no longer needs to know its own public origin (the provider's
-	// fetcher refused to download from it anyway — measured live 2026-07-25).
-	// ADR 0012 整个移除了 MEDIA_PUBLIC_BASE_URL:已校验的 lease 内容**内联**进上游请求,网关不再需要知道
-	// 自己的公开 origin(反正 provider 的拉取器也拒绝从它下载——2026-07-25 线上实测)。
+	// Verified lease content is INLINED into the upstream request (ADR 0012), so the gateway needs
+	// no public origin of its own — the provider's fetcher refused to download from one anyway.
+	// 已校验的 lease 内容**内联**进上游请求(ADR 0012),故网关不需要自己的公开 origin——反正 provider
+	// 的拉取器也拒绝从它下载。
 	c = mustLoad(t, env)
 	if !c.MediaEnabled || c.MediaSigningSecretSource != "configured" || c.MediaChunkMaxBytes != 4194304 {
 		t.Fatalf("media enabled config not assembled: %+v", c)

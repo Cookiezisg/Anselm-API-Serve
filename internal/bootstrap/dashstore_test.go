@@ -36,11 +36,6 @@ func TestBudgetSourceReadsNewSpendTableAndConvertsPUSD(t *testing.T) {
 		month, usedPUSD); err != nil {
 		t.Fatalf("insert global spend: %v", err)
 	}
-	// A stale v1 value must not influence the dashboard after accounting v2.
-	if _, err := db.Writer.Exec(ctx,
-		`INSERT INTO budget(period, tokens_used, requests) VALUES (?, 999999999, 99)`, month+"-01"); err != nil {
-		t.Fatalf("insert legacy budget: %v", err)
-	}
 
 	source := budgetSource{
 		ds:       dashStore{w: db.Writer, r: db.Reader, loc: time.UTC},
@@ -101,13 +96,6 @@ func TestDashStoreListsTodaySpendInMicroUSDFromNewTable(t *testing.T) {
 		INSERT INTO install_spend_daily(install_id, period_day, spend_pusd, requests)
 		VALUES ('ins_new', ?, ?, 1)`, day, 5*billing.PicoUSDPerMicroUSD+999_999); err != nil {
 		t.Fatalf("insert install spend: %v", err)
-	}
-	// Old usage.tokens is intentionally contradictory: the dashboard must ignore
-	// it and read only install_spend_daily after the accounting migration.
-	if _, err := db.Writer.Exec(ctx, `
-		INSERT INTO usage(install_id, period, count, tokens)
-		VALUES ('ins_new', ?, 1, 999999999)`, day); err != nil {
-		t.Fatalf("insert legacy usage: %v", err)
 	}
 
 	rows, err := store.ListInstalls(ctx, 0, 10)

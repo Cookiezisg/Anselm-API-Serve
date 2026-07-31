@@ -95,6 +95,17 @@ func exempt(rel string) bool {
 		strings.HasPrefix(rel, "docs/archive/"),
 		strings.HasPrefix(rel, "deploy/site/"),
 		rel == "docs/working/repo-governance.md",
+		// The squashed migration explains WHICH identities it removed, and the
+		// golden-schema test ASSERTS they are absent — both have to name them to
+		// do their job. Neither is a loophole: TestGoldenSchemaHasNoRetiredProviderIdentity
+		// checks the schema SQLite actually built, which is a stronger guard than a
+		// text scan of the file that produced it.
+		// 压平后的迁移要说清它**删掉了哪些**身份,而 golden-schema 测试要**断言它们不在**——两者
+		// 都必须能说出这两个名字才干得了自己的活。这不是开后门:
+		// TestGoldenSchemaHasNoRetiredProviderIdentity 检查的是 SQLite **建出来**的 schema,
+		// 比对着产生它的那个文件做文本扫描更强。
+		rel == "internal/infra/sqlite/migrations/0001_init.sql",
+		rel == "internal/infra/sqlite/schema_golden_test.go",
 		rel == "cmd/docs/forbidden.go",
 		rel == baselineRel,
 		rel == ".env": // local secrets file, gitignored; never inspected or reported

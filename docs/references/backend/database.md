@@ -11,9 +11,18 @@ audience: [human, ai]
 
 # SQLite schema（database）
 
-> 与 `internal/infra/sqlite/migrations/*.sql` 对齐。schema forward-only；`schema_migrations` 记录 `version`、`applied_at`、`checksum`。v2 以后 quota store 只写 provider-aware pUSD 表；v1 accounting 表保留为只读审计/迁移来源，不再参与当前记账。
+> 与 `internal/infra/sqlite/migrations/0001_init.sql` 对齐——**只有这一个迁移**。schema forward-only；
+> `schema_migrations` 记录 `version`、`applied_at`、`checksum`。
+>
+> **这份 schema 由一次压平产生**：原先七个增量迁移在网关上线前被重述为一个。做得成的前提是没有
+> 生产数据要带走；**已部署的数据库绝不可以这样处理**。压平同时删掉了 v1 token 账本三表
+> （`usage`/`budget`/`ledger`，Go 代码零引用）与 provider CHECK 里两个没有东西写得进去的身份。
+>
+> 结构由 [`testdata/schema.golden.sql`](../../../internal/infra/sqlite/testdata/schema.golden.sql)
+> 钉住：断言对着 SQLite **建出来**的 schema 做，而不是对着我们**写**的 SQL——ALTER 落在行尾的列、
+> 重建改名留下的引号表名、CHECK 里的死值，全都只在建出来的那一份里看得见。
 
-## 1. 当前仍活跃的 identity / abuse / config 表（0001）
+## 1. identity / abuse / config 表
 
 ### `installs`
 
@@ -46,9 +55,9 @@ audience: [human, ai]
 
 只存 dashboard override 的 runtime-hot K/V；secret/startup-hard 不得入表。multi-key apply 在单 tx 全有或全无。
 
-## 2. v2 provider-aware accounting（0002）
+## 2. provider-aware pUSD accounting
 
-余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 的 DB 级 CHECK 闭集**仍是** `deepseek|gemini|qwen`，但**运行期只写入 `qwen`**：`gemini` 从未上线过，`deepseek` 已撤出路由。两个死值留在约束里是因为迁移历史带着它们——治理战役阶段 4 压平迁移时一并移除。
+余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集,当前**只有 `qwen`** 一个成员。单成员的 CHECK 不是冗余:它让「加一家 provider」成为一次显式、需过审的迁移,而不是某一行代码悄悄写进一个新字符串。
 
 ### `quota_monthly` — 月请求额度
 
@@ -73,7 +82,7 @@ audience: [human, ai]
 
 | 列 | 类型 | 约束 |
 |---|---|---|
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`,`qwen`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`qwen`) |
 | `period_day` | TEXT | NOT NULL |
 | `spend_pusd` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
 | `requests` | INTEGER | NOT NULL DEFAULT 0 CHECK ≥0 |
@@ -101,7 +110,7 @@ audience: [human, ai]
 |---|---|---|
 | `request_id` | TEXT | PRIMARY KEY |
 | `install_id` | TEXT | NOT NULL |
-| `provider` | TEXT | NOT NULL CHECK IN (`deepseek`,`gemini`,`qwen`) |
+| `provider` | TEXT | NOT NULL CHECK IN (`qwen`) |
 | `model` | TEXT | NOT NULL；实际 provider model，不是 client alias；ASR 使用 `qwen3-asr-flash-realtime` |
 | `rate_card_id` | TEXT | NOT NULL；版本化价格快照 id，区分 token 费率与 ASR 时长费率 |
 | `period_month` | TEXT | NOT NULL |
@@ -148,37 +157,7 @@ Realtime ASR 复用同一表，不新增旁路计数：`PromptQuote` 在冻结 P
 
 dashboard 的全员月请求额度重置也在同一写池事务：先检查全库 `spend_ledger(open)` 为零，才将当前月所有正的 `quota_monthly.requests` 置零。它不写 `global_spend_monthly`、三张日统计表或 `spend_ledger`；因此是权益周期操作而非成本账务修订。
 
-## 4. 0002 从 v1 迁移
-
-### 4.1 v1 accounting 表（迁移后只读保留）
-
-| 表 | 列 |
-|---|---|
-| `usage` | `install_id TEXT`, `period TEXT`, `count INTEGER DEFAULT 0`, `tokens INTEGER DEFAULT 0`; PK `(install_id,period)` |
-| `budget` | `period TEXT` PK, `tokens_used INTEGER DEFAULT 0`, `requests INTEGER DEFAULT 0` |
-| `ledger` | `request_id TEXT` PK, `install_id TEXT`, `period_day TEXT`, `reserved INTEGER`, `settled INTEGER NULL`, `created_at DATETIME` |
-
-旧索引 `idx_ledger_open(settled,created_at)` 同样保留。当前 quota store 不写这三表；新 open gauge 读取 `spend_ledger.state='open'`。
-
-### 4.2 保守数据换算
-
-迁移先用 guard 拒绝非整数、负数、单值或按日聚合后的乘法溢出，再按 v1 时代最高价格维度 `280000 pUSD/token` 换算：
-
-- 月 `usage.count` → `quota_monthly.requests`；
-- 日 `usage.tokens` → `install_spend_daily.spend_pusd`，日 `count` 原样保留；
-- `budget` → `provider_spend_daily(provider='deepseek')` + `global_spend_daily`；
-- `ledger` → `spend_ledger`，model/rate card 标成 `legacy-deepseek` / `legacy-v1-max-280000-pusd`；旧 NULL 仍迁为 open，其余迁为 settled/rolled_back。
-
-v1 orphan reconciler 曾用 `settled=reserved` 表示未知外部结果，却同时从 `usage`/`budget` 退掉预留；该编码与真实 full-cost settlement 无法区分。为避免迁移后低估 provider 可能已经收取的费用，0002 还会从 legacy `ledger` 构造 chargeable token：`settled IS NULL` 取 `reserved`、`settled>0` 取 `settled`、`settled=0` 排除。然后按 install/day 与 day 聚合，并把 install、DeepSeek provider、global 三张日统计表分别设为 `max(v1 copied balance, ledger aggregate×280000)`；缺失行会补建。这里用 `max` 而不是相加，因此正常情况下已包含在 v1 余额里的请求不会双计。provider/global `requests` 同样取 copied count 与 chargeable ledger count 的较大值；install `requests` 仍只保留 v1 日子限次数，无法从 legacy ledger 臆造。
-
-0002 中旧 runtime settings 曾以 `ceil(tokens×280000/10^6)=ceil(tokens×28/100)` 转成整数 microUSD：
-
-- `GLOBAL_DAILY_BUDGET_TOKENS` → `GLOBAL_DAILY_SPEND_MICRO_USD`；
-- `INSTALL_DAILY_TOKEN_CAP` → `INSTALL_DAILY_SPEND_MICRO_USD`。
-
-随后删除旧 token 键与 `MODEL_ALLOWLIST`；若新键已存在，`INSERT OR IGNORE` 保留新值。0004 再把 `global_spend_daily` 按 `period_month` 聚合进 `global_spend_monthly`，并删除 retired `GLOBAL_DAILY_SPEND_MICRO_USD` / `INSTALL_DAILY_SPEND_MICRO_USD` / `DEEPSEEK_DAILY_SPEND_MICRO_USD` / `QWEN_DAILY_SPEND_MICRO_USD` settings。
-
-## 5. 媒体 staging 与 lease（0005）
+## 5. 媒体 staging 与 lease
 
 媒体原件/代理字节不进入 SQLite。`media_uploads` 只记录 install 绑定的分块上传状态、预声明 SHA-256、
 MIME、总/已收字节和到期时间；`media_leases` 是完成后的唯一 completion capability，拥有独立高熵 id 与
@@ -193,7 +172,7 @@ staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能
 `received_bytes` 是进度，不是完成证明；完成时必须从暂存文件重算 SHA-256 后才能转 `completed` 并创建 lease。
 过期/删除必须先撤销 DB capability，再删除文件、最后 acknowledge；崩溃恢复会截去 fsync 后但 cursor 未推进的尾部，绝不因无法证明成功而把媒体跨 install 复用。
 
-## 5.5 克隆音色库存（0007）
+## 5.5 克隆音色库存
 
 `install_voices`：`id TEXT PRIMARY KEY`、`install_id TEXT NOT NULL`、`name TEXT NOT NULL`、
 `upstream_id TEXT NOT NULL`、`created_at INTEGER NOT NULL`；`UNIQUE(install_id,name)` +
@@ -218,4 +197,4 @@ staging 对象被签发为多个 lease，lease id、文件路径、SHA 均不能
 
 `schema_migrations`：`version INTEGER PRIMARY KEY`、`applied_at DATETIME NOT NULL`、`checksum TEXT NOT NULL`。runner 拒绝未知未来 version 与已应用 checksum drift；每份 SQL 和记录行在同一个 tx。
 
-`0001_init` 使用 `IF NOT EXISTS` 只为 baseline 既有 unversioned DB；后续迁移是有版本、checksum 的 forward-only DDL。写池 `MaxOpenConns=1` + `_txlock=immediate`，读池有界；两 DSN 均启 WAL、foreign keys、synchronous NORMAL 与统一 PERF-2 pragmas。连接/内存不变量见 [invariants.md](invariants.md) GW-INV-40。
+`0001_init` 是压平后**唯一**的迁移,不使用 `IF NOT EXISTS`——没有需要 baseline 的既有库,而一个无条件的 CREATE 会让「库里已经有东西」这件事立刻失败,而不是静默跳过。写池 `MaxOpenConns=1` + `_txlock=immediate`，读池有界；两 DSN 均启 WAL、foreign keys、synchronous NORMAL 与统一 PERF-2 pragmas。连接/内存不变量见 [invariants.md](invariants.md) GW-INV-40。

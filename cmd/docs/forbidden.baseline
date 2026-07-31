@@ -6,15 +6,3 @@
 # 本闸要求本文件与现实**逐条精确**吻合:删了命中却不收缩本文件会失败,反之亦然。终局:空。
 #
 # token	path	count
-deepseek	docs/references/backend/database.md	8
-deepseek	internal/infra/sqlite/migrations/0002_provider_spend_ledger.sql	9
-deepseek	internal/infra/sqlite/migrations/0003_add_qwen_provider.sql	3
-deepseek	internal/infra/sqlite/migrations/0004_global_monthly_budget.sql	1
-deepseek	internal/infra/sqlite/sqlite_test.go	4
-deepseek	internal/infra/store/quotastore/quotastore_test.go	2
-gemini	docs/references/backend/database.md	4
-gemini	internal/infra/sqlite/migrations/0002_provider_spend_ledger.sql	2
-gemini	internal/infra/sqlite/migrations/0003_add_qwen_provider.sql	2
-media-public-base-url	internal/domain/config/config.go	2
-media-public-base-url	internal/infra/configprovider/configprovider_test.go	2
-media-public-base-url	internal/infra/configprovider/envparity_test.go	2

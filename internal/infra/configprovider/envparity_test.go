@@ -12,19 +12,19 @@ import (
 )
 
 // This file is the config-surface parity gate. It exists because the three
-// places that describe one env key drifted apart with nothing to catch it:
-// ADR 0012 deleted MEDIA_PUBLIC_BASE_URL from the loader, and the .env.example
-// line survived — advertising a knob that does nothing, with a real hostname in
-// it. In the other direction GATEWAY_MODE, the master switch over every
-// rationing gate, was never written into the template at all.
+// places that describe one env key drifted apart with nothing to catch it: an
+// ADR deleted a media key from the loader and the .env.example line survived —
+// advertising a knob that does nothing, with a real hostname in it. In the other
+// direction GATEWAY_MODE, the master switch over every rationing gate, was never
+// written into the template at all.
 //
 // Both failures are invisible to the compiler: env keys are strings. So they get
 // a test instead.
 //
 // 本文件是配置面对账闸。它存在,是因为描述同一个 env key 的三处各自漂移而没有任何东西
-// 接住:ADR 0012 从 loader 删掉了 MEDIA_PUBLIC_BASE_URL,而 .env.example 那一行活了下来
-// ——一个什么也不做的旋钮,还带着真实主机名。反方向上,GATEWAY_MODE(所有配额闸的总开关)
-// 压根没写进模板。两种失败编译器都看不见(env key 是字符串),故用测试接住。
+// 接住:某篇 ADR 从 loader 删掉了一个媒体键,而 .env.example 那一行活了下来——一个什么也不做
+// 的旋钮,还带着真实主机名。反方向上,GATEWAY_MODE(所有配额闸的总开关)压根没写进模板。
+// 两种失败编译器都看不见(env key 是字符串),故用测试接住。
 
 // recordingEnv answers from m while recording every key LoadBase asks for. The
 // loader takes its getenv injected, so the read set is observed rather than

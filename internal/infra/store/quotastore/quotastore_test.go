@@ -40,7 +40,7 @@ func newTestStore(t *testing.T) *Store {
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
 			PRIMARY KEY(install_id, period_day))`,
 		`CREATE TABLE provider_spend_daily (
-			provider TEXT NOT NULL CHECK(provider IN ('deepseek','qwen')),
+			provider TEXT NOT NULL CHECK(provider IN ('qwen')),
 			period_day TEXT NOT NULL, spend_pusd INTEGER NOT NULL DEFAULT 0 CHECK(spend_pusd >= 0),
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
 			PRIMARY KEY(provider, period_day))`,
@@ -52,7 +52,7 @@ func newTestStore(t *testing.T) *Store {
 			requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0))`,
 		`CREATE TABLE spend_ledger (
 			request_id TEXT PRIMARY KEY, install_id TEXT NOT NULL,
-			provider TEXT NOT NULL CHECK(provider IN ('deepseek','qwen')),
+			provider TEXT NOT NULL CHECK(provider IN ('qwen')),
 			model TEXT NOT NULL, rate_card_id TEXT NOT NULL,
 			period_month TEXT NOT NULL, period_day TEXT NOT NULL,
 			reserved_pusd INTEGER NOT NULL CHECK(reserved_pusd > 0),
