@@ -23,3 +23,10 @@ secrets/
 *.swp
 .idea/
 .vscode/
+
+# cmd/smoke artifacts — the identity file is a CREDENTIAL (an Ed25519 private key
+# bound to a real install), and the wav is a paid artifact. Neither belongs in git.
+# cmd/smoke 的产物——身份文件是**凭据**(一把绑定真实 install 的 Ed25519 私钥),wav 是花钱买来的
+# 产物。两者都不该进 git。
+smoke-identity.json
+smoke-speech.wav

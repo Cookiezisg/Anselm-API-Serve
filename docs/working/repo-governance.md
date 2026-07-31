@@ -505,3 +505,30 @@ gofmt -l .     # 须为空
 - 不动 `internal/pkg/` 叶内核（`clientip`/`pow`/`noncecache`/`orm` 等），它们没有克隆问题
 - 不重排 git 历史
 - 不擅自扩大范围：遇到本文未覆盖的问题，记下来问用户，不要顺手改
+
+---
+
+## 收尾:真钱冒烟怎么做
+
+这些端点**没法手工冒烟**——每个受保护调用都带一个覆盖精确请求体的 Ed25519 proof,`curl` 够不着。
+故新增 `cmd/smoke`(仅 stdlib):登记 install、取 nonce、签名、发送,并把花掉的东西打出来。
+
+```sh
+go run ./cmd/smoke -base https://<网关域名> -run chat,image,edit,speech,video          # 干跑,只列会花什么
+go run ./cmd/smoke -base https://<网关域名> -run chat,image,edit,speech,video -yes     # 真花钱
+go run ./cmd/smoke -base https://<网关域名> -run voice -sample ./clip.wav -yes         # 音色单独跑
+```
+
+- **没有 `-yes` 什么都不发**,只打印每一步会花什么。
+- 身份落盘 `smoke-identity.json`(已 gitignore,**它是凭据**),重复运行复用**同一个** install——
+  否则测的就变成领号闸了。
+- `edit` 默认拿 `image` 刚生成的那张图当源:客户端自己取回来再编码成 data URL,因为改图**拒绝**
+  一切带 scheme 的东西,而那道拒绝就是 SSRF 缓解本身。
+- `video` 提交后轮询到终态(默认最多 5 分钟)。钱在**提交**处就落定了,轮询不动钱。
+- `voice` 会走完整的断点上传(create → PUT 分片 → complete → leaseId)再登记。**它占一个库存位**,
+  验完记得 `POST /v1/voices:delete`。
+- 跑完会打印 `/v1/quota` 的前后差。pUSD 钱包不在这个视图里——去 loopback:8081 的后台看。
+
+**签名不是目测对的**:`cmd/smoke/main_test.go` 拿网关自己跑的那个 `deviceproof.Service` 验本工具
+造出的 proof,并断言它绑死了精确 body、以及登记调用按公钥指纹索引。一个签名验不过的冒烟工具比
+没有更糟——每条端点都答 401,而运营者会以为是部署坏了。
