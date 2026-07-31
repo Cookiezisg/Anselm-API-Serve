@@ -68,19 +68,32 @@ var forbidden = []struct {
 // that is not source.
 var skipDirs = map[string]bool{".git": true, "node_modules": true, "bin": true}
 
-// exemptPaths may name a forbidden token forever, because naming it is their
-// job. ADRs are immutable historical records — an ADR about retiring DeepSeek
-// must be free to say "DeepSeek". archive/ is the same graveyard the docs linter
-// already exempts, and the governance ticket is the document that lists what to
-// remove. The gate's own two files hold the token list by definition.
+// exempt lists paths that may name a forbidden token forever, because naming it
+// is their job.
+//
+//   - docs/decisions/ — ADRs are immutable historical records. An ADR about
+//     retiring DeepSeek must be free to say "DeepSeek".
+//   - docs/archive/ — the same graveyard the docs linter already exempts.
+//   - the governance ticket — it is the document that lists what to remove.
+//   - deploy/site/ — the public trust page. Its whole stated purpose is to
+//     declare the official API domain, so it has to be able to name it. That
+//     hostname is not a secret in the first place: every client resolves it to
+//     reach the service. What the domain rule guards against is the hostname
+//     leaking into places that have no business knowing which deployment this
+//     is — tests, templates, how-to docs — not the one page whose subject it is.
+//   - the gate's own two files — they hold the token list by definition.
 //
 // 这些路径可以永远提到禁词,因为提到它正是它们的职责。ADR 是不可变的历史记录——一篇讲「撤掉
 // DeepSeek」的 ADR 必须能说出「DeepSeek」。archive/ 是 docs linter 本就豁免的同一片墓地,治理
-// 工单则是那份列出「要删什么」的文档。本闸自己的两个文件按定义持有禁词表。
+// 工单则是那份列出「要删什么」的文档。deploy/site/ 是公开的信任页:它自称存在的目的就是**声明
+// 官方 API 域名**,故它必须能说出那个域名——而那个主机名本来就不是机密,每个客户端都要解析它才
+// 连得上。域名规则要防的是主机名渗进「本不该知道这是哪个部署」的地方(测试、模板、how-to 文档),
+// 不是防那唯一一张以它为主题的页面。本闸自己的两个文件按定义持有禁词表。
 func exempt(rel string) bool {
 	switch {
 	case strings.HasPrefix(rel, "docs/decisions/"),
 		strings.HasPrefix(rel, "docs/archive/"),
+		strings.HasPrefix(rel, "deploy/site/"),
 		rel == "docs/working/repo-governance.md",
 		rel == "cmd/docs/forbidden.go",
 		rel == baselineRel,

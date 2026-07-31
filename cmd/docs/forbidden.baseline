@@ -42,8 +42,6 @@ deepseek	docs/references/backend/config.md	7
 deepseek	docs/references/backend/database.md	9
 deepseek	docs/references/backend/invariants.md	12
 deepseek	docs/references/backend/overview.md	2
-deepseek	docs/working/spec-api.md	1
-deepseek	docs/working/spec-config.md	1
 deepseek	internal/app/chat/fakes_test.go	1
 deepseek	internal/app/chat/response_model_test.go	15
 deepseek	internal/app/chat/service.go	3
@@ -90,10 +88,6 @@ deepseek	internal/pkg/logx/logx_test.go	8
 deepseek	internal/transport/httpapi/handlers/business/chat/handler_test.go	1
 deepseek	internal/transport/httpapi/handlers/business/models/handler_test.go	2
 deepseek	internal/transport/httpapi/router/dashboard_test.go	5
-deployment-domain	deploy/site/index.html	1
-deployment-domain	docs/how-to/cloudflare-deployment.md	3
-deployment-domain	internal/domain/chat/medialease_test.go	1
-deployment-domain	internal/pkg/secureurl/secureurl_test.go	1
 gemini	docs/references/backend/database.md	4
 gemini	internal/infra/sqlite/migrations/0002_provider_spend_ledger.sql	2
 gemini	internal/infra/sqlite/migrations/0003_add_qwen_provider.sql	2

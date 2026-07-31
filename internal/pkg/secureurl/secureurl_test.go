@@ -55,7 +55,7 @@ func TestAllowsCredentialTransportRejectsNil(t *testing.T) {
 // 在自己边缘拒绝的那个形状——三次 400,而源站访问日志显示请求从未到达。那种失败在任何地方都不留
 // 诊断,故必须在 URL 递出去**之前**拦住,而不是事后去查。
 func TestPublicFetchURL_RefusesTheOneShapeThatFailsInvisibly(t *testing.T) {
-	for _, host := range []string{"api.anselm.website", "api.example.com"} {
+	for _, host := range []string{"api.example.net", "api.example.com"} {
 		if _, err := PublicFetchURL(host, "mls_1", "tok"); err == nil {
 			t.Fatalf("PublicFetchURL accepted %q — that host fails with no diagnostic anywhere", host)
 		}

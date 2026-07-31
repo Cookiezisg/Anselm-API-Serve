@@ -27,9 +27,9 @@ provider 化石、过期文档），把**克隆式增生**出来的重复代码�
 
 | 阶段 | 状态 |
 |---|---|
-| **0 装门禁** | ✅ **已完成**（2026-07-31 落地并 push main） |
-| 1 域名收口 + 死配置化石 | ⬜ 下一个 |
-| 2 DeepSeek 全仓下掉 | ⬜ |
+| **0 装门禁** | ✅ **已完成**（2026-07-31，`9a85357`，已部署成功） |
+| **1 域名收口 + 死配置化石** | ✅ **已完成**（2026-07-31） |
+| 2 DeepSeek 全仓下掉 | ⬜ 下一个 |
 | 3 Dashboard 收敛 external | ⬜ |
 | 4 数据库压平 | ⬜ |
 | 5 合并克隆 | ⬜ |
@@ -68,7 +68,9 @@ go run ./cmd/docs -write-baseline    # 清理完一批后重新生成禁词基�
 | `media-public-base-url` | 3 | 6 | 阶段 2 |
 
 **永久豁免**（不进基线，因为「提到它」正是它们的职责）：`docs/decisions/`（ADR 不可变，一篇讲
-「撤掉 DeepSeek」的 ADR 必须能说出 DeepSeek）、`docs/archive/`、本文件、闸自己的两个文件。
+「撤掉 DeepSeek」的 ADR 必须能说出 DeepSeek）、`docs/archive/`、`deploy/site/`（公开信任页，
+自称目的即「声明官方 API 域名」；那个主机名本来就不是机密，每个客户端都要解析它）、本文件、
+闸自己的两个文件。
 
 ---
 
@@ -156,26 +158,26 @@ bcrypt、前端三个文件的分支、部署脚本的模式分派与三组模�
 
 ---
 
-### 阶段 1 — 域名收口 + 死配置化石
+### 阶段 1 — 域名收口 + 死配置化石 ✅ 已完成
 
-**域名泄漏共 7 处**（`grep -rnE '\banselm\.[a-z]{2,10}\b'`，实测零误报）：
+域名实到 6 处（`.env.example` 那处已在阶段 0 随 `MEDIA_PUBLIC_BASE_URL` 一并消失）：
 
-- `.env.example`（stash 中随 `MEDIA_PUBLIC_BASE_URL` 一并删除，已解决）
-- `internal/domain/chat/medialease_test.go`
-- `internal/pkg/secureurl/secureurl_test.go`
-- `docs/how-to/cloudflare-deployment.md`（**3 处**）
-- `deploy/site/index.html`
-- `internal/infra/webassets/ui/dist/assets/*.js`（构建产物；改源码后重建 dist）
-
-测试里改成 `example.com` 之类的占位符即可；`deploy/site/index.html` 与 dist 需确认是否应改为
-构建期注入（`GATEWAY_DOMAIN`/`SITE_DOMAIN` 已经是 GitHub secret，走同一条路）。
+- `internal/pkg/secureurl/secureurl_test.go` → `api.example.net`（该用例测的是 `api.` **前缀形状**
+  被拒，真实主机名一点作用都没起）
+- `internal/domain/chat/medialease_test.go` → `api.example.com`（语义由 map 键
+  "absolute https to our own host" 承载，不靠主机名字面值）
+- `docs/how-to/cloudflare-deployment.md`（3 处）→ `<你的域名>` 占位符，并点明它就是部署时的
+  `GATEWAY_DOMAIN`
+- `deploy/site/index.html` → **不改，改为永久豁免**（用户 2026-07-31 决定）。那是公开信任页，
+  自称目的即「声明官方 API 域名」；主机名本来就不是机密，每个客户端都要解析它才连得上
 
 **其余**：
 - 删空目录 `docs/references/domains/`（只有 `.gitkeep`，建立后从未使用）
-- 7 篇 `status: superseded` 的文档移进 `docs/archive/`：`docs/working/slice-plan.md` +
-  `docs/working/spec-{api,behaviors,config,database,error-codes,invariants}.md`
-  （`docs/archive/` 已建好但从未使用；`cmd/docs` 对 `archive/` 免检 frontmatter）
-- 同步 `docs/INDEX.md`（它现在还指向 `working/slice-plan.md`，移走后会变成孤儿链接 → `make docs` 失败）
+- 7 篇 `status: superseded` 文档移进 `docs/archive/`，`docs/working/` 只剩两篇 active
+- `docs/INDEX.md` 那一行改指 `archive/` 目录本身，以后再归档不必再动它
+
+⚠️ 归档使 `deepseek` 基线从 67 文件/528 处降到 65/526 —— 那是**归档带来的**（`archive/` 按设计
+豁免），**不是清理**。阶段 2 面对的仍是同一批引用。
 
 ---
 

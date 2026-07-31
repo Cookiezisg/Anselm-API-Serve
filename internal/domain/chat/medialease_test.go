@@ -18,7 +18,7 @@ func TestParseMediaLeaseRef_AcceptsOnlyOwnRelativePath(t *testing.T) {
 	}
 
 	hostile := map[string]string{
-		"absolute https to our own host": "https://api.anselm.website/v1/media/leases/mls_a/content?token=t",
+		"absolute https to our own host": "https://api.example.com/v1/media/leases/mls_a/content?token=t",
 		"absolute https to another host": "https://evil.example/v1/media/leases/mls_a/content?token=t",
 		"protocol-relative host":         "//evil.example/v1/media/leases/mls_a/content?token=t",
 		"http scheme":                    "http://evil.example/v1/media/leases/mls_a/content?token=t",
