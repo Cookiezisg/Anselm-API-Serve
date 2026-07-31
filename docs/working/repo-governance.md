@@ -319,7 +319,7 @@ Go 之外：`deploy/build-stage.sh`（**硬要求那行必须先删**）、`depl
 2. `tts.resolveVoice` 改用鉴权后的 `got` 而非原始 `installID`。`install.LookupInstall` 里
    `id = installID`，两者恒等，故只是把索引键统一到该用的那一个。
 
-#### ⚠️ 合并暴露出的问题：`unbilled` 三家不一致（**已原样保留，待决策**）
+#### ✅ 合并暴露出的问题：429 记账（**用户 2026-07-31 拍板改成退款，已修**）
 
 抽传输层时发现三个原生 client 对**同一件事**给出不同的钱结论：
 
@@ -328,6 +328,27 @@ Go 之外：`deploy/build-stage.sh`（**硬要求那行必须先删**）、`depl
 | 429 上游忙 | 照收 | 照收 | **可退** | 「明确 3xx/4xx」= DefinitelyUnbilled → 应可退 |
 | client 未配置（什么也没离开进程） | 照收 | — | **可退** | 什么也没发生 → 应可退 |
 | 请求构造失败（同上） | 照收 | 照收 | **可退** | 同上 |
+
+**后续核实把结论抬高了一级：这不是「不一致待决策」，是违反三条已写下的不变量。**
+
+- `GW-INV-23` 原文：「provider 429 独立归一 `UPSTREAM_BUSY`、**`DefinitelyUnbilled`**……**当前请求仍
+  rollback**」，失守后果一栏写的就是「**已知拒绝仍收费**」。
+- `GW-INV-02` 可 rollback 的集合明确列举了 `429`。
+- `GW-INV-22`：「`DefinitelyUnbilled` 不推出『不计 breaker』，『计 breaker』也不推出『可 retry』」——
+  而 `imagegen_test.go` 的注释正是拿「chat 的故障分类把 429 排除在可回滚之外」为扣款辩护，
+  **它记错了本仓自己的代码**：429 被排除的是**熔断器**故障集，那是另一条轴。chat 路径本身早就把
+  429 判为 `DefinitelyUnbilled`（`backend_test.go:352`）。
+
+**已修**（`imagegen.go` / `videogen.go` 各一行 `false → true`）。同时：
+
+- `imagegen_test.go` 那个只断言 sentinel、注释在为缺陷辩护的测试，改为**断言 `unbilled`**；
+- `videogen.go` 此前**一个测试文件都没有**（本仓唯一没有测试的付费上游，也正是它的 429 能静默
+  收钱的原因）→ 新增 `videogen_test.go`：状态码→钱的全表、异步头/凭证/路径的线缆形状、轮询的
+  封闭状态词表、未知状态降级为 RUNNING、明文产物 URL 判为契约破裂、未配置即拒；
+- `invariants.md` GW-INV-50 精确同步：明写「歧义之外照 GW-INV-02/23 退款」与「不计 breaker
+  和不可退是两条轴」。
+
+三份 golden 一字节未动（定价没变，变的只是「退不退」）。
 
 ---
 

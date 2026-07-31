@@ -196,7 +196,10 @@ func (g *VideoGen) roundTrip(ctx context.Context, method, endpoint string, paylo
 		// 只在轮询时可达:签名有效、但上游已忘掉(过期)的任务。与坏签名不同——调用方**确实**拥有它。
 		return nil, true, apierr.ErrVideoTaskNotFound
 	case status == http.StatusTooManyRequests:
-		return nil, false, apierr.ErrUpstreamBusy
+		// Explicit refusal of the request; nothing was queued and nothing was billed.
+		// Same rule as the image and voice clients, and as the chat path.
+		// 对请求的显式拒绝;什么也没排队、什么也没计费。与图像、音色 client 及 chat 路径同律。
+		return nil, true, apierr.ErrUpstreamBusy
 	case rejectedBeforeGeneration(status):
 		return nil, true, apierr.UpstreamRejected(apierr.RejectedInvalid)
 	default:

@@ -131,7 +131,15 @@ func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDat
 		}
 		return u, false, nil
 	case status == http.StatusTooManyRequests:
-		return "", false, apierr.ErrUpstreamBusy
+		// A 429 is an explicit refusal of the REQUEST: the provider never started
+		// generating, so it never billed us. Refundable, like every other explicit
+		// 4xx (GW-INV-50). This is a different axis from breaker health, where 429
+		// IS excluded — non-fault and non-refundable are not the same statement,
+		// and conflating them charged users for being rate-limited.
+		// 429 是对**请求本身**的显式拒绝:上游根本没开始生成,故也没向我们计费。可退,与其余每一个
+		// 显式 4xx 同律(GW-INV-50)。这与熔断健康是**另一条轴**——429 在那条轴上确实被排除,但
+		// 「不算故障」与「不可退」不是同一句话,把两者混为一谈的结果是**用户为被限流付费**。
+		return "", true, apierr.ErrUpstreamBusy
 	case rejectedBeforeGeneration(status):
 		// Provably unbilled → the caller rolls back.
 		// 可证明未计费 → 调用方回滚。

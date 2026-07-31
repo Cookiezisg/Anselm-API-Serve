@@ -117,18 +117,31 @@ func TestImageGen_AmbiguousOutcomesKeepCharge(t *testing.T) {
 	}
 }
 
-// TestImageGen_Busy429: upstream 429 maps to UPSTREAM_BUSY (billed-ambiguous is wrong here —
-// but 429 means the provider did not start generating; still, the chat fault taxonomy keeps
-// 429 out of rollback-eligible classes, so the conservative charge stands. The sentinel is
-// what the client retries on.)
+// TestImageGen_Busy429: an upstream 429 is UPSTREAM_BUSY and REFUNDABLE.
+//
+// This test previously asserted only the sentinel, and its comment rationalized the charge with
+// "the chat fault taxonomy keeps 429 out of rollback-eligible classes". That was wrong about this
+// very repository: the chat path classifies 429 as DefinitelyUnbilled (see backend_test.go). What
+// 429 is excluded from is the BREAKER fault set — a different axis, as architecture.md §4 spells
+// out. Conflating "not a fault" with "not refundable" made users pay for being rate-limited.
+//
+// 一次上游 429 是 UPSTREAM_BUSY 且**可退**。
+//
+// 本测试此前只断言了那个 sentinel,而它的注释用「chat 的故障分类把 429 排除在可回滚之外」来为
+// 扣款辩护。那句话**记错了本仓自己的代码**:chat 路径把 429 判为 DefinitelyUnbilled(见
+// backend_test.go)。429 被排除的是**熔断器**故障集——那是另一条轴,architecture.md §4 写得很清楚。
+// 把「不算故障」当成「不可退」,结果是**用户为被限流付费**。
 func TestImageGen_Busy429(t *testing.T) {
 	srv := fakeDashScope(t, http.StatusTooManyRequests, `{}`)
 	defer srv.Close()
 	g := NewImageGen(srv.URL, "sk")
-	_, _, err := g.GenerateImage(context.Background(), "m", "p", "1024x1024")
+	_, unbilled, err := g.GenerateImage(context.Background(), "m", "p", "1024x1024")
 	var ae *apierr.APIError
 	if !asAPIErr(err, &ae) || ae.Code != "UPSTREAM_BUSY" {
 		t.Fatalf("err = %v, want UPSTREAM_BUSY", err)
+	}
+	if !unbilled {
+		t.Fatal("a 429 never reached generation, so it must be refundable")
 	}
 }
 
