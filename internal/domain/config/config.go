@@ -198,54 +198,58 @@ type Config struct {
 	DiskMinMB      int // DISK_MIN_MB(数据盘剩余绝对下限 MiB)
 	DiskMinPercent int // DISK_MIN_PERCENT(剩余百分比下限;0=禁用百分比判定)
 
-	// Image generation is an explicit capability (WRK-082 批B): off until the
-	// operator enables it against a priced upstream model. The daily limit is the
-	// per-install image-count cap (P8: default 10; 0 disables the gate).
-	ImageEnabled       bool   // IMAGE_ENABLED
-	ImageUpstreamModel string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
-
-	// VoiceAccountCeiling caps how many cloned voices may exist in OUR provider account across ALL
-	// installs (WRK-082 H9). It is not a per-user limit and it is not a quota — every install's
-	// clone lives under one DashScope credential, so this is the shared resource nobody else can
-	// see. 0 = no ceiling enforced (the provider's own limit is then the only one, and we find out
-	// by being refused).
-	//
-	// VoiceAccountCeiling 界**我们的** provider 账号里、跨**所有** install 能存在多少克隆音色(H9)。
-	// 它不是逐用户上限、也不是配额——每个 install 的克隆都住在同一把 DashScope 凭证下,故这是那份
-	// 别人都看不见的共享资源。0 = 不设(那时只剩供应商自己的上限,而我们靠**被拒绝**才知道)。
-	VoiceAccountCeiling int64  // VOICE_ACCOUNT_CEILING
-	ImageDailyLimit     int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
+	// ---- 付费生成能力 ----
+	// All four reach the NATIVE DashScope API below and pay with the Qwen credential above, but each
+	// has its OWN switch: an operator may want one and not another, and they bill in different units
+	// (images / characters / seconds / enrollments). None of them is on by default.
+	// 四个能力都走下面这个**原生** DashScope API、都用上面那把 Qwen 凭证付钱,但每个有**自己的**开关:
+	// 运营者可能只要其中一个,且它们的计费单位不同(张 / 字符 / 秒 / 个)。默认全部关闭。
 	DashScopeNativeBase string // DASHSCOPE_NATIVE_BASE(native DashScope API origin,非 compatible-mode)
 
-	// Speech synthesis is its own explicit capability (WRK-082 批C), separate from
-	// image generation: an operator may want one and not the other, and they bill in
-	// different units (characters vs images). It shares DASHSCOPE_NATIVE_BASE and the
-	// Qwen credential because DashScope has NO OpenAI-compatible TTS endpoint — the
+	// Image generation: off until the operator enables it against a priced upstream
+	// model. The daily limit is the per-install image-count cap (default 10; 0 disables).
+	// 图像生成:在运营者对着一个有价上游模型打开它之前一直关着。日限额是逐 install 的张数上限
+	// (默认 10;0 = 不设闸)。
+	ImageEnabled       bool   // IMAGE_ENABLED
+	ImageUpstreamModel string // IMAGE_UPSTREAM_MODEL(exact priced DashScope image model id)
+	ImageDailyLimit    int64  // IMAGE_DAILY_LIMIT(per-install per-day image count;0=off)
+
+	// Speech synthesis is its own capability, separate from image generation. It shares the native
+	// origin and the Qwen credential because DashScope has NO OpenAI-compatible TTS endpoint — the
 	// native multimodal-generation path is the only one that exists (调研实证).
-	// 语音合成是自己的显式能力(批C),与图像生成分开:运营者可能只要其中一个,且两者计费单位
-	// 不同(字符 vs 张)。它与图像共用 DASHSCOPE_NATIVE_BASE 与 Qwen 凭证,因为 DashScope **没有**
+	// 语音合成是自己的能力,与图像生成分开。它共用原生 origin 与 Qwen 凭证,因为 DashScope **没有**
 	// OpenAI 兼容的 TTS 端点——原生 multimodal-generation 是唯一存在的那条路(调研实证)。
 	SpeechEnabled    bool   // SPEECH_ENABLED
 	TTSUpstreamModel string // TTS_UPSTREAM_MODEL(exact priced DashScope TTS model id)
 	SpeechDailyLimit int64  // SPEECH_DAILY_LIMIT(per-install per-day characters;0=off)
 	TTSDefaultVoice  string // TTS_DEFAULT_VOICE(used when the request omits voice)
 
-	// Video generation is the third generation capability and the only ASYNC one
-	// (WRK-082 H1): submit returns a handle, the desktop polls minutes later. It
-	// therefore needs one thing the others do not — VideoHandleKey, the derived
-	// secret that binds a task to the install that paid for it. That key is NOT an
-	// env var: it is derived (with domain separation) from media signing material
-	// the deployment already has, so enabling video costs the operator no new
-	// secret and a leak of one key still cannot forge the other.
-	// 视频生成是第三个生成能力,也是唯一**异步**的那个(H1):提交返回句柄,桌面端几分钟后轮询。
-	// 故它需要一样别的能力不需要的东西——VideoHandleKey,把任务绑到**付过钱的那个 install** 上的
-	// 派生密钥。这把 key **不是** env:它由本部署已有的 media 签名材料**域分离**派生,于是开视频
-	// 不必新配 secret,而其中一把泄露仍伪造不出另一把。
+	// Video generation is the only ASYNC capability: submit returns a handle, the desktop polls
+	// minutes later. It therefore needs one thing the others do not — VideoHandleKey, the derived
+	// secret that binds a task to the install that paid for it. That key is NOT an env var: it is
+	// derived (with domain separation) from media signing material the deployment already has, so
+	// enabling video costs the operator no new secret and a leak of one key still cannot forge the
+	// other.
+	// 视频生成是唯一**异步**的能力:提交返回句柄,桌面端几分钟后轮询。故它需要一样别的能力不需要的
+	// 东西——VideoHandleKey,把任务绑到**付过钱的那个 install** 上的派生密钥。这把 key **不是** env:
+	// 它由本部署已有的 media 签名材料**域分离**派生,于是开视频不必新配 secret,而其中一把泄露仍伪造
+	// 不出另一把。
 	VideoEnabled       bool   // VIDEO_ENABLED
 	VideoUpstreamModel string // VIDEO_UPSTREAM_MODEL(exact priced DashScope video model id)
 	VideoDailyLimit    int64  // VIDEO_DAILY_LIMIT(per-install per-day CLIP count;0=off)
-	VoiceDailyLimit    int64  // VOICE_DAILY_LIMIT(per-install per-day voice ENROLLMENT count;0=off)
 	VideoHandleKey     []byte // derived, never read from env; empty => video unavailable
+
+	// Voice cloning rides SPEECH_ENABLED (a deployment that cannot speak has no use for a voice) and
+	// has no upstream-model knob of its own: enrollment is a fixed service, not a model choice. Its
+	// two numbers are DIFFERENT KINDS of thing — VoiceDailyLimit is a per-install daily FLOW gate
+	// that resets; VoiceAccountCeiling is an account-wide INVENTORY ceiling that nothing resets,
+	// guarding a shared resource no client can see.
+	// 音色克隆搭在 SPEECH_ENABLED 上(说不了话的部署要音色没有用),且没有自己的上游模型旋钮:登记是
+	// 一个固定服务、不是一次模型选择。它这两个数是**两类不同的东西**——VoiceDailyLimit 是逐 install
+	// 的**日流量闸**、会重置;VoiceAccountCeiling 是账号级的**库存**上限、没有东西会重置它,守的是一份
+	// 任何客户端都看不见的共享资源。
+	VoiceDailyLimit     int64 // VOICE_DAILY_LIMIT(per-install per-day voice ENROLLMENT count;0=off)
+	VoiceAccountCeiling int64 // VOICE_ACCOUNT_CEILING(账号级克隆音色总数;0=不强制)
 
 	// Durable media staging is an explicit capability. Keeping it off until its
 	// signing secret and persistent directory are configured prevents a partial

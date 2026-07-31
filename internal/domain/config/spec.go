@@ -204,15 +204,6 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.ImageDailyLimit, 10) }},
-		// VOICE_ACCOUNT_CEILING is INVENTORY, not a daily limit, and that is why it sits apart from
-		// the three above: nothing resets it. It guards the provider's per-account cloned-voice
-		// total — a number only this gateway can see, since every install's voice lives under one
-		// credential. 0 = unenforced, which is the default because the provider does not document
-		// the real ceiling; the operator sets it once they learn it from a refusal.
-		// VOICE_ACCOUNT_CEILING 是**库存、不是日限额**,这正是它与上面三条分开坐的理由:**没有东西
-		// 会重置它**。它守 provider 的账号级克隆音色总数——只有本网关看得见的那个数,因为每个 install
-		// 的音色都住在同一把凭证之下。0 = 不强制,且这就是默认值,因为 provider 没有文档写出真实上限;
-		// 运营者从一次拒绝里学到它之后再设。
 		{Key: "VOICE_DAILY_LIMIT", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxVoiceDailyLimit,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("VOICE_DAILY_LIMIT", raw, 0, MaxVoiceDailyLimit)
@@ -222,6 +213,13 @@ func Specs() []Spec {
 				return err
 			},
 			get: func(c *Config) string { return strconv.FormatInt(c.VoiceDailyLimit, 10) }},
+		// VOICE_ACCOUNT_CEILING is INVENTORY, not a daily limit: nothing resets it. It guards the
+		// provider's per-account cloned-voice total — a number only this gateway can see, since every
+		// install's voice lives under one credential. 0 = unenforced, and that is the default because
+		// the provider does not document the real ceiling; the operator sets it once a refusal reveals it.
+		// VOICE_ACCOUNT_CEILING 是**库存、不是日限额**:**没有东西会重置它**。它守 provider 的账号级克隆
+		// 音色总数——只有本网关看得见的那个数,因为每个 install 的音色都住在同一把凭证之下。0 = 不强制,
+		// 且这就是默认值,因为 provider 没有文档写出真实上限;运营者从一次拒绝里学到它之后再设。
 		{Key: "VOICE_ACCOUNT_CEILING", Tier: TierRuntimeHot, Bounded: true, Min: 0, Max: MaxVoiceAccountCeiling,
 			apply: func(c *Config, raw string) error {
 				n, err := reqInt64("VOICE_ACCOUNT_CEILING", raw, 0, MaxVoiceAccountCeiling)

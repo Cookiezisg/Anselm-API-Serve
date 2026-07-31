@@ -1,11 +1,8 @@
 package upstream
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,10 +24,7 @@ import (
 // 它把任务交回、由桌面端轮询,于是一次 3 分钟的生成不会占住一个网关请求位(N_GLOBAL 是 8;三条
 // 同时在跑的视频就是整台机器的三分之一)。
 type VideoGen struct {
-	base    string // NATIVE DashScope origin (DASHSCOPE_NATIVE_BASE), no trailing slash
-	apiKey  string
-	httpc   *http.Client
-	timeout time.Duration
+	c nativeClient
 }
 
 // videoGenTimeout bounds one SUBMIT or one POLL — not one generation. Both are
@@ -46,12 +40,7 @@ const videoGenTimeout = 30 * time.Second
 //
 // NewVideoGen 在原生 base 与**一把** key 上构建(与图像路由同律:单次确定性预留、单次上游尝试)。
 func NewVideoGen(nativeBase, apiKey string) *VideoGen {
-	return &VideoGen{
-		base:    strings.TrimRight(strings.TrimSpace(nativeBase), "/"),
-		apiKey:  apiKey,
-		httpc:   &http.Client{Timeout: videoGenTimeout},
-		timeout: videoGenTimeout,
-	}
+	return &VideoGen{c: newNativeClient(nativeBase, apiKey, videoGenTimeout)}
 }
 
 // VideoStatus is one poll's answer in the gateway's own vocabulary. URL is set
@@ -81,7 +70,7 @@ type VideoStatus struct {
 // unbilled 守本族规矩(GW-INV-50):**仅**显式的生成前拒绝为 true。这里比图像那边更强——一次被拒的
 // **提交**可证明没产出任何视频,因为上游连任务都还没排。歧义(超时、5xx、200 却解析不出)仍保留计费。
 func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (string, bool, error) {
-	if g == nil || g.base == "" || g.apiKey == "" {
+	if g == nil || !g.c.configured() {
 		return "", false, apierr.ErrVideoUnavailable
 	}
 	params := map[string]any{
@@ -116,7 +105,7 @@ func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, second
 		return "", false, apierr.Internal()
 	}
 	raw, unbilled, aerr := g.roundTrip(ctx, http.MethodPost,
-		g.base+"/api/v1/services/aigc/video-generation/video-synthesis", payload, true)
+		g.c.base+"/api/v1/services/aigc/video-generation/video-synthesis", payload, true)
 	if aerr != nil {
 		return "", unbilled, aerr
 	}
@@ -147,10 +136,10 @@ func (g *VideoGen) SubmitVideo(ctx context.Context, model, prompt string, second
 // 无法识别的上游状态报为 RUNNING、不报 FAILED:封闭集是**厂商**的,它里面冒出一个新成员,不该
 // 在同一瞬间把所有用户的健康任务都变成错误。
 func (g *VideoGen) PollVideo(ctx context.Context, taskID string) (VideoStatus, error) {
-	if g == nil || g.base == "" || g.apiKey == "" {
+	if g == nil || !g.c.configured() {
 		return VideoStatus{}, apierr.ErrVideoUnavailable
 	}
-	raw, _, aerr := g.roundTrip(ctx, http.MethodGet, g.base+"/api/v1/tasks/"+url.PathEscape(taskID), nil, false)
+	raw, _, aerr := g.roundTrip(ctx, http.MethodGet, g.c.base+"/api/v1/tasks/"+url.PathEscape(taskID), nil, false)
 	if aerr != nil {
 		return VideoStatus{}, aerr
 	}
@@ -194,50 +183,21 @@ func (g *VideoGen) PollVideo(ctx context.Context, taskID string) (VideoStatus, e
 // roundTrip 是两个动词共用的请求/归一路径——key 只在此注入、body 只在此设界、非 2xx 只在此变成
 // 带 unbilled 分类的 apierr sentinel。上游 body 文本绝不从这里逃出去。
 func (g *VideoGen) roundTrip(ctx context.Context, method, endpoint string, payload []byte, async bool) ([]byte, bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, g.timeout)
-	defer cancel()
-	var bodyReader io.Reader
-	if payload != nil {
-		bodyReader = bytes.NewReader(payload)
+	body, status, ae := g.c.do(ctx, method, endpoint, payload, async)
+	if ae != nil {
+		return nil, false, ae
 	}
-	req, err := http.NewRequestWithContext(cctx, method, endpoint, bodyReader)
-	if err != nil {
-		return nil, false, apierr.Internal()
-	}
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
-	if async {
-		req.Header.Set("X-DashScope-Async", "enable")
-	}
-	resp, err := g.httpc.Do(req)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, false, apierr.ErrUpstreamTimeout
-		}
-		return nil, false, apierr.ErrUpstreamError
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, false, apierr.ErrUpstreamError
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return raw, false, nil
-	case http.StatusNotFound:
+	switch {
+	case status == http.StatusOK:
+		return body, false, nil
+	case status == http.StatusNotFound:
 		// Only reachable on a poll: a signed handle whose task the provider has
 		// forgotten (expired). Distinct from a bad signature — the caller did own it.
 		// 只在轮询时可达:签名有效、但上游已忘掉(过期)的任务。与坏签名不同——调用方**确实**拥有它。
 		return nil, true, apierr.ErrVideoTaskNotFound
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		return nil, false, apierr.ErrUpstreamBusy
-	case http.StatusBadRequest,
-		http.StatusUnauthorized,
-		http.StatusForbidden,
-		http.StatusRequestEntityTooLarge,
-		http.StatusUnprocessableEntity:
+	case rejectedBeforeGeneration(status):
 		return nil, true, apierr.UpstreamRejected(apierr.RejectedInvalid)
 	default:
 		return nil, false, apierr.ErrUpstreamError

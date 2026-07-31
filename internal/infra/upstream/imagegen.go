@@ -1,12 +1,9 @@
 package upstream
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,10 +25,7 @@ import (
 // 出站请求、上游 body/header 文本绝不经错误透传、非 2xx 一律归一 apierr sentinel 并给出可证明
 // 的 unbilled 分类(显式 4xx 拒=上游没生成;歧义一律保留计费)。
 type ImageGen struct {
-	base    string // NATIVE DashScope origin (DASHSCOPE_NATIVE_BASE), no trailing slash
-	apiKey  string
-	httpc   *http.Client
-	timeout time.Duration
+	c nativeClient
 }
 
 // imageGenTimeout bounds one whole sync generation. Generations run tens of
@@ -49,12 +43,7 @@ const imageGenTimeout = 120 * time.Second
 // NewImageGen 在原生 base 与**一把** key 上构建(图像路由无 failover 池——单次确定性预留必须
 // 对应单次上游尝试)。
 func NewImageGen(nativeBase, apiKey string) *ImageGen {
-	return &ImageGen{
-		base:    strings.TrimRight(strings.TrimSpace(nativeBase), "/"),
-		apiKey:  apiKey,
-		httpc:   &http.Client{Timeout: imageGenTimeout},
-		timeout: imageGenTimeout,
-	}
+	return &ImageGen{c: newNativeClient(nativeBase, apiKey, imageGenTimeout)}
 }
 
 type dashScopeImageReq struct {
@@ -106,7 +95,7 @@ func (g *ImageGen) EditImage(ctx context.Context, model, prompt, size, sourceDat
 }
 
 func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDataURL string) (string, bool, error) {
-	if g == nil || g.base == "" || g.apiKey == "" {
+	if g == nil || !g.c.configured() {
 		return "", false, apierr.ErrImageUnavailable
 	}
 	reqBody := dashScopeImageReq{Model: model}
@@ -125,35 +114,14 @@ func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDat
 	if err != nil {
 		return "", false, apierr.Internal()
 	}
-	cctx, cancel := context.WithTimeout(ctx, g.timeout)
-	defer cancel()
-	httpReq, err := http.NewRequestWithContext(cctx, http.MethodPost,
-		g.base+"/api/v1/services/aigc/multimodal-generation/generation", bytes.NewReader(payload))
-	if err != nil {
-		return "", false, apierr.Internal()
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+g.apiKey)
-
-	resp, err := g.httpc.Do(httpReq)
-	if err != nil {
-		// Transport-level failure: the request may or may not have reached the
-		// provider — ambiguous, keep the charge (GW-INV-50). Client cancellation is
-		// equally ambiguous mid-generation.
-		// 传输层失败:请求可能已达上游——歧义,保留计费(GW-INV-50)。生成中途的取消同样歧义。
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", false, apierr.ErrUpstreamTimeout
-		}
-		return "", false, apierr.ErrUpstreamError
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", false, apierr.ErrUpstreamError
+	body, status, ae := g.c.post(ctx,
+		g.c.base+"/api/v1/services/aigc/multimodal-generation/generation", payload)
+	if ae != nil {
+		return "", false, ae
 	}
 
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case status == http.StatusOK:
 		u, perr := parseDashScopeImageURL(body)
 		if perr != nil {
 			// A 200 without a parseable artifact is ambiguous evidence: the provider
@@ -162,16 +130,11 @@ func (g *ImageGen) imageCall(ctx context.Context, model, prompt, size, sourceDat
 			return "", false, apierr.ErrUpstreamError
 		}
 		return u, false, nil
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		return "", false, apierr.ErrUpstreamBusy
-	case http.StatusBadRequest,
-		http.StatusUnauthorized,
-		http.StatusForbidden,
-		http.StatusRequestEntityTooLarge,
-		http.StatusUnprocessableEntity:
-		// Explicit pre-generation rejection: provably unbilled → the caller rolls
-		// back. Upstream text is discarded (redaction iron rule).
-		// 显式生成前拒绝:可证明未计费 → 调用方回滚。上游原文丢弃(脱敏铁律)。
+	case rejectedBeforeGeneration(status):
+		// Provably unbilled → the caller rolls back.
+		// 可证明未计费 → 调用方回滚。
 		return "", true, apierr.UpstreamRejected(apierr.RejectedInvalid)
 	default:
 		return "", false, apierr.ErrUpstreamError

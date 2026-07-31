@@ -1,11 +1,9 @@
 package upstream
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -49,10 +47,7 @@ import (
 // 不是名字。我们的名字住在我们自己的表里;把它发上去等于把用户的措辞白白泄进一个共享的 provider
 // 账号。
 type VoiceGen struct {
-	base    string // NATIVE DashScope origin, no trailing slash
-	apiKey  string
-	httpc   *http.Client
-	timeout time.Duration
+	c nativeClient
 }
 
 // voiceGenTimeout bounds one customization call.
@@ -84,12 +79,7 @@ const (
 //
 // NewVoiceGen 在原生 base 与**一把** key 上构建。
 func NewVoiceGen(nativeBase, apiKey string) *VoiceGen {
-	return &VoiceGen{
-		base:    strings.TrimRight(strings.TrimSpace(nativeBase), "/"),
-		apiKey:  apiKey,
-		httpc:   &http.Client{Timeout: voiceGenTimeout},
-		timeout: voiceGenTimeout,
-	}
+	return &VoiceGen{c: newNativeClient(nativeBase, apiKey, voiceGenTimeout)}
 }
 
 // EnrollVoice registers a reference clip reachable at sampleURL and returns the upstream voice id.
@@ -233,7 +223,7 @@ func parseVoiceStatus(body []byte) string {
 // 那个 bool 是 `unbilled`:**只有**显式的创建前拒绝才为 true,那时上游可证明什么也没登记、什么也没收。
 // 其余一切——传输失败、超时、读不懂的 200——都是歧义,**保留计费**(GW-INV-50)。
 func (g *VoiceGen) customization(ctx context.Context, payload map[string]any) ([]byte, bool, error) {
-	if g == nil || g.base == "" || g.apiKey == "" {
+	if g == nil || !g.c.configured() {
 		// Nothing left this process, so nothing was billed.
 		// 什么也没离开本进程,故什么也没被计费。
 		return nil, true, apierr.ErrVoiceUnavailable
@@ -242,46 +232,23 @@ func (g *VoiceGen) customization(ctx context.Context, payload map[string]any) ([
 	if err != nil {
 		return nil, true, apierr.Internal()
 	}
-	cctx, cancel := context.WithTimeout(ctx, g.timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
-		g.base+"/api/v1/services/audio/tts/customization", bytes.NewReader(raw))
-	if err != nil {
-		return nil, true, apierr.Internal()
+	body, status, ae := g.c.post(ctx, g.c.base+"/api/v1/services/audio/tts/customization", raw)
+	if ae != nil {
+		// A request we could not even build never left the process; a transport failure may
+		// already have. 构造不出来的请求从未离开进程;传输失败则可能已经出去了。
+		return nil, ae.Status == http.StatusInternalServerError, ae
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
-
-	resp, err := g.httpc.Do(req)
-	if err != nil {
-		// Transport-level failure: the request may or may not have reached the provider —
-		// ambiguous, keep the charge (GW-INV-50).
-		// 传输层失败:请求可能已达上游——歧义,保留计费(GW-INV-50)。
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, false, apierr.ErrUpstreamTimeout
-		}
-		return nil, false, apierr.ErrUpstreamError
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, false, apierr.ErrUpstreamError
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case status == http.StatusOK:
 		return body, false, nil
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		return nil, true, apierr.ErrUpstreamBusy
-	case http.StatusBadRequest,
-		http.StatusUnauthorized,
-		http.StatusForbidden,
-		http.StatusRequestEntityTooLarge,
-		http.StatusUnprocessableEntity:
+	case rejectedBeforeGeneration(status):
 		// Explicit pre-creation rejection: provably nothing was registered and nothing billed.
 		// Upstream text is discarded (redaction iron rule) — including the fetch diagnostics, which
 		// is why the SAMPLE URL is validated before we get here rather than debugged from a reply.
 		// 显式创建前拒绝:可证明什么也没登记、什么也没计费。上游原文丢弃(脱敏铁律)——**包括**它的
-		// 抓取诊断,这正是**样本 URL 必须在到这里之前就验好**、而不是从回包里去debug的理由。
+		// 抓取诊断,这正是**样本 URL 必须在到这里之前就验好**、而不是从回包里去 debug 的理由。
 		return nil, true, apierr.UpstreamRejected(apierr.RejectedInvalid)
 	default:
 		return nil, false, apierr.ErrUpstreamError

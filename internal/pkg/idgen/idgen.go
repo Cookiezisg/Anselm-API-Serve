@@ -43,10 +43,6 @@ func MediaLeaseID() string { return "mls_" + hex.EncodeToString(randBytes(mediaE
 // 的登记的唯一把手,且它走在请求体里,而一个猜得中的 id 会让一个 install 探到另一个的。
 func VoiceID() string { return "vce_" + hex.EncodeToString(randBytes(installEntropyBytes)) }
 
-// MediaFetchToken returns a provider-only 256-bit capability. Its plaintext is never written to
-// SQLite or returned by the public upload API; persistence stores only its SHA-256 hash.
-func MediaFetchToken() string { return hex.EncodeToString(randBytes(32)) }
-
 // randBytes fills n cryptographically-random bytes.
 //
 // Go 1.24+ crypto/rand.Read never returns an error; per the stdlib idiom we
