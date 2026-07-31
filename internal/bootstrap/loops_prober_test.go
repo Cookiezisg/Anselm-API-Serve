@@ -34,11 +34,11 @@ func modelServer(t *testing.T, wantKey, modelID string) *httptest.Server {
 	}))
 }
 
-// probeConfig builds the ONE target the prober still probes. DeepSeek dropped out after WRK-082 H9:
+// probeConfig builds the ONE target the prober probes. An unrouted upstream is left out after WRK-082 H9:
 // nothing routes there, and probing an unrouted upstream spends a live credential on an answer that
 // changes nothing.
 //
-// probeConfig 构造探测器**仍然会探的那唯一一个**目标。DeepSeek 在 H9 之后退出:没有流量去那儿,而
+// probeConfig 构造探测器**会探的那唯一一个**目标。无流量的上游不探:没有流量去那儿,而
 // 探测一条无流量上游,是拿一把活凭证去换一个改变不了任何事的答案。
 func probeConfig(qwenURL string) config.Config {
 	return config.Config{
@@ -84,11 +84,11 @@ func TestUpstreamProberAuthenticatesTheRoutedModel(t *testing.T) {
 // TestUpstreamProberTriesEveryKeyBeforeFailing: the sibling-key property is what this test was
 // really about — one expired key among several must not sink readiness. Its old framing ("a
 // Qwen-disabled, text-only deployment") is gone: after WRK-082 H9 every chat request routes to
-// Qwen, so there is no text-only shape and DeepSeek is no longer probed at all.
+// the one model, so there is no separate text-only shape to probe.
 //
 // TestUpstreamProberTriesEveryKeyBeforeFailing:这个测试真正在意的是**兄弟 key**那条性质——一把过期
 // key 夹在几把里,不该把就绪拖下水。它旧的说法(「一个关掉 Qwen 的纯文本部署」)已经不存在了:H9 之后
-// 每次 chat 都路由到 Qwen,既没有纯文本形态,DeepSeek 也**根本不再被探测**。
+// 每次 chat 都路由到同一个模型,故没有单独的纯文本形态需要探测。
 func TestUpstreamProberTriesEveryKeyBeforeFailing(t *testing.T) {
 	qwen := modelServer(t, "working-key", billing.Qwen37Plus)
 	t.Cleanup(qwen.Close)

@@ -38,11 +38,11 @@ func (fakeBudget) GlobalBudget(context.Context) (string, int64, int64, error) {
 type fakeProviders struct{}
 
 func (fakeProviders) Available(provider billing.Provider) bool {
-	return provider == billing.ProviderDeepSeek
+	return provider == billing.ProviderQwen
 }
 
 func (fakeProviders) BreakerOpen(provider billing.Provider) bool {
-	return provider == billing.ProviderDeepSeek
+	return provider == billing.ProviderQwen
 }
 
 type fakeQuotaResetter struct {
@@ -127,17 +127,17 @@ func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
 		t.Fatalf("decode overview: %v", err)
 	}
-	if len(wire.Providers) != 2 {
-		t.Fatalf("providers = %v, want exactly deepseek/qwen", wire.Providers)
+	// The key is ALWAYS serialized, so an operator (and the SPA) never has to infer
+	// capability from a field being absent.
+	// 这个键**恒被序列化**,故运营者(以及 SPA)永远不必从「字段不在」去推断能力。
+	if len(wire.Providers) != 1 {
+		t.Fatalf("providers = %v, want exactly qwen", wire.Providers)
 	}
-	if got := wire.Providers["deepseek"]; !got.Configured || !got.BreakerOpen {
-		t.Fatalf("deepseek = %+v, want configured/open", got)
-	}
-	if got := wire.Providers["qwen"]; got.Configured || got.BreakerOpen {
-		t.Fatalf("qwen = %+v, want unconfigured/closed", got)
+	if got := wire.Providers["qwen"]; !got.Configured || !got.BreakerOpen {
+		t.Fatalf("qwen = %+v, want configured/open", got)
 	}
 	if !wire.Aggregate {
-		t.Fatal("compatibility aggregate must remain true when one provider breaker is open")
+		t.Fatal("the aggregate must be true while a configured provider's breaker is open")
 	}
 }
 

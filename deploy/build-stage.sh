@@ -71,7 +71,6 @@ REPO_ROOT="$3"
 [[ -f "${BINARY}" && ! -L "${BINARY}" ]] || die "binary must be a regular non-symlink"
 [[ -d "${REPO_ROOT}" && ! -L "${REPO_ROOT}" ]] || die "repo root is invalid"
 
-: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}"
 : "${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is required}"
 : "${DASHSCOPE_WORKSPACE_ID:?DASHSCOPE_WORKSPACE_ID is required}"
 : "${MEDIA_SIGNING_SECRET:?MEDIA_SIGNING_SECRET is required}"
@@ -85,7 +84,7 @@ SITE_DOMAIN="${SITE_DOMAIN:-}"
 MEDIA_DOMAIN="${MEDIA_DOMAIN:-}"
 RESET_UNLAUNCHED_GATEWAY_DATA="${RESET_UNLAUNCHED_GATEWAY_DATA:-0}"
 
-for secret_name in DEEPSEEK_API_KEY DASHSCOPE_API_KEY DASHSCOPE_WORKSPACE_ID MEDIA_SIGNING_SECRET; do
+for secret_name in DASHSCOPE_API_KEY DASHSCOPE_WORKSPACE_ID MEDIA_SIGNING_SECRET; do
 	require_single_line "${secret_name}" "${!secret_name}"
 done
 [[ ${#MEDIA_SIGNING_SECRET} -ge 32 ]] ||
@@ -163,7 +162,6 @@ install -m 0644 "${REPO_ROOT}/deploy/site/styles.css" "${STAGE}/site/styles.css"
 ENV_FILE="${STAGE}/gateway.env"
 : >"${ENV_FILE}"
 chmod 0600 "${ENV_FILE}"
-write_env DEEPSEEK_API_KEY "${DEEPSEEK_API_KEY}"
 write_env DASHSCOPE_API_KEY "${DASHSCOPE_API_KEY}"
 write_env DASHSCOPE_WORKSPACE_ID "${DASHSCOPE_WORKSPACE_ID}"
 write_env MEDIA_SIGNING_SECRET "${MEDIA_SIGNING_SECRET}"
@@ -198,9 +196,7 @@ fi
 # 注意下面这些值是**当前**姿态、多数是开发期留下的 0=关。选 production 是**照写下的值**上膛,
 # 所以只有当它们是收紧后的数字时才算收紧。cde6b91 记录的那套值见上方英文注释。
 write_env GATEWAY_MODE "debug"
-write_env DEEPSEEK_BASE_URL "https://api.deepseek.com"
 write_env PUBLIC_MODEL_ID "anselm-auto"
-write_env TEXT_UPSTREAM_MODEL "deepseek-v4-flash"
 write_env MULTIMODAL_UPSTREAM_MODEL "qwen3.7-plus"
 write_env GLOBAL_MONTHLY_SPEND_MICRO_USD "420000000"
 write_env INPUT_TOKEN_CAP "0"

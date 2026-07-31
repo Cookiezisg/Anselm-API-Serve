@@ -105,7 +105,7 @@ audience: [human, ai]
 }
 ```
 
-未声明 top-level 字段构造性丢弃；`n>1` 拒绝。client-supplied `thinking` / `reasoning_effort` 不在白名单内，也不能改变 provider knob。`max_tokens` 是 OpenAI 兼容调用参数：正数值在选定模型 output hard limit 与 `MAX_TOKENS_CAP` 内 clamp；缺省或非正值归一成同一个显式 cap 并写上游，使 wire、DeepSeek quote 与客户端预留 output headroom 一致。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop。DeepSeek 历史中的 `reasoning_content` 在文本路由保留，在 Qwen adapter 内剥离。
+未声明 top-level 字段构造性丢弃；`n>1` 拒绝。client-supplied `thinking` / `reasoning_effort` 不在白名单内，也不能改变 provider knob。`max_tokens` 是 OpenAI 兼容调用参数：正数值在选定模型 output hard limit 与 `MAX_TOKENS_CAP` 内 clamp；缺省或非正值归一成同一个显式 cap 并写上游，使 wire、账务 quote 与客户端预留的 output headroom 一致。`tools` / `tool_choice` 与 message 的 `name` / `tool_calls` / `tool_call_id` 作为 opaque JSON 保留，支持完整 tool loop。历史 `reasoning_content` 一律在 adapter 内剥离,不回传上游。
 
 `messages[].content` 是关闭联合类型：
 
@@ -116,7 +116,7 @@ audience: [human, ai]
 | missing / `null` | 仅当 `role="assistant"` 且 `tool_calls` 是非空数组 |
 | object/number/bool/未知 part | `400 BAD_REQUEST` |
 
-message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`MAX_MESSAGE_CHARS`、`MAX_BODY_BYTES` 约束。messages/tool JSON 的 UTF-8 byte-fallback estimate（含 framing 余量）仅作 DeepSeek 悲观成本 quote：它可能显著高估 tokenizer 结果，**不参与准入、不与模型 input hard limit 比较**。`INPUT_TOKEN_CAP` 只为旧 env/settings 兼容保留，值不改变执行。
+message 数、每条文本 rune、整个 JSON body 分别受 `MAX_MESSAGES`、`MAX_MESSAGE_CHARS`、`MAX_BODY_BYTES` 约束。messages/tool JSON 的 UTF-8 byte-fallback estimate（含 framing 余量）仅作 悲观成本 quote：它可能显著高估 tokenizer 结果，**不参与准入、不与模型 input hard limit 比较**。`INPUT_TOKEN_CAP` 只为旧 env/settings 兼容保留，值不改变执行。
 
 ### 2.2 part 逐字形状
 
@@ -165,24 +165,23 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 
 ### 2.3 唯一路由表
 
-路由扫描**完整 history**，与 client `model` 值无关：
+准入扫描**完整 history**，与 client `model` 值无关。它决定的是**能力与受理**，不是 provider——两种模态都到达同一个上游模型：
 
-| 完整 content | provider | 实际模型 |
+| 完整 content | 受理 | 实际模型 |
 |---|---|---|
-| 只有 string / text parts / 合法 tool-call 空内容 | DeepSeek | `TEXT_UPSTREAM_MODEL`=`deepseek-v4-flash` |
-| 任一 accepted image/video part | Qwen | `MULTIMODAL_UPSTREAM_MODEL`=`qwen3.7-plus` |
-| 任一 accepted audio part | 无 | reserve/Open 前 `503 AUDIO_UNAVAILABLE` |
+| 只有 string / text parts / 合法 tool-call 空内容 | 文本请求 | `MULTIMODAL_UPSTREAM_MODEL`=`qwen3.7-plus` |
+| 任一 accepted image/video part | 需媒体通道(`MEDIA_ENABLED`) | `MULTIMODAL_UPSTREAM_MODEL`=`qwen3.7-plus` |
+| 任一 accepted audio part | 拒 | reserve/Open 前 `503 AUDIO_UNAVAILABLE` |
 
-`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。选定 provider 后无 fallback。
+`PUBLIC_MODEL_ID` 是完整 client-facing alias：空、未知或任意 client `model` 都不能选 provider/价格；stream chunk 与 non-stream completion 的单一、大小写精确顶层 `model` 统一改写为该 alias，duplicate 或 case-fold 等价 key fail closed，真实 provider model 不出 wire（嵌套业务字段不误改）。non-stream 2xx 在写 200 前必须是单一完整 UTF-8 JSON object；SSE 只接受 data-only object、精确 `[DONE]`、空分隔行与被归一成裸 `:` 的 comment heartbeat，任何其它 control/畸形 data 都不透传 provider bytes 并保守结算。无 fallback。
 
 网关统一产品档位由服务端注入，client 不能改：
 
-| route | provider knobs | context / output hard limit | `max_tokens` wire/accounting behavior |
+| profile | provider knobs | context / output hard limit | `max_tokens` wire/accounting behavior |
 |---|---|---:|---:|
-| text / DeepSeek V4 Flash | `thinking={"type":"enabled"}` + `reasoning_effort="high"` | 1,000,000 input / 384,000 output | wire value is explicit `min(positive client or MAX_TOKENS_CAP,MAX_TOKENS_CAP,384000)`；quote 同值，prompt estimate 仅 quote 且 clamp 到 1M |
-| media / Qwen3.7 Plus | top-level `enable_thinking=true` | 1,000,000 input / 65,536 output | wire value is explicit `min(positive client or MAX_TOKENS_CAP,MAX_TOKENS_CAP,65536)`；Qwen cost reservation 按完整 hard-limit 的最高价格分档 |
+| text 与 media 同为 Qwen3.7 Plus | top-level `enable_thinking=true`；历史 `reasoning_content` 不回传 | 1,000,000 input / 65,536 output | wire value is explicit `min(positive client or MAX_TOKENS_CAP,MAX_TOKENS_CAP,65536)`；cost reservation 恒按完整 hard-limit 的最高价格分档 |
 
-Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool_calls`。`GET /v1/models` 在标准 model object 上追加：
+adapter 剥离历史 `reasoning_content`(provider 私有,回传即再计费),但保留 opaque `tool_calls`。`GET /v1/models` 在标准 model object 上追加：
 
 ```json
 {"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true},"image_generation":{"available":true,"daily_limit":10},"speech_generation":{"available":true,"daily_limit":50000},"video_generation":{"available":true,"daily_limit":10}}}
@@ -190,13 +189,13 @@ Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 
 `output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值。
 
-`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：DeepSeek 的 byte estimate 只参与 quote 并在模型 input limit 处 clamp；Qwen 用完整模型 input/output hard limits后按自洽 usage 退款。
+`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：byte estimate 只作账务证据、在模型 input limit 处 clamp;reserve 恒用完整模型 input/output hard limits后按自洽 usage 退款。
 
 `DASHSCOPE_API_KEY` 与 Qwen endpoint/workspace 是启动期必需配置；缺失会 fail-fast，绝不以“纯文本照常”静默降级。音频不依赖 Qwen 视觉配置，始终先返回 `503 AUDIO_UNAVAILABLE`；未来音频 route 只能经新 capability 决策启用。Qwen 故障同样只返回自身归一错误，不跨 provider。
 
 ### 2.4 输出档位、stream 与账务可见行为
 
-- `max_tokens` 由 caller 控制但受边界保护：正数转发 `min(client,MAX_TOKENS_CAP,selected output limit)`；缺省/非正转发 `min(MAX_TOKENS_CAP,selected output limit)`。DeepSeek quote 与 wire 同一 bounded output；Qwen quote 始终保守使用完整 1M/64K hard limits。
+- `max_tokens` 由 caller 控制但受边界保护：正数转发 `min(client,MAX_TOKENS_CAP,selected output limit)`；缺省/非正转发 `min(MAX_TOKENS_CAP,selected output limit)`。quote 始终保守使用完整 1M/64K hard limits。
 - stream request 强加 `stream_options.include_usage=true`；stream/non-stream 都须在 2xx 后等到首个 body byte 才 handoff，`UPSTREAM_HEADER_TIMEOUT_SEC` 覆盖这段等待。response SSE 逐行校验后 relay（仅 data JSON object 可携带业务 payload，并结构化改写唯一的精确顶层 `model`）、写 deadline 每帧滚动；non-stream body 最大读取 8MiB，须为单一 JSON object 后作同一改写。畸形/超限 provider success body 不原样透传。流式 usage 只有在网关完整读到合法终止帧 `[DONE]` 后才可用于退款；此前 EOF、读错或断连即使已见 usage 也保留 full quote。若 `[DONE]` 已读到，随后 client 写失败不抹掉这份终局证据。
 - response 只写 gateway 白名单 header：Content-Type/Cache-Control 与 `X-Quota-Limit`、`X-Quota-Reset`；上游 header/auth 不透传。
 - upstream failure 同时携带 client-facing `APIError` 与独立 `ChargeExposure`；client code 不决定退款：
@@ -215,8 +214,8 @@ Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 
 | 方法 + 路径 | 说明 |
 |---|---|
-| `GET /metrics` | Prometheus；provider label 固定 `deepseek|qwen` |
-| `GET /readyz` | DB + disk + cached authenticated `/models` probe：DeepSeek 与 Qwen key/固定模型均为必需 |
+| `GET /metrics` | Prometheus；provider label 固定 `qwen` |
+| `GET /readyz` | DB + disk + cached authenticated `/models` probe：Qwen key 与固定模型为必需 |
 | `/debug/pprof/`、命名 pprof 路由 | CPU/heap/trace/cmdline/symbol |
 | `GET /debug/vars` | expvar runtime gauges |
 
@@ -230,7 +229,7 @@ Qwen adapter 剥离跨 provider 的 `reasoning_content`，但保留 opaque `tool
 | `GET /api/bootstrap` | 否 | `{authMode:"builtin"|"external"}`，无 identity/secret |
 | `POST /login` / `POST /logout` | `builtin` only / 否 | 建立/销毁 session；login 有 per-IP backoff |
 | `GET /api/session` | `builtin` session | session + CSRF token；external mode 不注册（404） |
-| `GET /api/overview` | builtin: session；external: IAP | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.deepseek` / `providers.qwen`，各为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 仅保留为两路 provider breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/overview` | builtin: session；external: IAP | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.qwen`，为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 是「有没有哪家上游正在甩负载」的聚合 breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
 | `GET /api/config` | builtin: session；external: IAP | secret-free Dump |
 | `POST /api/config` | builtin: session + CSRF；external: IAP | runtime-hot batch，全有或全无 |
 | `GET /api/installs` | builtin: session；external: IAP | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |

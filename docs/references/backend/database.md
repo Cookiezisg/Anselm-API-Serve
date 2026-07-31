@@ -48,7 +48,7 @@ audience: [human, ai]
 
 ## 2. v2 provider-aware accounting（0002）
 
-余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 是 DB 级闭集 `deepseek|gemini|qwen`；Gemini 仅为 v1 数据迁移身份，运行时仅 DeepSeek/Qwen。
+余额单位均为非负整数 pUSD（`1 USD=10^12 pUSD`）。`provider` 的 DB 级 CHECK 闭集**仍是** `deepseek|gemini|qwen`，但**运行期只写入 `qwen`**：`gemini` 从未上线过，`deepseek` 已撤出路由。两个死值留在约束里是因为迁移历史带着它们——治理战役阶段 4 压平迁移时一并移除。
 
 ### `quota_monthly` — 月请求额度
 
@@ -162,7 +162,7 @@ dashboard 的全员月请求额度重置也在同一写池事务：先检查全�
 
 ### 4.2 保守数据换算
 
-迁移先用 guard 拒绝非整数、负数、单值或按日聚合后的乘法溢出，再按历史 DeepSeek 最高价格维度 `280000 pUSD/token` 换算：
+迁移先用 guard 拒绝非整数、负数、单值或按日聚合后的乘法溢出，再按 v1 时代最高价格维度 `280000 pUSD/token` 换算：
 
 - 月 `usage.count` → `quota_monthly.requests`；
 - 日 `usage.tokens` → `install_spend_daily.spend_pusd`，日 `count` 原样保留；

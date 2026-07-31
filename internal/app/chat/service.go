@@ -211,8 +211,8 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 4) Validate the strict content union and deterministically route from the
-	// COMPLETE history. A client model string is never consulted: any accepted
-	// image/video selects Qwen; string/text-only content selects DeepSeek.
+	// COMPLETE history. A client model string is never consulted. The shape picks
+	// the CAPABILITY (media needs the upload/lease path), never the provider.
 	modality, contentErr := req.ValidateAndClassify(domchat.MediaLimits{
 		MaxParts:        cfg.MaxMediaParts,
 		MaxDecodedBytes: cfg.MaxMediaDecodedBytes,
@@ -221,9 +221,9 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 		writeErr(sink, contentErr)
 		return
 	}
-	// Audio belongs to the common public content contract already, but the current two fixed
-	// upstreams are text DeepSeek and image/video Qwen. Reject it as an unavailable capability before
-	// any plan/reservation rather than lying by routing it to Qwen or treating raw bytes as text.
+	// Audio belongs to the common public content contract already, but no deployed upstream serves
+	// it. Reject it as an unavailable capability before any plan/reservation rather than lying by
+	// routing it to a model that cannot hear, or treating raw bytes as text.
 	if modality == domchat.ModalityAudio {
 		writeErr(sink, apierr.ErrAudioUnavailable)
 		return
@@ -313,10 +313,9 @@ func (s *Service) Handle(ctx context.Context, in HandleInput, sink Sink) {
 	}
 
 	// 6) Bound caller-owned max_tokens for this exact model, then freeze a
-	// provider-aware pUSD plan. Qwen's compatibility usage cannot prove a
-	// thinking-token sub-cap, so its wallet quote reserves the model's COMPLETE
-	// input/output hard limits. DeepSeek can use the request prompt estimate and
-	// conservative output quote.
+	// provider-aware pUSD plan. The compatibility usage cannot prove a
+	// thinking-token sub-cap, so the wallet quote reserves the model's COMPLETE
+	// input/output hard limits — every request, both modalities.
 	wireMaxTok, quoteMaxTok := domchat.BoundMaxTokens(req.MaxTokens, min64(cfg.MaxTokensCap, modelOutputLimit))
 	plan, planAPIError := billingPlan(provider, model, req, promptEst, quoteMaxTok)
 	if planAPIError != nil {

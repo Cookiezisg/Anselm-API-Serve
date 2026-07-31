@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat 都路由到多模态模型,没有它的部署什么也服务不了,故在启动时失败、不在每个请求上失败)、`DEEPSEEK_API_KEY`(**可选**,不再被路由,只为账本历史行与对账期的熔断器保留)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
+Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一个上游,没有它的部署什么也服务不了,故在启动时失败、不在每个请求上失败)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -100,7 +100,6 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat
 
 | key | 默认 | 约束 / 语义 |
 |---|---|---|
-| `TEXT_UPSTREAM_MODEL` | — | **已停用(WRK-082 H9)**。文本与多模态现在共用 `MULTIMODAL_UPSTREAM_MODEL`——一个模型服务两种模态,免费档模型面从 9 收敛到 6。三条真实后果写在 invariants GW-INV-54 |
 | `MULTIMODAL_UPSTREAM_MODEL` | `qwen3.7-plus` | 必须是精确已编译 Qwen rate card；图片/视频路由 |
 | `IMAGE_ENABLED` | `false` | 图像生成能力开关(WRK-082 批B);开启时要求 `DASHSCOPE_API_KEY` + 精确已编译图像 rate card + `DASHSCOPE_NATIVE_BASE`,缺一启动 fail-fast |
 | `IMAGE_UPSTREAM_MODEL` | `qwen-image-2.0` | 必须是精确已编译 DashScope 图像 rate card;按张计价(reserve==settle) |
@@ -110,7 +109,6 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat
 | `VIDEO_UPSTREAM_MODEL` | `wan2.7-t2v` | 必须是精确已编译 DashScope 视频 rate card;按**秒**计价(reserve==settle——请求的时长**就是**计费量) |
 | `TTS_DEFAULT_VOICE` | `longanhuan_v3.6` | 请求未带 `voice` 时用的音色(P10:参数留在线缆上,桌面设置页不开) |
 | `DASHSCOPE_NATIVE_BASE` | 由 `DASHSCOPE_BASE_URL`/workspace 派生(剥掉 `/compatible-mode/v1`);无凭证时兜底 `https://dashscope-intl.aliyuncs.com` | **原生** DashScope API origin(multimodal-generation、video-synthesis、tasks)。它与凭证**共享 host、只在 path 上不同**,故默认值**从凭证派生**而不是写死一个区域:一把新加坡 workspace key 打到 `dashscope.aliyuncs.com`(北京)会答 401 `Incorrect API key provided`——同一把 key,一个区域 200、另一个 401,而报文里没有一个字暗示这跟地理有关(WRK-082 桌面侧实测到的真 401)。显式配置仍然优先 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | remote 必须 HTTPS；仅 canonical loopback IP literal 可 HTTP（不信任 `localhost`/hosts/NSS，拒绝 `127.0.0.1.` 等尾点拼写以免绕过 `HTTP_PROXY` loopback 特判）；无 userinfo/query/fragment；去尾 `/`；调用 `/chat/completions` |
 | `DASHSCOPE_BASE_URL` | 由 `DASHSCOPE_WORKSPACE_ID` 推导 | 可选显式 compatible base URL；去尾 `/`；chat 调用 `/chat/completions`，speech ASR 派生 `/api-ws/v1/realtime?model=qwen3-asr-flash-realtime` |
 | `GOMEMLIMIT_MIB` | 768 | ≥0；0=禁用 heap soft limit |
 | `SQLITE_CACHE_KIB` | 32768 | >0；per connection |
@@ -143,7 +141,6 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat
 
 | key | 约束 / 缺失行为 |
 |---|---|
-| `DEEPSEEK_API_KEY` | **必填**；逗号分隔、trim、过滤空 key；最终为空 → `ErrDeepSeekKeyRequired`，process 不启动 |
 | `DASHSCOPE_API_KEY` | 必需；支持逗号分隔多 key；与 `DASHSCOPE_WORKSPACE_ID` 一起构造 Qwen 视觉 backend 与 realtime ASR proxy |
 | `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 Model Studio endpoint |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
@@ -156,8 +153,8 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——WRK-082 H9 起每一次 chat
 
 1. `GLOBAL_MONTHLY_SPEND_MICRO_USD>0`，并且任一已启用 route 的单请求最坏 quote 必须能装入该月预算；否则配置 fail-fast/热改拒绝。
 2. `PUBLIC_MODEL_ID` 非空；client id 与两个实际模型 id 没有映射选择关系。
-3. 统一产品档位固定为 thinking-on：DeepSeek route 注入 `thinking.enabled` + `reasoning_effort=high`；Qwen route 注入顶层 `enable_thinking=true`。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
-4. `TEXT_UPSTREAM_MODEL` 必须精确等于已知 DeepSeek rate card；完整 1,000,000 input + bounded output 的最坏 quote 必须装入全局月预算。运行时 UTF-8 estimate 只决定较小请求的 reserve 大小，超过 1M 时 quote clamp 到模型硬上限而不拒绝。
+3. 统一产品档位固定为 thinking-on：注入顶层 `enable_thinking=true`;历史 `reasoning_content` 绝不回传(provider 私有,回传即再计费)。client-supplied thinking/effort 均不改变该档位；client `max_tokens` 是调用参数，只在模型/`MAX_TOKENS_CAP` 边界内透传。
+4. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于一张已编译 rate card(**无条件**校验:再没有哪种部署形态用不到它)；完整 1,000,000 input + 65,536 output 的最坏 quote 必须装入全局月预算。运行时 UTF-8 estimate 只决定较小请求的 reserve 大小，超过 1M 时 quote clamp 到模型硬上限而不拒绝。
 5. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Qwen3.7 Plus rate card；由于 inline 图片/视频无法由本地字节数证明视觉 token，reserve 使用完整 `1,000,000` input + `65,536` output 的最高分段价格，必须装入全局月预算。媒体形状/bytes 单独受限并由 Qwen 判定实际 token；权威 usage 可退款。chat `input_audio` 虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其作为音频理解 route 可用；麦克风 realtime ASR 是单独的 `qwen3-asr-flash-realtime` 时长费率会话，并进入同一 quota/ledger。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。

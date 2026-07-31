@@ -20,90 +20,99 @@ type observedRequest struct {
 	auth string
 }
 
+// Two clients are two ACCOUNTS, whether or not they are two vendors. The
+// gateway wires one provider today, so the realistic second client is a second
+// credential against the same vendor — and that is precisely the case where a
+// shared transport, breaker or key pool would be invisible until one account's
+// outage started shedding the other account's traffic.
+//
+// 两个 client 就是两个**账号**,不论它们是不是两家厂商。本网关今天只接一家,故现实中的第二个
+// client 是**同一家的第二把凭证**——而那恰恰是「共享 transport / 熔断器 / key 池」最难被发现的
+// 场景:直到一个账号的故障开始甩掉另一个账号的流量为止。
 func TestBackendConstructionFreezesEndpointKeysAndIdentity(t *testing.T) {
-	deepSeekSeen := make(chan observedRequest, 8)
-	deepSeekServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		deepSeekSeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
+	primarySeen := make(chan observedRequest, 8)
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primarySeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"backend":"deepseek"}`)
+		_, _ = io.WriteString(w, `{"account":"primary"}`)
 	}))
-	defer deepSeekServer.Close()
+	defer primaryServer.Close()
 
-	qwenSeen := make(chan observedRequest, 8)
-	qwenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		qwenSeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
+	secondarySeen := make(chan observedRequest, 8)
+	secondaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondarySeen <- observedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"backend":"qwen"}`)
+		_, _ = io.WriteString(w, `{"account":"secondary"}`)
 	}))
-	defer qwenServer.Close()
+	defer secondaryServer.Close()
 
-	deepSeekKeys := []string{"  deepseek-key  "}
-	deepSeekOpts := Options{
-		Backend:            BackendDeepSeek,
-		ChatCompletionsURL: deepSeekServer.URL + "/deepseek/chat/completions",
-		APIKeys:            deepSeekKeys,
+	primaryKeys := []string{"  primary-key  "}
+	primaryOpts := Options{
+		Backend:            BackendQwen,
+		ChatCompletionsURL: primaryServer.URL + "/primary/chat/completions",
+		APIKeys:            primaryKeys,
 		HeaderTimeout:      time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	deepSeek := NewBackend(deepSeekOpts).(*client)
-	qwen := NewBackend(Options{
+	primary := NewBackend(primaryOpts).(*client)
+	secondary := NewBackend(Options{
 		Backend:            BackendQwen,
-		ChatCompletionsURL: qwenServer.URL + "/chat/completions",
-		APIKeys:            []string{"qwen-key"},
+		ChatCompletionsURL: secondaryServer.URL + "/chat/completions",
+		APIKeys:            []string{"secondary-key"},
 		HeaderTimeout:      2 * time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
 
 	// Mutating the caller-owned options and slice after construction must not
 	// alter any wire or resilience fact held by the client.
-	deepSeekOpts.Backend = BackendQwen
-	deepSeekOpts.ChatCompletionsURL = qwenServer.URL + "/wrong"
-	deepSeekOpts.HeaderTimeout = 10 * time.Second
-	deepSeekKeys[0] = "mutated-key"
+	primaryOpts.Backend = BackendID("mutated")
+	primaryOpts.ChatCompletionsURL = secondaryServer.URL + "/wrong"
+	primaryOpts.HeaderTimeout = 10 * time.Second
+	primaryKeys[0] = "mutated-key"
 
-	if deepSeek.backend != BackendDeepSeek || qwen.backend != BackendQwen {
-		t.Fatalf("backend identities were not frozen: deepseek=%q qwen=%q", deepSeek.backend, qwen.backend)
+	if primary.backend != BackendQwen || secondary.backend != BackendQwen {
+		t.Fatalf("backend identity was not frozen: primary=%q secondary=%q", primary.backend, secondary.backend)
 	}
-	if deepSeek.timeout != time.Second || qwen.timeout != 2*time.Second {
-		t.Fatalf("header timeouts were not frozen: deepseek=%v qwen=%v", deepSeek.timeout, qwen.timeout)
+	if primary.timeout != time.Second || secondary.timeout != 2*time.Second {
+		t.Fatalf("header timeouts were not frozen: primary=%v secondary=%v", primary.timeout, secondary.timeout)
 	}
-	if deepSeek.transport == qwen.transport {
-		t.Fatal("backends must not share a transport")
+	if primary.transport == secondary.transport {
+		t.Fatal("accounts must not share a transport")
 	}
-	if deepSeek.breaker == qwen.breaker {
-		t.Fatal("backends must not share a process breaker")
+	if primary.breaker == secondary.breaker {
+		t.Fatal("accounts must not share a process breaker")
 	}
-	if deepSeek.transport.keys[0].cb == qwen.transport.keys[0].cb {
-		t.Fatal("backends must not share per-key breakers")
-	}
-
-	deepSeekStream, deepSeekErr := deepSeek.DoCall(context.Background(), Call{Payload: []byte(`{"model":"deepseek-chat"}`)})
-	if deepSeekErr != nil {
-		t.Fatalf("deepseek call failed: %v", deepSeekErr)
-	}
-	if got := drain(t, deepSeekStream); got != `{"backend":"deepseek"}` {
-		t.Fatalf("deepseek response = %q", got)
+	if primary.transport.keys[0].cb == secondary.transport.keys[0].cb {
+		t.Fatal("accounts must not share per-key breakers")
 	}
 
-	qwenStream, qwenErr := qwen.DoCall(context.Background(), Call{Payload: []byte(`{"model":"qwen3.7-plus"}`)})
-	if qwenErr != nil {
-		t.Fatalf("qwen call failed: %v", qwenErr)
+	primaryStream, primaryErr := primary.DoCall(context.Background(), Call{Payload: []byte(`{"model":"a"}`)})
+	if primaryErr != nil {
+		t.Fatalf("primary call failed: %v", primaryErr)
 	}
-	if got := drain(t, qwenStream); got != `{"backend":"qwen"}` {
-		t.Fatalf("qwen response = %q", got)
+	if got := drain(t, primaryStream); got != `{"account":"primary"}` {
+		t.Fatalf("primary response = %q", got)
 	}
 
-	if len(deepSeekSeen) != 1 {
-		t.Fatalf("DeepSeek server calls = %d, want 1", len(deepSeekSeen))
+	secondaryStream, secondaryErr := secondary.DoCall(context.Background(), Call{Payload: []byte(`{"model":"b"}`)})
+	if secondaryErr != nil {
+		t.Fatalf("secondary call failed: %v", secondaryErr)
 	}
-	if got := <-deepSeekSeen; got != (observedRequest{path: "/deepseek/chat/completions", auth: "Bearer deepseek-key"}) {
-		t.Fatalf("deepseek request = %#v", got)
+	if got := drain(t, secondaryStream); got != `{"account":"secondary"}` {
+		t.Fatalf("secondary response = %q", got)
 	}
-	if len(qwenSeen) != 1 {
-		t.Fatalf("Qwen server calls = %d, want 1", len(qwenSeen))
+
+	if len(primarySeen) != 1 {
+		t.Fatalf("primary server calls = %d, want 1", len(primarySeen))
 	}
-	if got := <-qwenSeen; got != (observedRequest{path: "/chat/completions", auth: "Bearer qwen-key"}) {
-		t.Fatalf("qwen request = %#v", got)
+	if got := <-primarySeen; got != (observedRequest{path: "/primary/chat/completions", auth: "Bearer primary-key"}) {
+		t.Fatalf("primary request = %#v", got)
+	}
+	if len(secondarySeen) != 1 {
+		t.Fatalf("secondary server calls = %d, want 1", len(secondarySeen))
+	}
+	if got := <-secondarySeen; got != (observedRequest{path: "/chat/completions", auth: "Bearer secondary-key"}) {
+		t.Fatalf("secondary request = %#v", got)
 	}
 }
 
@@ -121,36 +130,36 @@ func TestBackendProcessBreakersAreIndependent(t *testing.T) {
 	}))
 	defer healthyServer.Close()
 
-	deepSeek := NewBackend(Options{
-		Backend:            BackendDeepSeek,
+	failing := NewBackend(Options{
+		Backend:            BackendQwen,
 		ChatCompletionsURL: failingServer.URL + "/v1/chat/completions",
-		APIKeys:            []string{"deepseek-key"},
+		APIKeys:            []string{"failing-key"},
 		HeaderTimeout:      time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
-	qwen := NewBackend(Options{
+	healthy := NewBackend(Options{
 		Backend:            BackendQwen,
 		ChatCompletionsURL: healthyServer.URL + "/chat/completions",
-		APIKeys:            []string{"qwen-key"},
+		APIKeys:            []string{"healthy-key"},
 		HeaderTimeout:      time.Second,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*client)
-	deepSeek.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
-	qwen.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
+	failing.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
+	healthy.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
 
 	for i := 0; i < 6; i++ {
-		_, _ = deepSeek.DoCall(context.Background(), Call{Payload: []byte("{}")})
+		_, _ = failing.DoCall(context.Background(), Call{Payload: []byte("{}")})
 	}
-	if !deepSeek.BreakerOpen() {
-		t.Fatal("persistent DeepSeek faults should open only the DeepSeek breaker")
+	if !failing.BreakerOpen() {
+		t.Fatal("persistent faults should open the faulting account's breaker")
 	}
-	if qwen.BreakerOpen() {
-		t.Fatal("the Qwen breaker must be independent of DeepSeek health")
+	if healthy.BreakerOpen() {
+		t.Fatal("a healthy account's breaker must be independent of another account's health")
 	}
 
-	stream, ae := qwen.DoCall(context.Background(), Call{Payload: []byte("{}")})
+	stream, ae := healthy.DoCall(context.Background(), Call{Payload: []byte("{}")})
 	if ae != nil {
-		t.Fatalf("healthy Qwen backend was contaminated by DeepSeek breaker: %v", ae)
+		t.Fatalf("healthy account was contaminated by the failing account's breaker: %v", ae)
 	}
 	_ = drain(t, stream)
 	if got := healthyCalls.Load(); got != 1 {
@@ -193,14 +202,6 @@ func TestNilEmptyAndBlankKeyPoolsFailClosed(t *testing.T) {
 			}
 		})
 
-		t.Run(tc.name+"/legacy", func(t *testing.T) {
-			c := New(tc.keys, time.Second, nil, nil).(*client)
-			stream, ae := c.Do(context.Background(), []byte("{}"), false, testCfg(srv.URL, time.Second))
-			assertLegacyConfigurationFailure(t, stream, ae)
-			if c.BreakerOpen() {
-				t.Fatal("an empty key pool must not charge the process breaker")
-			}
-		})
 	}
 	if got := upstreamCalls.Load(); got != 0 {
 		t.Fatalf("invalid key pools reached upstream %d times", got)
@@ -437,16 +438,5 @@ func assertConfigurationFailure(t *testing.T, stream *Stream, failure *CallFailu
 	}
 	if failure.Exposure != billing.DefinitelyUnbilled {
 		t.Fatalf("configuration exposure = %v, want definitely unbilled", failure.Exposure)
-	}
-}
-
-func assertLegacyConfigurationFailure(t *testing.T, stream *Stream, ae *apierr.APIError) {
-	t.Helper()
-	if stream != nil {
-		_ = stream.Close()
-		t.Fatal("configuration failure must not return a stream")
-	}
-	if ae == nil || ae.Code != apierr.ErrUpstreamError.Code {
-		t.Fatalf("configuration failure = %v, want %s", ae, apierr.ErrUpstreamError.Code)
 	}
 }

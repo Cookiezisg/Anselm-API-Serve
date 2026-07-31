@@ -9,7 +9,7 @@ import (
 // The Model shape must match OpenAI: id/object/owned_by present, and crucially
 // NO "created" field (the gateway invents no per-model timestamp).
 func TestModelShapeOmitsCreated(t *testing.T) {
-	b, err := json.Marshal(Model{ID: "deepseek-chat", Object: ObjectModel, OwnedBy: OwnedBy})
+	b, err := json.Marshal(Model{ID: "client-picked-model", Object: ObjectModel, OwnedBy: OwnedBy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestModelShapeOmitsCreated(t *testing.T) {
 	if strings.Contains(js, "created") {
 		t.Fatalf("model JSON must omit created, got %s", js)
 	}
-	for _, want := range []string{`"id":"deepseek-chat"`, `"object":"model"`, `"owned_by":"anselm-gateway"`} {
+	for _, want := range []string{`"id":"client-picked-model"`, `"object":"model"`, `"owned_by":"anselm-gateway"`} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("model JSON missing %s, got %s", want, js)
 		}

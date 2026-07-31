@@ -18,7 +18,7 @@ After=anselm-gateway.socket
 # (OPS-2;admin 9090 自绑、restart 有短 gap)。
 Type=notify
 NotifyAccess=main
-# 机密由部署流水线写入(0600,root:root),包含 DEEPSEEK_API_KEY 等。
+# 机密由部署流水线写入(0600,root:root),包含 DASHSCOPE_API_KEY 等。
 EnvironmentFile=/etc/anselm-gateway.env
 # /usr/local/bin/anselm-gateway 是原子 symlink,指向当前版本化二进制。
 # 回滚必须用 /usr/local/sbin/anselm-gateway-rollback 同时恢复 DB+配置+binary;

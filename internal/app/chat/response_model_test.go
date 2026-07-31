@@ -6,7 +6,7 @@ import (
 )
 
 func TestRewriteClientModelJSONPreservesEveryOtherByte(t *testing.T) {
-	in := []byte(" \n{\"id\":\"cmpl-1\", \"model\" : \"deepseek-v4-flash\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"arguments\":\"{\\\"x\\\":1}\"}}]}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}} \t")
+	in := []byte(" \n{\"id\":\"cmpl-1\", \"model\" : \"some-upstream-model\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"arguments\":\"{\\\"x\\\":1}\"}}]}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}} \t")
 	want := []byte(" \n{\"id\":\"cmpl-1\", \"model\" : \"anselm-auto\",\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"arguments\":\"{\\\"x\\\":1}\"}}]}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}} \t")
 	got, ok := rewriteClientModelJSON(in, "anselm-auto")
 	if !ok || !bytes.Equal(got, want) {
@@ -15,7 +15,7 @@ func TestRewriteClientModelJSONPreservesEveryOtherByte(t *testing.T) {
 }
 
 func TestRewriteClientModelJSONHandlesEscapedTopLevelKey(t *testing.T) {
-	in := []byte(`{"mo\u0064el":"deepseek-v4-flash","nested":{"model":"keep-me"}}`)
+	in := []byte(`{"mo\u0064el":"some-upstream-model","nested":{"model":"keep-me"}}`)
 	want := []byte(`{"mo\u0064el":"public","nested":{"model":"keep-me"}}`)
 	got, ok := rewriteClientModelJSON(in, "public")
 	if !ok || !bytes.Equal(got, want) {
@@ -25,9 +25,9 @@ func TestRewriteClientModelJSONHandlesEscapedTopLevelKey(t *testing.T) {
 
 func TestRewriteClientModelJSONRejectsDuplicateOrCaseFoldModelKeys(t *testing.T) {
 	inputs := [][]byte{
-		[]byte(`{"model":"deepseek-v4-flash","model":"qwen3.7-plus"}`),
-		[]byte(`{"model":"deepseek-v4-flash","Model":"qwen3.7-plus"}`),
-		[]byte(`{"Model":"qwen3.7-plus","model":"deepseek-v4-flash"}`),
+		[]byte(`{"model":"some-upstream-model","model":"qwen3.7-plus"}`),
+		[]byte(`{"model":"some-upstream-model","Model":"qwen3.7-plus"}`),
+		[]byte(`{"Model":"qwen3.7-plus","model":"some-upstream-model"}`),
 		[]byte(`{"MODEL":"qwen3.7-plus"}`),
 	}
 	for _, in := range inputs {
@@ -48,15 +48,15 @@ func TestRewriteClientModelJSONAcceptsModelFreeObjectUnchanged(t *testing.T) {
 
 func TestRewriteClientModelJSONRejectsAnythingButOneCompleteObject(t *testing.T) {
 	inputs := [][]byte{
-		[]byte(`["model","deepseek-v4-flash"]`),
+		[]byte(`["model","some-upstream-model"]`),
 		[]byte(`null`),
-		[]byte(`"deepseek-v4-flash"`),
+		[]byte(`"some-upstream-model"`),
 		[]byte(`42`),
 		[]byte(`true`),
 		[]byte(``),
 		[]byte(" \t\r\n"),
-		[]byte(`{"model":"deepseek-v4-flash"} trailing`),
-		[]byte(`{"model":"deepseek-v4-flash"}{"id":"second"}`),
+		[]byte(`{"model":"some-upstream-model"} trailing`),
+		[]byte(`{"model":"some-upstream-model"}{"id":"second"}`),
 		[]byte(`{"model":`),
 		{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'},
 	}
@@ -78,7 +78,7 @@ func TestRewriteClientModelSSELinePreservesSentinelAndBlankLines(t *testing.T) {
 		}
 	}
 	for _, in := range [][]byte{
-		[]byte(`: keep-alive model=deepseek-v4-flash`),
+		[]byte(`: keep-alive model=some-upstream-model`),
 		[]byte(`  : provider=qwen3.7-plus`),
 	} {
 		got, ok := rewriteClientModelSSELine(in, "anselm-auto")
@@ -106,17 +106,17 @@ func TestRewriteClientModelSSELineAcceptsModelFreeObject(t *testing.T) {
 func TestRewriteClientModelSSELineRejectsMalformedAndNonObjectData(t *testing.T) {
 	inputs := [][]byte{
 		[]byte(`event: message`),
-		[]byte(`id: deepseek-v4-flash`),
+		[]byte(`id: some-upstream-model`),
 		[]byte(`retry: 1000`),
 		[]byte(`data`),
 		[]byte(" data\r"),
 		[]byte(`data:`),
 		[]byte(`data: null`),
 		[]byte(`data: ["qwen3.7-plus"]`),
-		[]byte(`data: "deepseek-v4-flash"`),
-		[]byte(`data: {"model":"deepseek-v4-flash"`),
-		[]byte(`data: {"model":"deepseek-v4-flash"} garbage`),
-		[]byte(`data: {"model":"deepseek-v4-flash"}{"id":2}`),
+		[]byte(`data: "some-upstream-model"`),
+		[]byte(`data: {"model":"some-upstream-model"`),
+		[]byte(`data: {"model":"some-upstream-model"} garbage`),
+		[]byte(`data: {"model":"some-upstream-model"}{"id":2}`),
 		[]byte(`data: [DONE] trailing`),
 	}
 	for _, in := range inputs {

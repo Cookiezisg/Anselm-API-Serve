@@ -31,7 +31,7 @@ func authOK() stubAuth { return stubAuth{status: dominstall.StatusActive, found:
 func TestModels_Success(t *testing.T) {
 	env := dommodel.ListEnvelope{
 		Object: dommodel.ObjectList,
-		Data:   []dommodel.Model{{ID: "deepseek-chat", Object: dommodel.ObjectModel, OwnedBy: dommodel.OwnedBy}},
+		Data:   []dommodel.Model{{ID: "client-picked-model", Object: dommodel.ObjectModel, OwnedBy: dommodel.OwnedBy}},
 	}
 	h := New(authOK(), stubCatalog{env: env})
 	r := httptest.NewRequest("GET", "/v1/models", nil)
@@ -46,7 +46,7 @@ func TestModels_Success(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Object != "list" || len(got.Data) != 1 || got.Data[0].ID != "deepseek-chat" {
+	if got.Object != "list" || len(got.Data) != 1 || got.Data[0].ID != "client-picked-model" {
 		t.Fatalf("body: %+v", got)
 	}
 }

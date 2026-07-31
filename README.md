@@ -2,7 +2,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model while deterministically routing to two fixed upstreams: pure text goes to DeepSeek V4 Flash, and supported inline images/videos go to Qwen3.7 Plus. Chat audio parts have a validated public protocol but no deployed model route yet; microphone input is handled separately by a narrow Qwen realtime ASR WebSocket proxy. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
+A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model in front of a single fixed upstream, Qwen3.7 Plus. The complete message history still decides things deterministically — it decides which CAPABILITIES a request may use and whether it is admitted at all — but it never selects a provider, and the client's `model` field never has. Chat audio parts have a validated public protocol but no deployed model route yet; microphone input is handled separately by a narrow Qwen realtime ASR WebSocket proxy. Provider keys stay on the server, and pessimistic cost accounting prevents the operator's dollar budget from being oversold. It was built for the Anselm desktop app, but it is self-contained.
 
 It does three things:
 
@@ -27,7 +27,7 @@ Dependencies point inward toward more stable layers, and the build fails on a vi
 ## Quickstart
 
 ```sh
-cp .env.example .env          # set at least DEEPSEEK_API_KEY
+cp .env.example .env          # set at least DASHSCOPE_API_KEY + DASHSCOPE_WORKSPACE_ID
 set -a; source .env; set +a   # (bash/zsh; fish: see .env.example)
 make run                      # = go run ./cmd/gateway
 curl -s localhost:8080/healthz   # → {"status":"ok"}
@@ -42,14 +42,14 @@ challenge, and signs the method, authority, target, and exact body of every requ
 
 Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level `model` in streaming/non-streaming completions always return that ID. The client-supplied `model` never selects a provider:
 
-- String content, or content arrays containing only `text` parts, routes to `deepseek-v4-flash`.
-- Any accepted image or video part anywhere in the complete history routes to `qwen3.7-plus`.
+- String content, or content arrays containing only `text` parts, is admitted as a text request.
+- Any accepted image or video part anywhere in the complete history additionally requires the durable media path (`MEDIA_ENABLED`), which is why the two are published as separate capability profiles even though both reach `qwen3.7-plus`.
 - A valid `input_audio` part is accepted by the public protocol but returns `503 AUDIO_UNAVAILABLE` before routing or billing, until an audio-capable upstream is deployed.
 - Realtime microphone transcription is a separate `GET /v1/speech/asr` WebSocket endpoint. It accepts PCM frames and relays Qwen ASR events so the desktop app can fill editable text; it is not a chat audio-content route.
 
 Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. `DASHSCOPE_API_KEY` and `DASHSCOPE_WORKSPACE_ID` are required for the Qwen visual route; an incomplete deployment fails at startup instead of silently dropping a product capability.
 
-The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled: text requests use DeepSeek `thinking.enabled` with `reasoning_effort=high`; media requests use Qwen's top-level `enable_thinking=true`. Client-supplied `thinking` and `reasoning_effort` do not change this tier. A positive `max_tokens` is clamped to `MAX_TOKENS_CAP` and the selected model's output limit; an absent or non-positive value is normalized to that same explicit product cap, so wire behavior, accounting, and client context headroom agree. Both text and visual routes expose 1M input context; Qwen3.7 Plus exposes a 64K output ceiling. `GET /v1/models` publishes both route profiles in the namespaced `anselm_capabilities` extension, allowing the desktop agent to choose the budget dynamically instead of pretending one conservative number describes both routes.
+The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled through Qwen's top-level `enable_thinking=true`; client-supplied `thinking` and `reasoning_effort` do not change this tier. Historical `reasoning_content` is never sent back upstream: it is provider-private and is billed again when preserved. A positive `max_tokens` is clamped to `MAX_TOKENS_CAP` and the selected model's output limit; an absent or non-positive value is normalized to that same explicit product cap, so wire behavior, accounting, and client context headroom agree. Both profiles expose the model's 1M input context and 64K output ceiling. `GET /v1/models` publishes them in the namespaced `anselm_capabilities` extension so the desktop agent reads its budget rather than guessing, and so it can tell that media is unavailable without discovering it mid-conversation.
 
 ## Dashboard
 
@@ -85,9 +85,9 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DEEPSEEK_API_KEY` and `DASHSCOPE_API_KEY` (both required; each supports comma-separated keys), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint for Qwen visual inference and realtime ASR. `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
+Secrets are env-only and are not persisted, dumped, or logged: `DASHSCOPE_API_KEY` (required; supports comma-separated keys, because a key pool is how one account survives a per-key cooldown), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint for Qwen visual inference and realtime ASR. `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
 
-The public/provider model IDs are `PUBLIC_MODEL_ID=anselm-auto`, `TEXT_UPSTREAM_MODEL=deepseek-v4-flash`, and `MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus`. Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). Production accepts an 8 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying usage guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; structural body/message/media limits and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. The conservative UTF-8 prompt estimate is accounting evidence only and never a context-admission gate; the selected upstream is the hard input-limit authority.
+The model IDs are `PUBLIC_MODEL_ID=anselm-auto` (the only one a client ever sees) and `MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus` (the only one that reaches an upstream). Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). Production accepts an 8 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying usage guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; structural body/message/media limits and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. The conservative UTF-8 prompt estimate is accounting evidence only and never a context-admission gate; the selected upstream is the hard input-limit authority.
 
 ## Deployment
 

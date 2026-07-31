@@ -197,11 +197,9 @@ func (app *App) metricsRefresh(ctx context.Context) {
 				BudgetUsed:       budgetUsed,
 				BudgetLimit:      budgetLimit,
 				ReservationsOpen: open,
-				// Only the routed provider's breaker can degrade this deployment. DeepSeek's
-				// breaker used to count here because text routed there; nothing does now, so
-				// including it would let an outage on an idle path raise an alert nobody can act on.
-				// **只有被路由到的那家**的熔断器能拖垮本部署。DeepSeek 的熔断器此前算数是因为文本
-				// 走那儿;现在什么也不走,再算它就是让一条闲置路径的故障拉响一个没人能处理的告警。
+				// Only a ROUTED upstream's breaker can degrade this deployment; an idle one
+				// would raise an alert nobody can act on.
+				// 只有**被路由到的**上游的熔断器能拖垮本部署;闲置那条只会拉响一个没人能处理的告警。
 				BreakerOpen:     app.providers.BreakerOpen(billing.ProviderQwen),
 				DiskDegraded:    app.disk.Degraded(),
 				TokensThrottled: int64(throttledNow),

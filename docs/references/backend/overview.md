@@ -11,7 +11,7 @@ audience: [human, ai]
 
 # 后端总览（backend overview）
 
-> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型按完整 content history 确定性路由：纯文本→DeepSeek V4 Flash，任一受支持图片/视频→Qwen3.7 Plus；provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、七域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
+> 模块 `github.com/sunweilin/anselm/gateway`，二进制 `cmd/gateway`。一个 client-facing 逻辑模型，文本与受支持图片/视频同走 Qwen3.7 Plus；内容形状决定的是**能力与准入**，不是 provider。provider token 先换成 pUSD 再进入共享成本账本。本篇是三监听器、依赖方向、七域与运行期形态的导航。深入契约：[api.md](api.md) · [config.md](config.md) · [database.md](database.md) · [error-codes.md](error-codes.md) · [invariants.md](invariants.md)。
 
 ## 1. 三个物理隔离监听器（ADR-004 / GW-INV-13/18）
 
@@ -64,4 +64,4 @@ transport 保持 infra-free 的手法：把 infra 能力声明成结构化接口
 
 ## 6. 配置三层级
 
-runtime-hot / secret-env-only / startup-hard 三层。DeepSeek 与 Qwen key 均为启动必需；`DASHSCOPE_WORKSPACE_ID` 推导 Qwen 新加坡 endpoint。provider model/URL 启动冻结，成本/media caps 可按 registry 热改。全表见 [config.md](config.md)。
+runtime-hot / secret-env-only / startup-hard 三层。Qwen key 是启动必需（每一条路由都要它）；`DASHSCOPE_WORKSPACE_ID` 推导 Qwen 新加坡 endpoint。provider model/URL 启动冻结，成本/media caps 可按 registry 热改。全表见 [config.md](config.md)。

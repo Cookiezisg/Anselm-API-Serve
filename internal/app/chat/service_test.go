@@ -131,12 +131,12 @@ func TestNonStreamMalformedOrNonObjectBodyFailsClosedBefore200(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "truncated object", body: `{"model":"deepseek-v4-flash"`},
+		{name: "truncated object", body: `{"model":"some-upstream-model"`},
 		{name: "array", body: `["qwen3.7-plus"]`},
-		{name: "scalar", body: `"deepseek-v4-flash"`},
+		{name: "scalar", body: `"some-upstream-model"`},
 		{name: "null", body: `null`},
-		{name: "trailing garbage", body: `{"model":"deepseek-v4-flash"} provider-debug`},
-		{name: "second value", body: `{"model":"deepseek-v4-flash"}{"model":"qwen3.7-plus"}`},
+		{name: "trailing garbage", body: `{"model":"some-upstream-model"} provider-debug`},
+		{name: "second value", body: `{"model":"some-upstream-model"}{"model":"qwen3.7-plus"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,9 +179,9 @@ func TestStreamingMalformedDataFrameIsSuppressedAndKeepsFullQuote(t *testing.T) 
 	q := &fakeQuota{}
 	mx := newFakeMetrics()
 	up := &fakeUpstream{body: ": keep-alive\n" +
-		`data: {"model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n" +
-		`data: ["deepseek-v4-flash"]` + "\n" +
-		`data: {"model":"deepseek-v4-flash","choices":[{"delta":{"content":"must-not-pass"}}]}` + "\n" +
+		`data: {"model":"some-upstream-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n" +
+		`data: ["some-upstream-model"]` + "\n" +
+		`data: {"model":"some-upstream-model","choices":[{"delta":{"content":"must-not-pass"}}]}` + "\n" +
 		"data: [DONE]\n"}
 	svc, wg := build(Deps{Auth: okAuth(), Quota: q, Upstream: up, RL: &fakeRL{allow: true}, Metrics: mx})
 	sink := newFakeSink()
@@ -561,20 +561,20 @@ func TestBodyTooLarge_413DistinctFromContext(t *testing.T) {
 	}
 }
 
-func TestDeepSeekOverLimitByteEstimateIsClampedForReserveAndForwarded(t *testing.T) {
+func TestOverLimitByteEstimateIsClampedForReserveAndForwarded(t *testing.T) {
 	req, derr := domchat.DecodeInbound([]byte(goodBody))
 	if derr != nil {
 		t.Fatal(derr)
 	}
 	plan, ae := billingPlan(
 		billing.ProviderQwen, billing.Qwen37Plus, req,
-		billing.DeepSeekInputLimit+500_000, 16_384,
+		billing.Qwen37InputLimit+500_000, 16_384,
 	)
 	if ae != nil {
 		t.Fatalf("accounting estimate must not reject: %v", ae)
 	}
-	if plan.PromptQuote != billing.DeepSeekInputLimit {
-		t.Fatalf("prompt quote=%d want model limit=%d", plan.PromptQuote, billing.DeepSeekInputLimit)
+	if plan.PromptQuote != billing.Qwen37InputLimit {
+		t.Fatalf("prompt quote=%d want model limit=%d", plan.PromptQuote, billing.Qwen37InputLimit)
 	}
 }
 
@@ -646,7 +646,7 @@ func TestUpstreamRejected_400RollsBackAndMarksRejected(t *testing.T) {
 
 func TestDeterministicProviderRoutingIgnoresClientModel(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
-	mediaBody := `{"model":"deepseek-v4-flash","messages":[` +
+	mediaBody := `{"model":"some-upstream-model","messages":[` +
 		`{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]},` +
 		`{"role":"assistant","content":"seen"},` +
 		`{"role":"user","content":"last turn is text"}` +
@@ -871,7 +871,7 @@ func TestProviderBreakersAreIsolated(t *testing.T) {
 	}
 }
 
-func TestQwenFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
+func TestUpstreamFailureAndBreakerNeverFallBack(t *testing.T) {
 	pngURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'})
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + pngURI + `"}}]}]}`
 	for _, tc := range []struct {
@@ -909,14 +909,12 @@ func TestQwenFailureAndBreakerNeverFallbackToDeepSeek(t *testing.T) {
 }
 
 func TestStructuredUsagePricingAndStreamSnapshotsUseMax(t *testing.T) {
-	// The two providers report cache dimensions in DIFFERENT fields — DeepSeek in
-	// `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`, Qwen in
-	// `prompt_tokens_details.cached_tokens`. Now that every request routes to Qwen, feeding the
-	// DeepSeek shape would leave the discount silently unexercised and the test asserting nothing.
+	// The cache dimension arrives in `prompt_tokens_details.cached_tokens`, and the
+	// fixture must use exactly that field: any other shape leaves the discount
+	// silently unexercised, and the test would assert nothing while still passing.
 	//
-	// 两家在**不同字段**里报缓存维度——DeepSeek 在 `prompt_cache_hit_tokens`/`..._miss_tokens`,
-	// Qwen 在 `prompt_tokens_details.cached_tokens`。既然现在每个请求都路由到 Qwen,喂 DeepSeek 那个
-	// 形状会让折扣**静默地没有被走到**,而测试断言不了任何东西。
+	// 缓存维度来自 `prompt_tokens_details.cached_tokens`,夹具必须用**正是这个**字段:换成别的形状会让
+	// 折扣**静默地没有被走到**——测试照样通过,却什么也没断言。
 	t.Run("cache dimensions", func(t *testing.T) {
 		q := &fakeQuota{}
 		up := &fakeUpstream{body: `{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}`}

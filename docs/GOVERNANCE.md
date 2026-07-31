@@ -97,7 +97,7 @@ landed-into:          # 仅 working：结论提取进哪篇 concepts/references 
 
 ## 5. 目录地图（canonical）
 
-网关是**确定性 capability 薄网关**：纯文本路由 DeepSeek，受支持图片/视频路由 Qwen3.7 Plus，两 provider 以 pUSD 成本账本统一护栏；共 7 个业务关注点（quota / install / chat / media / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
+网关是**确定性 capability 薄网关**：文本与受支持图片/视频同走 Qwen3.7 Plus，以 pUSD 成本账本统一护栏；共 7 个业务关注点（quota / install / chat / media / model / health / dashboard）+ React 仪表盘前端 + pkg 内核。
 
 ```
 docs/

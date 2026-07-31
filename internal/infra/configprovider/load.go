@@ -9,7 +9,7 @@
 // 加载顺序:env 默认/机密/硬约束(LoadBase)← DB overlay 覆盖运行时可改项
 // (LoadWithOverlay)。读路径 Load() 无锁取当前 atomic 快照(每请求快照一次,热更
 // 新永不在单请求内半旧半新);写路径 ApplyOverrides 在写锁下:domain 校验 → 全或无
-// 持久化 → 原子 swap(持久化失败不 swap)。机密(DEEPSEEK_API_KEY / DASHSCOPE_API_KEY /
+// 持久化 → 原子 swap(持久化失败不 swap)。机密(DASHSCOPE_API_KEY /
 // DASHBOARD_* / INSTALL_POW_SECRET)只读 env,绝不入 overlay、绝不在 Dump/Snapshot 出真值。
 package configprovider
 
@@ -31,12 +31,7 @@ import (
 
 // Named fail-fast errors for required env-only secrets, so callers and tests can
 // assert the precise cause without string matching.
-var (
-	// ErrDeepSeekKeyRequired is retained for the ledger/probe path only; nothing routes to DeepSeek.
-	// ErrDeepSeekKeyRequired 只为账本/探测那条路保留;没有任何东西路由到 DeepSeek。
-	ErrDeepSeekKeyRequired = errors.New("DEEPSEEK_API_KEY is required")
-	ErrQwenKeyRequired     = errors.New("DASHSCOPE_API_KEY is required: every chat request routes to the multimodal model")
-)
+var ErrQwenKeyRequired = errors.New("DASHSCOPE_API_KEY is required: every route goes to the multimodal model")
 
 // LoadBase reads EVERY env key (via the injected getenv so tests stay hermetic),
 // applies the spec defaults, parses + bounds each value with the SAME ceilings the
@@ -49,28 +44,12 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	g := &envReader{getenv: getenv}
 	c := config.Config{}
 
-	// **The Qwen key is what a deployment now cannot start without** (WRK-082 H9): every chat
-	// request routes to the multimodal flagship, so a gateway with no Qwen credential can serve
-	// nothing at all. Failing at boot beats answering every request with an outage.
+	// **The Qwen credential is the one a deployment cannot start without**: every route this
+	// gateway serves goes to the multimodal flagship, so a gateway without it can serve nothing
+	// at all. Failing at boot beats answering every single request with an outage.
 	//
-	// DeepSeek is OPTIONAL and no longer routed. Its key is still read because the spend ledger
-	// carries real historical rows under that provider and an operator may want the breaker and
-	// probe wired while they reconcile — but nothing sends traffic there.
-	//
-	// **Qwen 的 key 才是一个部署没有它就起不来的那个**(H9):每一次 chat 都路由到多模态旗舰,故没有
-	// Qwen 凭证的网关**什么也服务不了**。在启动时失败,好过对每一个请求都答一次故障。
-	//
-	// DeepSeek **可选**且不再被路由。它的 key 仍然读,因为支出账本里有那家 provider 名下的**真实历史
-	// 行**,运营者对账期间可能还想让熔断器与探测挂着——但没有任何流量去那儿。
-	for _, k := range strings.Split(getenv("DEEPSEEK_API_KEY"), ",") {
-		if k = strings.TrimSpace(k); k != "" {
-			c.DeepSeekAPIKeys = append(c.DeepSeekAPIKeys, k)
-		}
-	}
-	if len(c.DeepSeekAPIKeys) > 0 {
-		c.DeepSeekBaseURL = strings.TrimRight(g.str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "/")
-		validateHTTPBaseURL(g, "DEEPSEEK_BASE_URL", c.DeepSeekBaseURL)
-	}
+	// **Qwen 凭证是一个部署没有它就起不来的那个**:本网关服务的每一条路由都去多模态旗舰,故没有它
+	// 的网关**什么也服务不了**。在启动时失败,好过对每一个请求都答一次故障。
 	for _, k := range strings.Split(getenv("DASHSCOPE_API_KEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
 			c.QwenAPIKeys = append(c.QwenAPIKeys, k)
@@ -82,7 +61,6 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.QwenBaseURL = qwenBaseURL(g, getenv)
 
 	c.PublicModelID = g.str("PUBLIC_MODEL_ID", "anselm-auto")
-	c.TextUpstreamModel = g.str("TEXT_UPSTREAM_MODEL", billing.DeepSeekV4Flash)
 	c.MultimodalUpstreamModel = g.str("MULTIMODAL_UPSTREAM_MODEL", billing.Qwen37Plus)
 	c.ImageUpstreamModel = g.str("IMAGE_UPSTREAM_MODEL", billing.QwenImage20)
 	// The editing sibling defaults to qwen-image-edit — a DIFFERENT model id on the same endpoint

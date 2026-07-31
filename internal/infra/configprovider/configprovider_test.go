@@ -15,20 +15,19 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// minimalEnv supplies the required secrets plus an explicit spend-wallet value that satisfy the
-// compiled model quotes. PUBLIC_MODEL_ID is included so its default/override behavior stays visible
+// minimalEnv supplies the required secret plus an explicit spend-wallet value that satisfies the
+// compiled model quote. PUBLIC_MODEL_ID is included so its default/override behavior stays visible
 // in fixtures even though it is optional.
 //
-// **The Qwen credential is the required one now (WRK-082 H9)**: every chat request routes to the
-// multimodal model, so a deployment without it can serve nothing. DeepSeek stays in the fixture
-// because its ledger rows and probe path are still exercised — but it no longer gates boot.
+// The credential is supplied as TWO comma-separated keys because multi-key parsing is part of the
+// contract: a pool of keys is how one account survives a per-key cooldown, and a fixture with a
+// single key would leave the splitting/trimming path untested by every case that builds on this.
 //
-// **现在必需的是 Qwen 那把(H9)**:每一次 chat 都路由到多模态模型,故没有它的部署什么也服务不了。
-// DeepSeek 留在夹具里是因为它的账本行与探测路径仍被覆盖——但它不再是启动门禁。
+// 凭证刻意给**两把**逗号分隔的 key,因为多 key 解析是契约的一部分:key 池正是一个账号扛过单 key
+// 冷却的方式,而只给一把的夹具会让所有以它为基础的用例都测不到切分/去空白那条路。
 func minimalEnv() map[string]string {
 	return map[string]string{
-		"DEEPSEEK_API_KEY":               "sk-a,sk-b",
-		"DASHSCOPE_API_KEY":              "qwen-key",
+		"DASHSCOPE_API_KEY":              "qwen-a,qwen-b",
 		"DASHSCOPE_WORKSPACE_ID":         "ws-test",
 		"PUBLIC_MODEL_ID":                "anselm-auto",
 		"GLOBAL_MONTHLY_SPEND_MICRO_USD": "420000000",
@@ -101,14 +100,20 @@ func mustLoad(t *testing.T, env map[string]string) config.Config {
 func TestLoadBaseDefaults(t *testing.T) {
 	c := mustLoad(t, minimalEnv())
 
-	if len(c.DeepSeekAPIKeys) != 2 || c.DeepSeekAPIKeys[0] != "sk-a" {
-		t.Fatalf("DeepSeekAPIKeys = %v", c.DeepSeekAPIKeys)
+	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[0] != "qwen-a" {
+		t.Fatalf("QwenAPIKeys = %v", c.QwenAPIKeys)
 	}
 	if c.PublicModelID != "anselm-auto" {
 		t.Fatalf("logical model = %q, want anselm-auto", c.PublicModelID)
 	}
-	if c.DeepSeekBaseURL != "https://api.deepseek.com" {
-		t.Fatalf("DeepSeekBaseURL = %q", c.DeepSeekBaseURL)
+	// No DASHSCOPE_BASE_URL in the fixture, so the endpoint must be DERIVED from
+	// the workspace id. Pinning the derived form here is what keeps a future
+	// hardcoded region from silently replacing it — the same key answers 200 in
+	// one region and 401 in another.
+	// 夹具里没有 DASHSCOPE_BASE_URL,故端点必须由 workspace id **派生**。把派生结果钉在这里,
+	// 是为了防止将来某个写死的区域悄悄取代它——同一把 key,一个区域 200、另一个 401。
+	if want := "https://ws-test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"; c.QwenBaseURL != want {
+		t.Fatalf("QwenBaseURL = %q, want %q", c.QwenBaseURL, want)
 	}
 	// Spec defaults.
 	if c.MonthlyQuota != 5000 || c.MaxTokensCap != 4096 || c.InputTokenCap != 0 {
@@ -191,14 +196,14 @@ func TestLoadBaseInputTokenCapZeroCompatibilityValue(t *testing.T) {
 
 func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	env := minimalEnv()
-	env["DEEPSEEK_BASE_URL"] = "https://x.example/"
-	env["DEEPSEEK_API_KEY"] = " sk-1 , , sk-2 "
+	env["DASHSCOPE_BASE_URL"] = "https://x.example/"
+	env["DASHSCOPE_API_KEY"] = " sk-1 , , sk-2 "
 	c := mustLoad(t, env)
-	if c.DeepSeekBaseURL != "https://x.example" {
-		t.Fatalf("base url not trimmed: %q", c.DeepSeekBaseURL)
+	if c.QwenBaseURL != "https://x.example" {
+		t.Fatalf("base url not trimmed: %q", c.QwenBaseURL)
 	}
-	if len(c.DeepSeekAPIKeys) != 2 || c.DeepSeekAPIKeys[1] != "sk-2" {
-		t.Fatalf("keys = %v", c.DeepSeekAPIKeys)
+	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[1] != "sk-2" {
+		t.Fatalf("keys = %v", c.QwenAPIKeys)
 	}
 }
 
@@ -233,18 +238,18 @@ func TestLoadBaseFailFast(t *testing.T) {
 		wantErr error // when non-nil, asserts errors.Is
 		wantSub string
 	}{
-		// The routed provider is the one that gates boot. A DeepSeek-less deployment is fine now;
-		// a Qwen-less one can answer nothing, so it must fail at boot rather than per request.
-		// **被路由到的那家**才是启动门禁。没有 DeepSeek 的部署现在没问题;没有 Qwen 的部署什么也答不了,
-		// 故它必须在**启动时**失败,而不是每个请求失败一次。
+		// The credential gates boot because every route needs it: a gateway without
+		// it can answer nothing, so it must fail at boot rather than once per request.
+		// 凭证是启动门禁,因为**每一条**路由都要它:没有它的网关什么也答不了,故必须在**启动时**
+		// 失败,而不是每个请求失败一次。
 		{"missing Qwen key", func(m map[string]string) { delete(m, "DASHSCOPE_API_KEY") }, ErrQwenKeyRequired, ""},
 		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "  , " }, ErrQwenKeyRequired, ""},
 		{"DashScope base URL userinfo", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "https://secret@example.com/compatible-mode/v1" }, nil, "absolute HTTPS base URL"},
 		{"Qwen key needs endpoint", func(m map[string]string) { delete(m, "DASHSCOPE_WORKSPACE_ID") }, nil, "DASHSCOPE_API_KEY requires"},
 		{"invalid workspace id", func(m map[string]string) { m["DASHSCOPE_WORKSPACE_ID"] = "bad.example" }, nil, "DASHSCOPE_WORKSPACE_ID"},
-		{"remote plaintext base URL", func(m map[string]string) { m["DEEPSEEK_BASE_URL"] = "http://api.deepseek.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
+		{"remote plaintext base URL", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "http://dashscope.example.com" }, nil, "HTTP is allowed only for a literal loopback IP"},
 		{"unsafe public model id", func(m map[string]string) { m["PUBLIC_MODEL_ID"] = "bad model" }, nil, "PUBLIC_MODEL_ID"},
-		{"unknown priced model", func(m map[string]string) { m["TEXT_UPSTREAM_MODEL"] = "deepseek-latest" }, nil, "no exact rate card"},
+		{"unknown priced model", func(m map[string]string) { m["MULTIMODAL_UPSTREAM_MODEL"] = "qwen-not-a-real-model" }, nil, "no exact rate card"},
 		{"budget zero", func(m map[string]string) { m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "0" }, nil, "GLOBAL_MONTHLY_SPEND_MICRO_USD must be >= 1"},
 		{"bad int", func(m map[string]string) { m["MONTHLY_QUOTA"] = "abc" }, nil, "invalid int"},
 		{"over ceiling", func(m map[string]string) { m["MAX_TOKENS_CAP"] = "9999999" }, nil, "MAX_TOKENS_CAP must be <="},
@@ -256,7 +261,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 			m["DASHSCOPE_API_KEY"] = "qwen-key"
 			m["DASHSCOPE_WORKSPACE_ID"] = "ws_test"
 			m["GLOBAL_MONTHLY_SPEND_MICRO_USD"] = "200000"
-		}, nil, "multimodal hard-limit quote"},
+		}, nil, "worst-case request quote"},
 		{"dashboard builtin missing password", func(m map[string]string) {
 			m["DASHBOARD_AUTH_MODE"] = "builtin"
 			m["DASHBOARD_USER"] = "admin"
@@ -344,9 +349,9 @@ func TestLoadBaseAllowsExplicitLoopbackHTTP(t *testing.T) {
 	} {
 		t.Run(baseURL, func(t *testing.T) {
 			env := minimalEnv()
-			env["DEEPSEEK_BASE_URL"] = baseURL
-			if got := mustLoad(t, env).DeepSeekBaseURL; got != baseURL {
-				t.Fatalf("DeepSeekBaseURL = %q, want %q", got, baseURL)
+			env["DASHSCOPE_BASE_URL"] = baseURL
+			if got := mustLoad(t, env).QwenBaseURL; got != baseURL {
+				t.Fatalf("QwenBaseURL = %q, want %q", got, baseURL)
 			}
 		})
 	}
@@ -355,7 +360,7 @@ func TestLoadBaseAllowsExplicitLoopbackHTTP(t *testing.T) {
 func TestLoadBaseRejectsHostnameHTTPEvenForLocalhost(t *testing.T) {
 	t.Parallel()
 	env := minimalEnv()
-	env["DEEPSEEK_BASE_URL"] = "http://localhost:18080"
+	env["DASHSCOPE_BASE_URL"] = "http://localhost:18080"
 	if _, err := LoadBase(envMap(env)); err == nil || !strings.Contains(err.Error(), "literal loopback IP") {
 		t.Fatalf("localhost HTTP must not be trusted for credential transport: %v", err)
 	}
@@ -443,7 +448,7 @@ func TestApplyOverridesNoSwapOnValidateFailure(t *testing.T) {
 func TestApplyOverridesRejectsSecretAndRestartKeys(t *testing.T) {
 	p := New(mustLoad(t, minimalEnv()))
 	ss := newFakeStore()
-	for _, k := range []string{"DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_PASSWORD", "DASHBOARD_AUTH_MODE", "GOMEMLIMIT_MIB", "LISTEN_ADDR"} {
+	for _, k := range []string{"DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_PASSWORD", "DASHBOARD_AUTH_MODE", "GOMEMLIMIT_MIB", "LISTEN_ADDR"} {
 		if _, err := p.ApplyOverrides(context.Background(), map[string]string{k: "x"}, ss); err == nil {
 			t.Fatalf("override of %q: want rejection, got nil", k)
 		}
@@ -538,7 +543,7 @@ func TestDumpMasksSecretsAndCarriesBounds(t *testing.T) {
 		byKey[it.Key] = it
 		// No secret key may ever surface in Dump.
 		switch it.Key {
-		case "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
+		case "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
 			t.Fatalf("secret %q leaked into Dump", it.Key)
 		}
 	}
@@ -589,13 +594,10 @@ func TestSnapshotMasksSecrets(t *testing.T) {
 		kv[k] = attrs[i+1]
 		vals += valStr(attrs[i+1]) + ";"
 	}
-	for _, leak := range []string{"sk-a", "sk-b", "qwen-supersecret", "supersecretvalue", "hunter2pw"} {
+	for _, leak := range []string{"qwen-a", "qwen-b", "qwen-supersecret", "supersecretvalue", "hunter2pw"} {
 		if strings.Contains(vals, leak) {
 			t.Fatalf("secret %q leaked into Snapshot values: %s", leak, vals)
 		}
-	}
-	if kv["deepseek_keys"] != "sk-*** (2 configured)" {
-		t.Fatalf("deepseek_keys mask = %v", kv["deepseek_keys"])
 	}
 	if kv["qwen_keys"] != "*** (1 configured)" {
 		t.Fatalf("qwen_keys mask = %v", kv["qwen_keys"])

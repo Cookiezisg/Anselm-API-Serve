@@ -48,7 +48,6 @@ export interface ProviderStatus {
 }
 
 export interface ProviderStatuses {
-  deepseek: ProviderStatus
   qwen: ProviderStatus
 }
 

@@ -260,7 +260,6 @@ func (m *fakeMetrics) driftCount(p billing.Provider) int {
 func testCfg() *config.Config {
 	return &config.Config{
 		PublicModelID:           "anselm-auto",
-		TextUpstreamModel:       billing.DeepSeekV4Flash,
 		MultimodalUpstreamModel: billing.Qwen37Plus,
 		MonthlyQuota:            1000,
 		GlobalMonthlySpendPUSD:  100 * billing.PicoUSDPerUSD,

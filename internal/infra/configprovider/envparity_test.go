@@ -51,7 +51,6 @@ func loaderKeys(t *testing.T) map[string]bool {
 
 	base := func() map[string]string {
 		return map[string]string{
-			"DEEPSEEK_API_KEY":               "sk-a",
 			"DASHSCOPE_API_KEY":              "qwen-key",
 			"DASHSCOPE_WORKSPACE_ID":         "ws-test",
 			"GLOBAL_MONTHLY_SPEND_MICRO_USD": "420000000",

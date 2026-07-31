@@ -98,8 +98,7 @@ type ProviderStatus struct {
 // keys are always serialized so operators and the SPA never infer capability
 // from a field being absent.
 type ProviderStatuses struct {
-	DeepSeek ProviderStatus `json:"deepseek"`
-	Qwen     ProviderStatus `json:"qwen"`
+	Qwen ProviderStatus `json:"qwen"`
 }
 
 // Overview assembles the live snapshot. Provider state comes through the
@@ -128,11 +127,15 @@ func (s *Service) Overview(ctx context.Context, diskDegraded bool) Overview {
 	if s.d.Inflight != nil {
 		o.InflightConcurrency = s.d.Inflight.InflightConcurrency()
 	}
-	o.Providers.DeepSeek = s.providerStatus(billing.ProviderDeepSeek)
 	o.Providers.Qwen = s.providerStatus(billing.ProviderQwen)
-	// Kept as a compatibility aggregate for older dashboard/API consumers. New
-	// consumers use the provider-specific states above.
-	o.UpstreamBreakerOpen = o.Providers.DeepSeek.BreakerOpen || o.Providers.Qwen.BreakerOpen
+	// The aggregate is a one-provider OR today, but it stays a distinct field: it
+	// answers "is any upstream shedding", which is what the SPA banner asks, while
+	// Providers answers "which one". Collapsing them would make adding a second
+	// provider a wire change rather than a map entry.
+	// 这个聚合今天只是一个 provider 的 OR,但它仍然是独立字段:它回答的是「有没有哪家上游正在
+	// 甩负载」——那正是 SPA 顶栏要问的,而 Providers 回答的是「哪一家」。把两者合并,会让将来接
+	// 第二家从「加一个 map 条目」变成「改线缆」。
+	o.UpstreamBreakerOpen = o.Providers.Qwen.BreakerOpen
 	o.DiskDegraded = diskDegraded
 	if s.d.Alerts != nil {
 		o.Alerts = s.d.Alerts.CurrentStatus()

@@ -36,15 +36,15 @@ func TestRegistrationSmoke(t *testing.T) {
 	wrapped := m.Wrap("chat_completions", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	wrapped.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 	// Touch every collector so each appears in the exposition.
-	m.UpstreamRequests.WithLabelValues("deepseek", "success").Inc()
-	m.UpstreamLatency.WithLabelValues("deepseek").Observe(0.5)
+	m.UpstreamRequests.WithLabelValues("qwen", "success").Inc()
+	m.UpstreamLatency.WithLabelValues("qwen").Observe(0.5)
 	m.InflightConc.Set(2)
 	m.BudgetUsed.Set(123)
 	m.BudgetLimit.Set(1000)
 	m.ReservationsOpen.Set(1)
-	m.BreakerState.WithLabelValues("deepseek").Set(0)
+	m.BreakerState.WithLabelValues("qwen").Set(0)
 	m.BillingDrifts.WithLabelValues("qwen").Inc()
-	m.KeyCooldowns.WithLabelValues("deepseek").Inc()
+	m.KeyCooldowns.WithLabelValues("qwen").Inc()
 	m.RateLimiterEvictions.Inc()
 	m.Panics.Inc()
 	m.InstallsCreated.Inc()
@@ -91,7 +91,7 @@ func TestNoHighCardinalityLabels(t *testing.T) {
 	m := New()
 	// Observe at least one series on each labeled vec so the families gather.
 	m.httpRequests.WithLabelValues("chat_completions", "POST", "200").Inc()
-	m.UpstreamRequests.WithLabelValues("deepseek", "success").Inc()
+	m.UpstreamRequests.WithLabelValues("qwen", "success").Inc()
 	m.InstallPoW.WithLabelValues("verified").Inc()
 
 	families, err := m.reg.Gather()

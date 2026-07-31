@@ -19,8 +19,7 @@ fail() {
 
 STAGE="${TEST_ROOT}/stage"
 mkdir -m 0700 "${STAGE}"
-DEEPSEEK_API_KEY='alpha\beta"gamma$delta' \
-	DASHSCOPE_API_KEY='dashscope-test-key' \
+DASHSCOPE_API_KEY='alpha\beta"gamma$delta' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	DASHBOARD_USER='' \
@@ -32,7 +31,7 @@ DEEPSEEK_API_KEY='alpha\beta"gamma$delta' \
 	bash "${SCRIPT_DIR}/build-stage.sh" "${STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
 
 first_line="$(head -n 1 "${STAGE}/gateway.env")"
-[[ "${first_line}" == 'DEEPSEEK_API_KEY="alpha\\beta\"gamma\$delta"' ]] ||
+[[ "${first_line}" == 'DASHSCOPE_API_KEY="alpha\\beta\"gamma\$delta"' ]] ||
 	fail "systemd quoting did not preserve/escape secret bytes"
 
 for pair in \
@@ -115,7 +114,6 @@ redactor_output="$(printf '%s\n' \
 
 BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
 mkdir -m 0700 "${BUILTIN_STAGE}"
-DEEPSEEK_API_KEY='key' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
@@ -133,7 +131,6 @@ grep -Fqx 'DASHBOARD_PASSWORD="builtin-secret"' "${BUILTIN_STAGE}/gateway.env" |
 
 EXTERNAL_STAGE="${TEST_ROOT}/external-stage"
 mkdir -m 0700 "${EXTERNAL_STAGE}"
-DEEPSEEK_API_KEY='key' \
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
@@ -181,8 +178,7 @@ fi
 
 BAD_STAGE="${TEST_ROOT}/bad-stage"
 mkdir -m 0700 "${BAD_STAGE}"
-if DEEPSEEK_API_KEY=$'bad\nsecret' \
-	DASHSCOPE_API_KEY='dashscope-test-key' \
+if DASHSCOPE_API_KEY=$'bad\nsecret' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	DASHBOARD_USER='' \

@@ -1,4 +1,4 @@
-// Command gateway is the Anselm free-tier DeepSeek gateway (clean-arch rewrite).
+// Command gateway is the Anselm free-tier inference gateway.
 // It imports ONLY internal/bootstrap (the composition root): the localhost-only
 // ban/unban admin CLI, else build + run the three-listener server.
 package main

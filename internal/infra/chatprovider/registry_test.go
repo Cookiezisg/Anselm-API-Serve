@@ -25,24 +25,16 @@ func canonicalRequest(t *testing.T) domchat.CompletionRequest {
 	return domchat.Sanitize(in, ptrInt64(64))
 }
 
-func TestDeepSeekEncodingPreservesReasoningAndForcesModel(t *testing.T) {
-	raw, err := encode(billing.ProviderDeepSeek, billing.DeepSeekV4Flash, canonicalRequest(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(raw)
-	if !strings.Contains(s, `"model":"deepseek-v4-flash"`) || !strings.Contains(s, `"reasoning_content":"private-ds-trace"`) {
-		t.Fatalf("DeepSeek wire=%s", s)
-	}
-	if !strings.Contains(s, `"thinking":{"type":"enabled"}`) || !strings.Contains(s, `"reasoning_effort":"high"`) {
-		t.Fatalf("DeepSeek product knobs missing: %s", s)
-	}
-	if strings.Contains(s, "client-must-not-select-provider") {
-		t.Fatalf("client model leaked: %s", s)
+// encode must fail closed for a provider it has no dialect for, rather than
+// serializing it in the one dialect it happens to know.
+// encode 对没有方言的 provider **失败关闭**,而不是拿它碰巧会的那一种去序列化。
+func TestEncodeFailsClosedForAnUnknownProvider(t *testing.T) {
+	if _, err := encode(billing.Provider("other"), billing.Qwen37Plus, canonicalRequest(t)); err == nil {
+		t.Fatal("an unknown provider must not be encoded in another provider's dialect")
 	}
 }
 
-func TestQwenEncodingDropsDeepSeekTraceAndEnablesThinking(t *testing.T) {
+func TestEncodingDropsHistoricalThinkingAndForcesModel(t *testing.T) {
 	req := canonicalRequest(t)
 	raw, err := encode(billing.ProviderQwen, billing.Qwen37Plus, req)
 	if err != nil {
@@ -50,7 +42,7 @@ func TestQwenEncodingDropsDeepSeekTraceAndEnablesThinking(t *testing.T) {
 	}
 	s := string(raw)
 	if strings.Contains(s, "private-ds-trace") || strings.Contains(s, "reasoning_content") {
-		t.Fatalf("DeepSeek extension leaked to Qwen: %s", s)
+		t.Fatalf("historical thinking leaked upstream: %s", s)
 	}
 	if !strings.Contains(s, `"model":"qwen3.7-plus"`) {
 		t.Fatalf("Qwen wire=%s", s)

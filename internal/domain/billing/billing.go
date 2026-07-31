@@ -3,9 +3,21 @@
 // an immutable, exact-model rate card into pico-US dollars (pUSD), then only the
 // resulting integer cost enters the shared install/global wallet.
 //
-// pUSD is intentionally finer than nano-USD: DeepSeek's cache-hit price is
-// $0.0028 / 1M tokens = 2,800 pUSD/token, which is exact in this unit. All
-// arithmetic is checked and rounds toward higher spend when division is needed.
+// pUSD is intentionally finer than nano-USD so a per-token price stays EXACT
+// rather than rounded: the cheapest dimension currently priced here is Qwen's
+// cache-hit input at $0.32 / 1M tokens = 320,000 pUSD/token, and the unit leaves
+// room for an order of magnitude below that. All arithmetic is checked and
+// rounds toward higher spend when division is needed.
+//
+// The provider set is a closed enum of ONE. That is not an oversight: every
+// route this gateway serves goes to Qwen, so a second identity would describe
+// traffic that does not exist. The Provider type stays because the ledger, the
+// metrics labels, and the rate-card key are all provider-scoped — the shape is
+// what keeps a future second provider from being bolted on as a special case.
+//
+// provider 集合是一个**只有一个成员**的封闭枚举。这不是疏忽:本网关服务的每一条路由都去
+// Qwen,故第二个身份描述的是不存在的流量。Provider 类型仍然保留,因为账本、指标 label 与
+// 费率卡键都是按 provider 收窄的——正是这个形状,让将来真要接第二家时不必把它当特例硬塞。
 package billing
 
 import (
@@ -18,12 +30,10 @@ import (
 type Provider string
 
 const (
-	ProviderDeepSeek Provider = "deepseek"
-	ProviderQwen     Provider = "qwen"
+	ProviderQwen Provider = "qwen"
 )
 
 const (
-	DeepSeekV4Flash       = "deepseek-v4-flash"
 	Qwen37Plus            = "qwen3.7-plus"
 	Qwen3ASRFlashRealtime = "qwen3-asr-flash-realtime"
 	QwenImage20           = "qwen-image-2.0"
@@ -34,15 +44,13 @@ const (
 	// a persistent registration once, synthesis buys characters every time.
 	// QwenTTSClone 是音色**登记**模型——customization 调用的 `model` 字段,不是合成模型。它是一张
 	// 单独的卡,因为它是一笔**单独的购买**:登记一次性买下一份长存的登记,合成每次买字符。
-	QwenTTSClone        = "qwen-tts-clone"
-	PicoUSDPerMicroUSD  = int64(1_000_000)
-	PicoUSDPerUSD       = int64(1_000_000_000_000)
-	DeepSeekInputLimit  = int64(1_000_000)
-	DeepSeekOutputLimit = int64(384_000)
-	Qwen37InputLimit    = int64(1_000_000)
-	Qwen37OutputLimit   = int64(65_536)
-	QwenASRInputLimit   = int64(120) // seconds; bounded by the speech WebSocket session cap.
-	QwenASROutputLimit  = int64(0)
+	QwenTTSClone       = "qwen-tts-clone"
+	PicoUSDPerMicroUSD = int64(1_000_000)
+	PicoUSDPerUSD      = int64(1_000_000_000_000)
+	Qwen37InputLimit   = int64(1_000_000)
+	Qwen37OutputLimit  = int64(65_536)
+	QwenASRInputLimit  = int64(120) // seconds; bounded by the speech WebSocket session cap.
+	QwenASROutputLimit = int64(0)
 	// QwenImageInputLimit bounds images per reservation. The gateway request contract fixes n=1
 	// (WRK-082 P12); the small headroom only bounds the card, it does not widen the wire.
 	// QwenImageInputLimit 界定单次预留的图张数。网关请求契约钉 n=1(P12);小余量只界卡、不放宽线缆。
@@ -63,20 +71,14 @@ const (
 	// QwenVoiceInputLimit bounds VOICES per reservation. One enrollment is always exactly one voice
 	// (the wire has no batch form); the headroom only bounds the card.
 	// QwenVoiceInputLimit 界定单次预留的**音色个数**。一次登记恒为一个音色(线缆没有批量形);余量只界卡。
-	QwenVoiceInputLimit   = int64(2)
-	QwenVoiceOutputLimit  = int64(0)
-	legacyMaxPUSDPerToken = int64(280_000)
+	QwenVoiceInputLimit  = int64(2)
+	QwenVoiceOutputLimit = int64(0)
 )
 
 var (
 	ErrUnknownRateCard = errors.New("billing: no rate card for provider/model")
 	ErrCostOverflow    = errors.New("billing: cost arithmetic overflow")
 )
-
-// LegacyMaxPUSDPerToken is the conservative conversion factor used by the v1
-// token-ledger migration. It is the highest historical DeepSeek V4 Flash token
-// dimension (output), so migrated balances can only overstate old spend.
-func LegacyMaxPUSDPerToken() int64 { return legacyMaxPUSDPerToken }
 
 // InputClass is retained in the frozen Plan wire shape. Standard covers token
 // plans; AudioSeconds is used only by realtime ASR, where the provider bills
@@ -102,15 +104,13 @@ const (
 // distinct from an all-zero usage object and lets callers conservatively retain
 // the reservation when usage is missing or malformed.
 type Usage struct {
-	Present               bool
-	Malformed             bool
-	PromptTokens          int64
-	CompletionTokens      int64
-	TotalTokens           int64
-	PromptCacheHitTokens  int64
-	PromptCacheMissTokens int64
-	CachedPromptTokens    int64
-	ReasoningTokens       int64
+	Present            bool
+	Malformed          bool
+	PromptTokens       int64
+	CompletionTokens   int64
+	TotalTokens        int64
+	CachedPromptTokens int64
+	ReasoningTokens    int64
 }
 
 // MergeSnapshot keeps the greatest cumulative value seen for each field. Both
@@ -124,8 +124,6 @@ func (u Usage) MergeSnapshot(v Usage) Usage {
 	u.PromptTokens = max(u.PromptTokens, nonNegative(v.PromptTokens))
 	u.CompletionTokens = max(u.CompletionTokens, nonNegative(v.CompletionTokens))
 	u.TotalTokens = max(u.TotalTokens, nonNegative(v.TotalTokens))
-	u.PromptCacheHitTokens = max(u.PromptCacheHitTokens, nonNegative(v.PromptCacheHitTokens))
-	u.PromptCacheMissTokens = max(u.PromptCacheMissTokens, nonNegative(v.PromptCacheMissTokens))
 	u.CachedPromptTokens = max(u.CachedPromptTokens, nonNegative(v.CachedPromptTokens))
 	u.ReasoningTokens = max(u.ReasoningTokens, nonNegative(v.ReasoningTokens))
 	return u
@@ -155,18 +153,6 @@ type RateCard struct {
 }
 
 var rateCards = map[Provider]map[string]RateCard{
-	ProviderDeepSeek: {
-		DeepSeekV4Flash: {
-			ID: "deepseek-v4-flash-2026-07-20", Provider: ProviderDeepSeek, Model: DeepSeekV4Flash,
-			InputLimit: DeepSeekInputLimit, OutputLimit: DeepSeekOutputLimit,
-			// Official standard pricing per 1M tokens: hit $0.0028,
-			// cache miss $0.14, output $0.28.
-			tiers: []pricingTier{{
-				InputUpperBound: DeepSeekInputLimit,
-				InputPUSD:       140_000, CacheHitInputPUSD: 2_800, OutputPUSD: 280_000,
-			}},
-		},
-	},
 	ProviderQwen: {
 		Qwen37Plus: {
 			ID: "qwen3.7-plus-sg-thinking-2026-07-24", Provider: ProviderQwen, Model: Qwen37Plus,
@@ -329,7 +315,7 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	}
 	switch inputClass {
 	case InputStandard:
-		if card.OutputLimit == 0 || (outputBound == 0 && provider != ProviderQwen) {
+		if card.OutputLimit == 0 {
 			return Plan{}, ErrUnknownRateCard
 		}
 	case InputAudioSeconds:
@@ -510,12 +496,7 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 	if addErr != nil || u.TotalTokens < visibleTotal {
 		return 0, false, nil
 	}
-	if p.Provider == ProviderDeepSeek && u.TotalTokens != visibleTotal {
-		// DeepSeek formally defines total=prompt+completion. A contradictory
-		// vector is malformed, so retaining the full quote is safer than refunding.
-		return 0, false, nil
-	}
-	if u.CachedPromptTokens > prompt || u.PromptCacheHitTokens > prompt || u.PromptCacheMissTokens > prompt {
+	if u.CachedPromptTokens > prompt {
 		return 0, false, nil
 	}
 	derivedOutput := u.TotalTokens - prompt
@@ -532,52 +513,21 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 		return 0, false, nil
 	}
 
-	var inputCost int64
-	switch p.Provider {
-	case ProviderDeepSeek:
-		hit := nonNegative(u.PromptCacheHitTokens)
-		miss := nonNegative(u.PromptCacheMissTokens)
-		cacheTotal, e := checkedAdd(hit, miss)
-		if e != nil || cacheTotal > prompt {
-			return 0, false, nil
-		}
-		if cacheTotal < prompt {
-			miss = prompt - hit
-		}
-		hitCost, e := checkedMul(hit, tier.CacheHitInputPUSD)
-		if e != nil {
-			return 0, false, e
-		}
-		missCost, e := checkedMul(miss, tier.InputPUSD)
-		if e != nil {
-			return 0, false, e
-		}
-		inputCost, e = checkedAdd(hitCost, missCost)
-		if e != nil {
-			return 0, false, e
-		}
-	case ProviderQwen:
-		// The compatibility response may omit cache details. Treat such prompt
-		// tokens as cache misses; when it reports cached tokens, charge the exact
-		// provider cache-hit rate without ever undercharging unknown tokens.
-		hit := nonNegative(u.CachedPromptTokens)
-		if hit > prompt {
-			return 0, false, nil
-		}
-		hitCost, e := checkedMul(hit, tier.CacheHitInputPUSD)
-		if e != nil {
-			return 0, false, e
-		}
-		missCost, e := checkedMul(prompt-hit, tier.InputPUSD)
-		if e != nil {
-			return 0, false, e
-		}
-		inputCost, e = checkedAdd(hitCost, missCost)
-		if e != nil {
-			return 0, false, e
-		}
-	default:
-		return 0, false, ErrUnknownRateCard
+	// The compatibility response may omit cache details. Treat such prompt tokens
+	// as cache misses; when it reports cached tokens, charge the exact provider
+	// cache-hit rate without ever undercharging unknown tokens.
+	hit := nonNegative(u.CachedPromptTokens)
+	hitCost, err := checkedMul(hit, tier.CacheHitInputPUSD)
+	if err != nil {
+		return 0, false, err
+	}
+	missCost, err := checkedMul(prompt-hit, tier.InputPUSD)
+	if err != nil {
+		return 0, false, err
+	}
+	inputCost, err := checkedAdd(hitCost, missCost)
+	if err != nil {
+		return 0, false, err
 	}
 	outputCost, err := checkedMul(completion, tier.OutputPUSD)
 	if err != nil {
@@ -592,7 +542,6 @@ func (p Plan) Cost(u Usage) (cost int64, ok bool, err error) {
 
 func usageHasNegative(u Usage) bool {
 	return u.PromptTokens < 0 || u.CompletionTokens < 0 || u.TotalTokens < 0 ||
-		u.PromptCacheHitTokens < 0 || u.PromptCacheMissTokens < 0 ||
 		u.CachedPromptTokens < 0 || u.ReasoningTokens < 0
 }
 

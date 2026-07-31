@@ -23,7 +23,7 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 	Init(&buf, "info")
 
 	secrets := map[string]string{
-		"authorization":     "Bearer sk-super-secret-deepseek-key",
+		"authorization":     "Bearer sk-super-secret-upstream-key",
 		"api_key":           "sk-another-key",
 		"dashscope_api_key": "AIza-secret",
 		"x-goog-api-key":    "AIza-header-secret",
@@ -35,7 +35,7 @@ func TestRedactionNeverLeaksSecrets(t *testing.T) {
 		"input_audio":       "private audio payload",
 		"messages":          "[{role:user}]",
 		"body":              "raw upstream body json",
-		"upstream_body":     "raw deepseek error body",
+		"upstream_body":     "raw upstream error body",
 	}
 	args := make([]any, 0, len(secrets)*2)
 	for k, v := range secrets {
@@ -61,11 +61,13 @@ func TestRedactionNormalizesProviderAPIKeyCase(t *testing.T) {
 	var buf bytes.Buffer
 	Init(&buf, "info")
 
+	// Redaction keys off the NORMALIZED name, so no casing of a provider key
+	// field can slip a secret into a log line.
+	// 脱敏按**归一化**后的名字匹配,故 provider key 字段的任何大小写写法都漏不出秘密。
 	secrets := map[string]string{
-		"DEEPSEEK_API_KEY":  "sk-deepseek-uppercase-secret",
-		"dEePsEeK_aPi_KeY":  "sk-deepseek-mixed-case-secret",
-		"DASHSCOPE_API_KEY": "AIza-dashscope-uppercase-secret",
-		"gEmInI_aPi_KeY":    "AIza-gemini-mixed-case-secret",
+		"DASHSCOPE_API_KEY": "sk-upstream-uppercase-secret",
+		"dAsHsCoPe_aPi_KeY": "sk-upstream-mixed-case-secret",
+		"dashscope_api_key": "sk-upstream-lowercase-secret",
 	}
 	args := make([]any, 0, len(secrets)*2)
 	for key, secret := range secrets {
@@ -137,14 +139,14 @@ func TestRedactionDefendsAgainstStructAny(t *testing.T) {
 		Note          string
 	}
 	v := leaky{
-		Authorization: "Bearer sk-super-secret-deepseek-key",
+		Authorization: "Bearer sk-super-secret-upstream-key",
 		APIKey:        "sk-another-key",
 		Note:          "benign-but-bundled",
 	}
 	From(context.Background()).Info("test", "extra", v)
 
 	out := buf.String()
-	for _, secret := range []string{"sk-super-secret-deepseek-key", "sk-another-key", "Bearer "} {
+	for _, secret := range []string{"sk-super-secret-upstream-key", "sk-another-key", "Bearer "} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("nested secret leaked via slog.Any of a struct: %q in %s", secret, out)
 		}

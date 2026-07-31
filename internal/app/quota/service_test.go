@@ -65,7 +65,7 @@ func newService(repo *fakeRepo, lim Limits) *Service {
 
 func testPlan(t *testing.T) billing.Plan {
 	t.Helper()
-	p, err := billing.NewPlan(billing.ProviderDeepSeek, billing.DeepSeekV4Flash, billing.InputStandard, 10, 10)
+	p, err := billing.NewPlan(billing.ProviderQwen, billing.Qwen37Plus, billing.InputStandard, 10, 10)
 	if err != nil {
 		t.Fatalf("new plan: %v", err)
 	}

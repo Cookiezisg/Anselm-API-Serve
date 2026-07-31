@@ -5,25 +5,41 @@ import (
 	"testing"
 )
 
-func TestDeepSeekPlanAndCacheAwareCost(t *testing.T) {
-	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 100, 20)
+// A small request sits in the FIRST pricing tier, and a reported cache hit is
+// charged at that tier's discounted input rate while every unreported prompt
+// token stays at full price. The arithmetic is spelled out rather than pasted
+// so a rate-card edit has to be re-derived here, not copied from the failure.
+//
+// 小请求落在**第一档**,已报告的缓存命中按该档折后输入价计费,而每一个**未**报告的 prompt token
+// 仍按全价。算式**写开**而不是贴一个常数:改费率卡时必须在这里重新推导,而不是把失败信息里的数
+// 抄回来。
+func TestPlanAndCacheAwareCost(t *testing.T) {
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 100, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReserve := int64(100*140_000 + 20*280_000)
+	const (
+		tier1Input    = 1_600_000 // $1.60 / 1M tokens
+		tier1CacheHit = 320_000   // 20% of standard input
+		tier1Output   = 1_600_000
+	)
+	wantReserve := int64(100*tier1Input + 20*tier1Output)
 	if p.ReservedPUSD != wantReserve {
 		t.Fatalf("reserve=%d want %d", p.ReservedPUSD, wantReserve)
 	}
 	cost, ok, err := p.Cost(Usage{
 		Present: true, PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110,
-		PromptCacheHitTokens: 80, PromptCacheMissTokens: 20,
+		CachedPromptTokens: 80,
 	})
 	if err != nil || !ok {
 		t.Fatalf("Cost err=%v ok=%v", err, ok)
 	}
-	want := int64(80*2_800 + 20*140_000 + 10*280_000)
+	want := int64(80*tier1CacheHit + 20*tier1Input + 10*tier1Output)
 	if cost != want {
 		t.Fatalf("cost=%d want %d", cost, want)
+	}
+	if cost >= p.ReservedPUSD {
+		t.Fatalf("a cache-discounted settle must come in under the reservation: cost=%d reserve=%d", cost, p.ReservedPUSD)
 	}
 }
 
@@ -104,7 +120,7 @@ func TestQwenRealtimeASRPlanPricesAudioSeconds(t *testing.T) {
 }
 
 func TestMissingUsageKeepsReservation(t *testing.T) {
-	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 1, 1)
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,9 +128,9 @@ func TestMissingUsageKeepsReservation(t *testing.T) {
 		t.Fatalf("missing usage: ok=%v err=%v", ok, err)
 	}
 	for name, usage := range map[string]Usage{
-		"empty object":           {Present: true},
-		"missing prompt":         {Present: true, CompletionTokens: 1, TotalTokens: 1},
-		"DeepSeek missing total": {Present: true, PromptTokens: 1, CompletionTokens: 1},
+		"empty object":   {Present: true},
+		"missing prompt": {Present: true, CompletionTokens: 1, TotalTokens: 1},
+		"missing total":  {Present: true, PromptTokens: 1, CompletionTokens: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, ok, err := p.Cost(usage); err != nil || ok {
@@ -125,25 +141,24 @@ func TestMissingUsageKeepsReservation(t *testing.T) {
 }
 
 func TestContradictoryUsageKeepsReservation(t *testing.T) {
-	ds, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 100, 10)
+	ds, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, usage := range map[string]Usage{
-		"cache split exceeds prompt": {
-			Present: true, PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
-			PromptCacheHitTokens: 80, PromptCacheMissTokens: 30,
-		},
-		"cache hit exceeds prompt": {
-			Present: true, PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
-			PromptCacheHitTokens: 101,
-		},
 		"cached detail exceeds prompt": {
 			Present: true, PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
 			CachedPromptTokens: 101,
 		},
+		"reasoning exceeds derived output": {
+			Present: true, PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
+			ReasoningTokens: 50,
+		},
+		"total below prompt+completion": {
+			Present: true, PromptTokens: 100, CompletionTokens: 10, TotalTokens: 100,
+		},
 	} {
-		t.Run("deepseek/"+name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			if _, ok, err := ds.Cost(usage); err != nil || ok {
 				t.Fatalf("contradictory usage refunded: ok=%v err=%v usage=%+v", ok, err, usage)
 			}
@@ -189,7 +204,6 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 	}{
 		"unknown class":         {ProviderQwen, Qwen37Plus, InputClass(255)},
 		"audio seconds on chat": {ProviderQwen, Qwen37Plus, InputAudioSeconds},
-		"audio seconds on text": {ProviderDeepSeek, DeepSeekV4Flash, InputAudioSeconds},
 		"standard on ASR model": {ProviderQwen, Qwen3ASRFlashRealtime, InputStandard},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -201,7 +215,7 @@ func TestInputClassIsClosedAndProviderCompatible(t *testing.T) {
 }
 
 func TestValidateRejectsExternallyForgedPlanWithoutPrivateRateCard(t *testing.T) {
-	want, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 10, 2)
+	want, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 10, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +249,7 @@ func TestMergeSnapshotPreservesMalformedEvidence(t *testing.T) {
 	if !u.Malformed {
 		t.Fatalf("negative snapshot lost malformed evidence: %+v", u)
 	}
-	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 100, 10)
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +259,7 @@ func TestMergeSnapshotPreservesMalformedEvidence(t *testing.T) {
 }
 
 func TestCostDirectlyRejectsEveryNegativeUsageDimension(t *testing.T) {
-	p, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 100, 10)
+	p, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,8 +268,6 @@ func TestCostDirectlyRejectsEveryNegativeUsageDimension(t *testing.T) {
 		"prompt":        func(u *Usage) { u.PromptTokens = -1 },
 		"completion":    func(u *Usage) { u.CompletionTokens = -1 },
 		"total":         func(u *Usage) { u.TotalTokens = -1 },
-		"cache hit":     func(u *Usage) { u.PromptCacheHitTokens = -1 },
-		"cache miss":    func(u *Usage) { u.PromptCacheMissTokens = -1 },
 		"cached detail": func(u *Usage) { u.CachedPromptTokens = -1 },
 		"reasoning":     func(u *Usage) { u.ReasoningTokens = -1 },
 	}
@@ -289,7 +301,7 @@ func TestImagesPlanAndCost(t *testing.T) {
 	if err != nil || cost != p.ReservedPUSD {
 		t.Fatalf("ImagesCost(1) = %d,%v — want reserve==settle", cost, err)
 	}
-	if _, err := NewImagesPlan(ProviderDeepSeek, DeepSeekV4Flash, 1); err == nil {
+	if _, err := NewImagesPlan(ProviderQwen, Qwen37Plus, 1); err == nil {
 		t.Fatal("images plan on a text card must fail closed")
 	}
 	if _, err := NewImagesPlan(ProviderQwen, QwenImage20, 0); err == nil {
@@ -301,7 +313,7 @@ func TestImagesPlanAndCost(t *testing.T) {
 	if _, err := p.ImagesCost(QwenImageInputLimit + 1); err == nil {
 		t.Fatal("over-card ImagesCost must fail closed")
 	}
-	chat, err := NewPlan(ProviderDeepSeek, DeepSeekV4Flash, InputStandard, 10, 10)
+	chat, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +348,7 @@ func TestCharactersPlanAndCost(t *testing.T) {
 	if _, err := NewCharactersPlan(ProviderQwen, QwenImage20, 100); err == nil {
 		t.Fatal("characters plan on the image card must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderDeepSeek, DeepSeekV4Flash, 100); err == nil {
+	if _, err := NewCharactersPlan(ProviderQwen, Qwen37Plus, 100); err == nil {
 		t.Fatal("characters plan on a text card must fail closed")
 	}
 	if _, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 0); err == nil {
@@ -375,7 +387,7 @@ func TestVideoSecondsPlanAndCost(t *testing.T) {
 	if _, err := NewVideoSecondsPlan(ProviderQwen, QwenImage20, 5); err == nil {
 		t.Fatal("video plan on the image card must fail closed")
 	}
-	if _, err := NewVideoSecondsPlan(ProviderDeepSeek, DeepSeekV4Flash, 5); err == nil {
+	if _, err := NewVideoSecondsPlan(ProviderQwen, Qwen37Plus, 5); err == nil {
 		t.Fatal("video plan on a text card must fail closed")
 	}
 	if _, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, 0); err == nil {

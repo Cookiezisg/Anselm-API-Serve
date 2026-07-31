@@ -13,7 +13,7 @@ import (
 // never diverge). Min/Max are *int64 so a non-numeric spec (PUBLIC_MODEL_ID) or a
 // read-only restart item omits them (null).
 //
-// 🔴 Dump 只含非机密项:机密(DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / DASHBOARD_* / INSTALL_POW_SECRET)
+// 🔴 Dump 只含非机密项:机密(DASHSCOPE_API_KEY / DASHBOARD_* / INSTALL_POW_SECRET)
 // 不在 config.Specs,故永不出现在 Dump,绝不泄露真值。
 type DumpItem struct {
 	Key             string `json:"key"`
@@ -76,12 +76,9 @@ func (p *Provider) Snapshot() []any {
 	c := p.Load()
 	return []any{
 		"gateway_mode", c.RuntimeMode,
-		"deepseek_keys", fmt.Sprintf("sk-*** (%d configured)", len(c.DeepSeekAPIKeys)),
-		"deepseek_base_url", c.DeepSeekBaseURL,
 		"qwen_keys", fmt.Sprintf("*** (%d configured)", len(c.QwenAPIKeys)),
 		"dashscope_base_url", c.QwenBaseURL,
 		"public_model_id", c.PublicModelID,
-		"text_upstream_model", c.TextUpstreamModel,
 		"multimodal_upstream_model", c.MultimodalUpstreamModel,
 		"monthly_quota", c.MonthlyQuota,
 		"global_monthly_spend_micro_usd", c.GlobalMonthlySpendPUSD / 1_000_000,

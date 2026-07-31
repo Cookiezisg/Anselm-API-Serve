@@ -18,11 +18,11 @@ test:
 # 打标签的集成 e2e(真 HTTP 栈 + 真 SQLite + 生产装配函数)。
 #
 # **它必须在 verify 里,因为 `go test ./...` 看不见它**——build tag 把它挡在外面,于是它可以红着过好几个
-# 提交而无人知晓。H9 实证:撤 deepseek 之后整包 13 个用例全红(chat 全部解析到多模态模型,而这些栈只接了
+# 提交而无人知晓。实证:撤掉第二个 provider 之后整包 13 个用例全红(chat 全部解析到多模态模型,而这些栈只接了
 # 文本槽),而本地四项门禁一路全绿,直到 CI 才说话。一个跑不到的测试等于没有测试。
 #
 # The tagged e2e MUST be in verify: `go test ./...` cannot see it (the build tag keeps it out), so it
-# can stay red across commits unnoticed — as it did after the deepseek removal, when all 13 cases in
+# can stay red across commits unnoticed — as it did after the second provider was removed, when all 13 cases in
 # the package failed while the local gate reported four greens.
 e2e:
 	go test -tags=integration -race -count=1 ./internal/e2e/...

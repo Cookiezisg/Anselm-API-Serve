@@ -37,7 +37,6 @@ var redactKeys = map[string]struct{}{
 	"authorization":       {},
 	"proxy-authorization": {},
 	"api_key":             {},
-	"deepseek_api_key":    {},
 	"dashscope_api_key":   {},
 	"x-api-key":           {},
 	"x-goog-api-key":      {},

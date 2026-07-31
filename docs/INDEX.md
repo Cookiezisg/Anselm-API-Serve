@@ -1,6 +1,6 @@
 # anselm-gateway 文档索引（会话入口）
 
-> 模块：`github.com/sunweilin/anselm/gateway`。一个**薄网关**（文本→DeepSeek、图片/视频→Qwen3.7 Plus 的确定性 capability 路由 + 悲观成本记账 + install/PoW 身份 + 管理后台）。
+> 模块：`github.com/sunweilin/anselm/gateway`。一个**薄网关**（单上游 Qwen3.7 Plus + 按内容形状决定能力的确定性准入 + 悲观成本记账 + install/PoW 身份 + 管理后台）。
 > 本文件是会话**起点**，只给指针、不放内容（≤50 行，`make docs` 强制）。任何深入都点链接到权威源。
 
 ## 先读
@@ -8,11 +8,11 @@
 | 你要做什么 | 去哪 |
 |---|---|
 | 懂规矩（文档怎么写 / 同步 / 淘汰，三铁律 + 收尾清单） | [GOVERNANCE.md](GOVERNANCE.md)（DOC-000，强制规范） |
-| 懂系统（7 域 + 4 层 Clean Arch + 双 provider 隔离 + pUSD 悲观记账） | [concepts/architecture.md](concepts/architecture.md) |
+| 懂系统（7 域 + 4 层 Clean Arch + 上游账号隔离 + pUSD 悲观记账） | [concepts/architecture.md](concepts/architecture.md) |
 | 查硬契约（与代码逐字一致，**现行事实源**） | [references/backend/](references/backend/)（见下表） |
 | 查选型与取舍（为何这样设计） | [decisions/](decisions/)（ADR-0001..0018，不可变；0012 成本账本，0015 设备证明，0016 provider 权威上下文准入，0017 Qwen route 与分档费率，0018 受管语音走双工 WebSocket、响应体是裸音频） |
 | **进行中工单**（生成能力:图/TTS 端点 + URL 直通，主战役 = 主仓 WRK-082） | [working/multimodal-generation.md](working/multimodal-generation.md) |
-| **进行中工单**（仓库治理:撤 DeepSeek / 后台收敛单模式 / 消除克隆增生，**可独立交接**） | [working/repo-governance.md](working/repo-governance.md) |
+| **进行中工单**（仓库治理:清死代码 / 后台收敛单模式 / 消除克隆增生，**可独立交接**） | [working/repo-governance.md](working/repo-governance.md) |
 | 看已交付的旧工单与重写期抽取契约（**历史参考，只读**） | [archive/](archive/) |
 
 ## references/backend 契约（reference，每次代码改动即同步）

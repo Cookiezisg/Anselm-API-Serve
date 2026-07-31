@@ -31,7 +31,6 @@ import (
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
 
@@ -42,10 +41,7 @@ import (
 // this value from untrusted request JSON.
 type BackendID string
 
-const (
-	BackendDeepSeek BackendID = "deepseek"
-	BackendQwen     BackendID = "qwen"
-)
+const BackendQwen BackendID = "qwen"
 
 // Options freezes everything that belongs to one upstream account. In
 // particular, URL/key/breaker state may never be selected from a client request
@@ -151,31 +147,22 @@ func (s *Stream) Close() error {
 }
 
 // BackendClient is the narrow provider-local client returned by NewBackend. Its
-// type surface cannot accept a runtime config or alternate URL, so a Qwen key
-// cannot accidentally be sent to the DeepSeek endpoint (or vice versa).
+// type surface cannot accept a runtime config or an alternate URL: the endpoint
+// and the key pool are frozen at construction, so one provider's credential can
+// never travel to another provider's address.
+//
+// BackendClient 是 NewBackend 返回的、按 provider 收窄的客户端。它的类型面**收不下**运行时
+// 配置或另一个 URL:端点与 key 池在构造期就冻住,故一家的凭证永远走不到另一家的地址上。
 type BackendClient interface {
 	// DoCall opens a request against this client's construction-time endpoint.
 	// A client represents exactly one provider-local key pool + breaker.
 	DoCall(ctx context.Context, call Call) (*Stream, *CallFailure)
-	BreakerOpen() bool
-}
-
-// Client is the one-release legacy DeepSeek surface returned only by New. New
-// provider-aware wiring must depend on BackendClient.
-type Client interface {
-	BackendClient
-	// Do runs one request through the process breaker + bounded retry to
-	// connect→first-byte. On success it returns a *Stream the caller relays and
-	// must Close; on failure a normalized *apierr.APIError (never the upstream
-	// body). A client-cancel surfaces as 499 CLIENT_CANCELED (non-fault); a 429 /
-	// breaker-open as UPSTREAM_BUSY (non-fault, non-retry).
-	Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (*Stream, *apierr.APIError)
-	// BreakerOpen reports whether the process-wide breaker is currently open
+	// BreakerOpen reports whether this client's breaker is currently open
 	// (drives the OBS-4 alert; lets a caller fast-shed before taking a slot).
 	BreakerOpen() bool
 }
 
-// client is the concrete Client.
+// client is the concrete BackendClient.
 type client struct {
 	backend   BackendID
 	endpoint  string
@@ -186,21 +173,6 @@ type client struct {
 	retry     retryPolicy
 	hook      MetricsHook
 	now       func() time.Time
-}
-
-// New is the compatibility constructor for config-driven wiring. The endpoint
-// and per-attempt first-byte timeout are supplied by each legacy Do call;
-// NewBackend should be used by provider-aware wiring so those facts are frozen.
-// respHeaderTimeout seeds the transport's connect→header bound. logger/hook may
-// be nil.
-func New(apiKeys []string, respHeaderTimeout time.Duration, logger *slog.Logger, hook MetricsHook) Client {
-	return newClient(Options{
-		Backend:       BackendDeepSeek,
-		APIKeys:       apiKeys,
-		HeaderTimeout: respHeaderTimeout,
-		Logger:        logger,
-		Hook:          hook,
-	})
 }
 
 // NewBackend builds one provider-local client. It intentionally returns no
@@ -215,7 +187,7 @@ func NewBackend(opts Options) BackendClient {
 func newClient(opts Options) *client {
 	backend := opts.Backend
 	if backend == "" {
-		backend = BackendDeepSeek
+		backend = BackendQwen
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -290,21 +262,6 @@ func (c *client) DoCall(ctx context.Context, call Call) (*Stream, *CallFailure) 
 		timeout = c.timeout
 	}
 	return c.do(ctx, call.Payload, call.Stream, timeout, c.endpoint)
-}
-
-// Do is the compatibility entry point for the legacy config-driven client. It
-// drives connect→first-byte through the same provider-local breaker (REL-2).
-func (c *client) Do(ctx context.Context, payload []byte, stream bool, cfg *config.Config) (*Stream, *apierr.APIError) {
-	if c == nil || cfg == nil {
-		return nil, apierr.ErrUpstreamError
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.DeepSeekBaseURL), "/")
-	endpoint := normalizeEndpoint(baseURL + "/chat/completions")
-	streamOut, failure := c.do(ctx, payload, stream, cfg.UpstreamHeaderTimeout, endpoint)
-	if failure != nil {
-		return nil, failure.APIError
-	}
-	return streamOut, nil
 }
 
 func (c *client) do(ctx context.Context, payload []byte, stream bool, firstByteTimeout time.Duration, endpoint string) (*Stream, *CallFailure) {

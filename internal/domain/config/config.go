@@ -127,17 +127,19 @@ const (
 // 全配置启动期一次性读入并校验,运行期只读。客户端逻辑模型、上游目标与定点金额
 // 钱包各自显式表达,不存在旧白名单/令牌预算镜像。
 type Config struct {
-	DeepSeekAPIKeys []string // DEEPSEEK_API_KEY(逗号分隔多 key,第一个为主)
-	DeepSeekBaseURL string   // DEEPSEEK_BASE_URL
-	QwenAPIKeys     []string // DASHSCOPE_API_KEY(可选;未配置则多模态能力明确不可用)
-	QwenBaseURL     string   // DASHSCOPE_BASE_URL 或 workspace 推导的 compatible-mode base
+	// QwenAPIKeys is REQUIRED: every route this gateway serves goes to Qwen, so a
+	// deployment without it can serve nothing at all. The loader fails at boot
+	// rather than answering every request with an outage.
+	// QwenAPIKeys 是**必需**的:本网关服务的每一条路由都去 Qwen,故没有它的部署什么也服务
+	// 不了。loader 在启动时失败,好过对每一个请求都答一次故障。
+	QwenAPIKeys []string // DASHSCOPE_API_KEY(逗号分隔多 key,第一个为主)
+	QwenBaseURL string   // DASHSCOPE_BASE_URL 或 workspace 推导的 compatible-mode base
 
-	// PublicModelID is the single client-facing logical model. Actual upstream
-	// models are construction/config facts selected solely by content capability;
-	// a client model string never selects a provider or a price tier.
+	// PublicModelID is the single client-facing logical model. The actual upstream
+	// model is a construction/config fact; a client model string never selects a
+	// provider or a price tier.
 	PublicModelID           string // PUBLIC_MODEL_ID(default anselm-auto)
-	TextUpstreamModel       string // TEXT_UPSTREAM_MODEL(exact priced DeepSeek id)
-	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Qwen id)
+	MultimodalUpstreamModel string // MULTIMODAL_UPSTREAM_MODEL(exact priced Qwen id;文本与媒体同走这一个)
 
 	// RuntimeMode selects whether the rationing knobs below are enforced
 	// (production) or masked open (debug). See EffectiveLimits for the exact
@@ -485,31 +487,30 @@ func (c *Config) ValidateSemantics() error {
 	if !validPublicModelID(c.PublicModelID) {
 		return fmt.Errorf("SEC-2 config: PUBLIC_MODEL_ID must be 1..%d ASCII bytes using letters, digits, '.', '_', '-', ':', or '/'", MaxPublicModelIDBytes)
 	}
-	textOutput := min(c.MaxTokensCap, billing.DeepSeekOutputLimit)
-	// With estimator admission removed, the provable worst case is the complete
-	// text-model input limit (an over-limit byte quote is clamped to this bound
-	// before Reserve). Validate that one such request fits the monthly wallet.
-	textPrompt := billing.DeepSeekInputLimit
-	textPlan, err := billing.NewPlan(billing.ProviderDeepSeek, c.TextUpstreamModel,
-		billing.InputStandard, textPrompt, textOutput)
+	// ONE route, ONE check. Text and media both go to MULTIMODAL_UPSTREAM_MODEL,
+	// so validating a separate "text model" would price a model no request can
+	// reach — and the old code did exactly that UNCONDITIONALLY while gating the
+	// live route's check behind an optional credential. That was backwards.
+	//
+	// The bound is the model's FULL input/output limit rather than an estimate:
+	// inline media bytes cannot prove visual tokenization, and the byte estimate
+	// was never admission truth. Reserve the whole top-tier quote and settle only
+	// from authoritative usage — this is an accounting guard, never context
+	// admission (ADR-0016).
+	//
+	// **一条路由,一次校验。** 文本与媒体都去 MULTIMODAL_UPSTREAM_MODEL,故再验一次「文本
+	// 模型」等于给一个没有请求到得了的模型定价——而旧代码正是**无条件**做那件事,却把**活着
+	// 那条**路由的校验藏在一个可选凭证后面。方向正好反了。
+	//
+	// 界取模型的**完整**输入/输出上限、不是估算:内联媒体字节证明不了视觉 token 化,而字节估算
+	// 从来不是准入依据。按顶档全额预留、只按权威 usage 结算——这是**账务**闸,不是上下文准入。
+	plan, err := billing.NewPlan(billing.ProviderQwen, c.MultimodalUpstreamModel,
+		billing.InputStandard, billing.Qwen37InputLimit, billing.Qwen37OutputLimit)
 	if err != nil {
-		return fmt.Errorf("SEC-2 config: TEXT_UPSTREAM_MODEL has no exact rate card: %w", err)
+		return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
 	}
-	if textPlan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
-		return fmt.Errorf("SEC-2 config: text request worst-case quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
-	}
-	if len(c.QwenAPIKeys) > 0 {
-		// Inline image/video bytes cannot prove Qwen visual tokenization. Reserve
-		// the full 1M/64K highest-tier quote, then settle only from authoritative
-		// usage. This is a billing guard, never local context admission.
-		mediaPlan, err := billing.NewPlan(billing.ProviderQwen, c.MultimodalUpstreamModel,
-			billing.InputStandard, billing.Qwen37InputLimit, billing.Qwen37OutputLimit)
-		if err != nil {
-			return fmt.Errorf("SEC-2 config: MULTIMODAL_UPSTREAM_MODEL has no exact rate card: %w", err)
-		}
-		if mediaPlan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
-			return fmt.Errorf("SEC-2 config: multimodal hard-limit quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
-		}
+	if plan.ReservedPUSD > c.GlobalMonthlySpendPUSD {
+		return fmt.Errorf("SEC-2 config: worst-case request quote exceeds GLOBAL_MONTHLY_SPEND_MICRO_USD")
 	}
 	if c.MaxMediaParts < 1 || c.MaxMediaParts > MaxMediaParts {
 		return fmt.Errorf("SEC-2 config: MAX_MEDIA_PARTS out of range")

@@ -147,11 +147,8 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 		Reservations: fakeReservations{n: 7},
 		Inflight:     fakeInflight{n: 3},
 		Providers: fakeProviders{
-			configured: map[billing.Provider]bool{
-				billing.ProviderDeepSeek: true,
-				billing.ProviderQwen:     true,
-			},
-			open: map[billing.Provider]bool{billing.ProviderQwen: true},
+			configured: map[billing.Provider]bool{billing.ProviderQwen: true},
+			open:       map[billing.Provider]bool{billing.ProviderQwen: true},
 		},
 		Rate:     fakeRate{s: ratesample.Snapshot{QPS: 1.5}},
 		Installs: fakeInstallsToday{n: 42},
@@ -169,9 +166,6 @@ func TestOverviewAssemblesFromPorts(t *testing.T) {
 	}
 	if !o.UpstreamBreakerOpen || !o.DiskDegraded {
 		t.Fatalf("flags not threaded: %+v", o)
-	}
-	if !o.Providers.DeepSeek.Configured || o.Providers.DeepSeek.BreakerOpen {
-		t.Fatalf("deepseek state = %+v, want configured/closed", o.Providers.DeepSeek)
 	}
 	if !o.Providers.Qwen.Configured || !o.Providers.Qwen.BreakerOpen {
 		t.Fatalf("qwen state = %+v, want configured/open", o.Providers.Qwen)
@@ -223,10 +217,14 @@ func TestOverviewBudgetWireNamesItsMicroUSDUnit(t *testing.T) {
 
 func TestOverviewProviderWireIsClosedAndAlwaysPresent(t *testing.T) {
 	svc := New(Deps{Providers: fakeProviders{
-		configured: map[billing.Provider]bool{billing.ProviderDeepSeek: true},
-		// A source reporting an impossible open breaker for an unavailable
-		// provider is normalized to unavailable/closed at the dashboard boundary.
-		open: map[billing.Provider]bool{billing.ProviderQwen: true},
+		// Nothing is configured, yet the source reports an open breaker — an
+		// impossible pair. The dashboard boundary normalizes it to
+		// unavailable/closed rather than surfacing a breaker for an account that
+		// does not exist.
+		// 什么都没配,源却报告熔断器打开——一对不可能的状态。dashboard 边界把它归一为
+		// 「不可用/闭合」,而不是为一个根本不存在的账号亮出熔断器。
+		configured: map[billing.Provider]bool{},
+		open:       map[billing.Provider]bool{billing.ProviderQwen: true},
 	}})
 	raw, err := json.Marshal(svc.Overview(context.Background(), false))
 	if err != nil {
@@ -242,16 +240,12 @@ func TestOverviewProviderWireIsClosedAndAlwaysPresent(t *testing.T) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatalf("unmarshal overview: %v", err)
 	}
-	if len(wire.Providers) != 2 {
-		t.Fatalf("provider keys = %v, want exactly deepseek/qwen", wire.Providers)
+	if len(wire.Providers) != 1 {
+		t.Fatalf("provider keys = %v, want exactly qwen", wire.Providers)
 	}
-	deepseek, deepseekOK := wire.Providers["deepseek"]
 	qwen, qwenOK := wire.Providers["qwen"]
-	if !deepseekOK || !qwenOK {
-		t.Fatalf("provider keys = %v, want stable deepseek/qwen", wire.Providers)
-	}
-	if !deepseek.Configured || deepseek.BreakerOpen {
-		t.Fatalf("deepseek = %+v, want configured/closed", deepseek)
+	if !qwenOK {
+		t.Fatalf("provider keys = %v, want a stable qwen key", wire.Providers)
 	}
 	if qwen.Configured || qwen.BreakerOpen {
 		t.Fatalf("qwen = %+v, want unconfigured/closed", qwen)

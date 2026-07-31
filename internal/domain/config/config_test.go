@@ -13,12 +13,9 @@ import (
 // budget — the fixture every override/semantic test mutates from.
 func validBase() Config {
 	return Config{
-		DeepSeekAPIKeys:         []string{"sk-test"},
-		DeepSeekBaseURL:         "https://api.deepseek.com",
 		QwenAPIKeys:             []string{"qwen-test"},
 		QwenBaseURL:             "https://ws_test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
 		PublicModelID:           "anselm-auto",
-		TextUpstreamModel:       billing.DeepSeekV4Flash,
 		MultimodalUpstreamModel: billing.Qwen37Plus,
 
 		MonthlyQuota:           5000,
@@ -102,7 +99,7 @@ func TestSemanticsMultimodalQuoteVsMonthlyBudget(t *testing.T) {
 	c := validBase()
 	c.GlobalMonthlySpendPUSD = 200_000_000_000 // $0.20: above full text quote, below Qwen hard quote.
 	err := c.ValidateSemantics()
-	if err == nil || !strings.Contains(err.Error(), "multimodal hard-limit quote") {
+	if err == nil || !strings.Contains(err.Error(), "worst-case request quote") {
 		t.Fatalf("want quote>monthly-budget error, got %v", err)
 	}
 }
@@ -120,16 +117,19 @@ func TestSemanticsMultimodalQuoteAtMonthlyBudgetBoundPasses(t *testing.T) {
 	}
 }
 
-func TestSemanticsQwenDisabledDoesNotConstrainTextStartup(t *testing.T) {
+// The rate card is required UNCONDITIONALLY, because there is no longer any
+// deployment shape in which the model goes unused. This replaces an older test
+// that asserted the opposite — that a credential-less Qwen could not constrain
+// startup — which described a text-only deployment that no longer exists.
+//
+// 费率卡是**无条件**必需的,因为再也不存在「那个模型用不上」的部署形态。它取代了一个断言相反
+// 命题的旧测试(没有凭证的 Qwen 不该拖住启动)——那描述的是一个已经不存在的纯文本部署。
+func TestSemanticsRequiresARateCardForTheRoutedModel(t *testing.T) {
 	c := validBase()
-	c.QwenAPIKeys = nil
-	c.MultimodalUpstreamModel = "inactive-unknown-model"
-	// $0.20 is safely above the complete text-model quote, but below the
-	// conservative Qwen full-model quote. With no Qwen credential, only the
-	// text route is active and startup must remain healthy.
-	c.GlobalMonthlySpendPUSD = 200_000 * billing.PicoUSDPerMicroUSD
-	if err := c.ValidateSemantics(); err != nil {
-		t.Fatalf("inactive Qwen constrained text-only startup: %v", err)
+	c.MultimodalUpstreamModel = "unpriced-model"
+	err := c.ValidateSemantics()
+	if err == nil || !strings.Contains(err.Error(), "no exact rate card") {
+		t.Fatalf("an unpriced routed model must fail startup, got %v", err)
 	}
 }
 
@@ -356,7 +356,7 @@ func TestApplyOverrideRejectsStartupHardByName(t *testing.T) {
 }
 
 func TestApplyOverrideRejectsSecretByName(t *testing.T) {
-	for _, key := range []string{"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
+	for _, key := range []string{"DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD"} {
 		_, err := ApplyOverrides(validBase(), map[string]string{key: "x"})
 		if err == nil || !strings.Contains(err.Error(), "unknown or secret") || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s: want named secret/unknown rejection, got %v", key, err)
@@ -472,7 +472,7 @@ func TestDumpSurfacesAllSpecsNoSecrets(t *testing.T) {
 	}
 	for _, it := range items {
 		switch it.Key {
-		case "DEEPSEEK_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
+		case "DASHSCOPE_API_KEY", "INSTALL_POW_SECRET", "DASHBOARD_USER", "DASHBOARD_PASSWORD":
 			t.Fatalf("secret %q leaked into Dump", it.Key)
 		}
 	}

@@ -283,10 +283,7 @@ export default function Overview() {
 
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col xs={24} md={8}>
-              <ProviderCard name="DeepSeek" route="纯文本" state={data.providers.deepseek} />
-            </Col>
-            <Col xs={24} md={8}>
-              <ProviderCard name="Qwen3.7" route="图片 / 视频" state={data.providers.qwen} />
+              <ProviderCard name="Qwen3.7" route="文本 / 图片 / 视频" state={data.providers.qwen} />
             </Col>
             <Col xs={24} md={8}>
               <Card>

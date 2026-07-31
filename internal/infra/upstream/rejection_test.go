@@ -56,12 +56,12 @@ func TestRejectionReason(t *testing.T) {
 		want string
 	}{
 		{
-			name: "deepseek context overflow",
+			name: "context overflow",
 			body: `{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200069 tokens (198021 in the messages, 2048 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`,
 			want: apierr.RejectedContextLength,
 		},
 		{
-			name: "deepseek max_tokens range",
+			name: "max_tokens range",
 			body: `{"error":{"message":"Invalid max_tokens value, the valid range of max_tokens is [1, 8192]","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`,
 			want: apierr.RejectedMaxTokens,
 		},
@@ -152,18 +152,18 @@ func TestResolveRejectedOutcome(t *testing.T) {
 // UPSTREAM_REJECTED with details.reason=context_length, the server is hit
 // EXACTLY once (no retry), and the upstream text never leaks (GW-INV-11).
 func TestUpstreamRejected400EndToEnd(t *testing.T) {
-	const deepseekBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200069 tokens (198021 in the messages, 2048 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
+	const rejectionBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200069 tokens (198021 in the messages, 2048 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		_, _ = io.WriteString(w, deepseekBody)
+		_, _ = io.WriteString(w, rejectionBody)
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil)
-	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
+	_, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae == nil {
 		t.Fatal("expected UPSTREAM_REJECTED, got success")
 		return // unreachable; satisfies staticcheck SA5011 nil-flow analysis
@@ -199,10 +199,10 @@ func TestRejected400sDoNotTripBreaker(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
 	// Well past the breaker's 5-consecutive-failure threshold.
 	for i := 0; i < 8; i++ {
-		_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+		_, ae := c.call(context.Background(), []byte("{}"), true)
 		if ae == nil || ae.Code != apierr.CodeUpstreamRejected {
 			t.Fatalf("expected UPSTREAM_REJECTED, got %v", ae)
 		}
@@ -217,7 +217,7 @@ func TestRejected400sDoNotTripBreaker(t *testing.T) {
 		t.Fatalf("rejections must not be retried or shed: expected 8 upstream calls, got %d", got)
 	}
 	// The breaker stayed closed, so a subsequent request still reaches upstream.
-	_, _ = c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	_, _ = c.call(context.Background(), []byte("{}"), true)
 	if got := atomic.LoadInt32(&calls); got != 9 {
 		t.Fatalf("breaker must stay closed: the follow-up request should reach upstream (calls = %d, want 9)", got)
 	}

@@ -4,7 +4,7 @@
 // gateway. It stands up the REAL :8080 business handler (router.BuildHandler =
 // Recover→DenyCORS→MaxBody→ServeMux) over httptest.NewServer, wires it to the SAME
 // app services (app/quota, app/install, app/chat, app/model) over the SAME infra
-// (sqlite in t.TempDir, the real upstream client pointed at a fake DeepSeek
+// (sqlite in t.TempDir, the real upstream client pointed at a fake upstream
 // httptest server, a configprovider seeded from a test env map) that
 // internal/bootstrap.Build assembles in production — then drives it with a real
 // http.Client over the loopback socket. Unlike the per-handler unit tests (which
@@ -14,7 +14,7 @@
 // passthrough — all end to end with NO stubs.
 //
 // 真 http.Server 起栈 + 假上游 + 真 http.Client:用与 bootstrap.Build 同样的 app/infra
-// 装配(router.BuildHandler 业务 mux + 真 sqlite + 真 upstream client 指向假 DeepSeek
+// 装配(router.BuildHandler 业务 mux + 真 sqlite + 真 upstream client 指向假上游
 // + 测试 env map 的 configprovider),覆盖被直调 ServeHTTP 绕过的中间件链与路由。
 // build tag=integration,纯 httptest 无 Docker,CI 单列一步跑。
 package e2e
@@ -93,10 +93,9 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 		t.Fatal(err)
 	}
 	return &config.Config{
-		DeepSeekAPIKeys:         []string{"sk-test-key-never-leaks"},
-		DeepSeekBaseURL:         strings.TrimRight(upstreamURL, "/"),
+		QwenAPIKeys:             []string{"qwen-test-key-never-leaks"},
+		QwenBaseURL:             strings.TrimRight(upstreamURL, "/"),
 		PublicModelID:           "anselm-auto",
-		TextUpstreamModel:       billing.DeepSeekV4Flash,
 		MultimodalUpstreamModel: billing.Qwen37Plus,
 		MonthlyQuota:            100,
 		GlobalMonthlySpendPUSD:  10 * billing.PicoUSDPerUSD,
@@ -119,7 +118,7 @@ func baseConfig(t *testing.T, upstreamURL string) *config.Config {
 }
 
 // buildStack constructs the real components (sqlite store / quota / install / chat
-// / model + the real upstream client pointed at the fake DeepSeek) exactly as
+// / model + the real upstream client pointed at the fake upstream) exactly as
 // bootstrap.Build does, and hands them to the SAME router.BuildHandler the binary
 // calls — so the harness exercises the production routing + middleware chain + the
 // app saga itself, with zero hand-copied twin to drift.
@@ -131,28 +130,17 @@ func buildStack(t *testing.T, upstreamURL string) *stack {
 // before the Provider is seeded — used to flip the M2 Sybil/PoW gates or shrink a
 // spend wallet end to end without forking the whole assembly.
 //
-// **The one fake serves BOTH provider slots, and that is not a shortcut.** The free tier resolves
-// every chat request to the multimodal model now (deepseek 撤除), so a stack with only the DeepSeek
-// slot wired answers 503 MULTIMODAL_UNAVAILABLE to everything — which is precisely what this whole
-// tagged package did after that change, unnoticed, because a build tag keeps it out of `go test ./...`.
+// There is ONE upstream slot because the gateway has one. An earlier version of this helper took
+// two URLs and quietly let the second overwrite the first, which left several "the other provider
+// was never reached" assertions passing against a server that was wired nowhere at all — passing
+// for the wrong reason is worse than failing.
 //
-// **一个假件同时坐两个 provider 槽,这不是图省事。** 免费档现在把**每一条** chat 都解析到多模态模型
-// (deepseek 已撤),故只接了 DeepSeek 槽的栈对什么都答 503 MULTIMODAL_UNAVAILABLE——而那正是这整个
-// 打标签的包在那次改动之后的状态,没人发现,因为 build tag 让它不进 `go test ./...`。
+// 上游槽**只有一个**,因为网关只有一个。本 helper 早先收两个 URL,而第二个会**静默覆盖**第一个,于是
+// 好几条「另一家从未被命中」的断言,是在对着一个根本没接线的服务器作证——因为错的理由而通过,比不
+// 通过更糟。
 func buildStackWith(t *testing.T, upstreamURL string, mutate func(*config.Config)) *stack {
-	return buildStackWithProviders(t, upstreamURL, upstreamURL, mutate)
-}
-
-// buildStackWithProviders wires the Qwen compatible endpoint explicitly — for the cases that need
-// the two upstreams to be DISTINGUISHABLE (different fakes, different assertions on which one was
-// reached). Everything else goes through buildStackWith and lets one fake answer for both.
-func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate func(*config.Config)) *stack {
 	t.Helper()
 	cfg := baseConfig(t, upstreamURL)
-	if qwenURL != "" {
-		cfg.QwenAPIKeys = []string{"qwen-test-key-never-leaks"}
-		cfg.QwenBaseURL = strings.TrimRight(qwenURL, "/")
-	}
 	if mutate != nil {
 		mutate(cfg)
 	}
@@ -193,27 +181,19 @@ func buildStackWithProviders(t *testing.T, upstreamURL, qwenURL string, mutate f
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// Real provider-local client pointed at the fake DeepSeek, then placed in the
-	// same no-fallback registry bootstrap uses. Endpoint, key pool and breaker are
-	// construction-time facts; the request can never redirect credentials.
-	deepSeekClient := upstream.NewBackend(upstream.Options{
-		Backend:            upstream.BackendDeepSeek,
-		ChatCompletionsURL: cfg.DeepSeekBaseURL + "/chat/completions",
-		APIKeys:            cfg.DeepSeekAPIKeys,
+	// The REAL provider-local client, pointed at the fake upstream and placed in
+	// the same no-fallback registry bootstrap uses. Endpoint, key pool and breaker
+	// are construction-time facts; a request can never redirect credentials.
+	// 这里用的是**真实**的按 provider 收窄客户端,只是指向假上游,并放进 bootstrap 用的同一个
+	// 无 fallback registry。端点、key 池与熔断器都是构造期事实;请求改不了凭证的去向。
+	qwenClient := upstream.NewBackend(upstream.Options{
+		Backend:            upstream.BackendQwen,
+		ChatCompletionsURL: cfg.QwenBaseURL + "/chat/completions",
+		APIKeys:            cfg.QwenAPIKeys,
 		HeaderTimeout:      cfg.UpstreamHeaderTimeout,
 		Logger:             logger,
 	})
-	var qwenClient upstream.BackendClient
-	if len(cfg.QwenAPIKeys) > 0 {
-		qwenClient = upstream.NewBackend(upstream.Options{
-			Backend:            upstream.BackendQwen,
-			ChatCompletionsURL: cfg.QwenBaseURL + "/chat/completions",
-			APIKeys:            cfg.QwenAPIKeys,
-			HeaderTimeout:      cfg.UpstreamHeaderTimeout,
-			Logger:             logger,
-		})
-	}
-	providers := chatprovider.New(deepSeekClient, qwenClient)
+	providers := chatprovider.New(qwenClient)
 
 	// Shared rate limiter (the bucket the chat RL gate reaches through).
 	rl := ratelimit.New(cfg.RatePerMin)
@@ -614,21 +594,21 @@ func globalSpendPUSD(t *testing.T, s *stack, p domquota.Period) int64 {
 	return spend
 }
 
-// deepSeekCostPUSD prices an authoritative usage vector through the same frozen
+// chatCostPUSD prices an authoritative usage vector through the same frozen
 // rate card as production, so e2e assertions never duplicate price constants.
-func deepSeekCostPUSD(t *testing.T, prompt, completion int64) int64 {
+func chatCostPUSD(t *testing.T, prompt, completion int64) int64 {
 	t.Helper()
-	plan, err := billing.NewPlan(billing.ProviderDeepSeek, billing.DeepSeekV4Flash,
+	plan, err := billing.NewPlan(billing.ProviderQwen, billing.Qwen37Plus,
 		billing.InputStandard, prompt, completion)
 	if err != nil {
-		t.Fatalf("build DeepSeek cost plan: %v", err)
+		t.Fatalf("build chat cost plan: %v", err)
 	}
 	cost, ok, err := plan.Cost(billing.Usage{
 		Present: true, PromptTokens: prompt, CompletionTokens: completion,
 		TotalTokens: prompt + completion,
 	})
 	if err != nil || !ok {
-		t.Fatalf("price DeepSeek usage: cost=%d ok=%v err=%v", cost, ok, err)
+		t.Fatalf("price chat usage: cost=%d ok=%v err=%v", cost, ok, err)
 	}
 	return cost
 }
@@ -753,13 +733,6 @@ func TestE2EInstallChatQuotaFlow(t *testing.T) {
 }
 
 func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
-	var deepSeekHits atomic.Int32
-	deepSeek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		deepSeekHits.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer deepSeek.Close()
-
 	var mu sync.Mutex
 	var gotPath, gotAuth, gotBody string
 	qwen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -773,7 +746,7 @@ func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
 	}))
 	defer qwen.Close()
 
-	s := buildStackWithProviders(t, deepSeek.URL, qwen.URL, nil)
+	s := buildStackWith(t, qwen.URL, nil)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := newProofClient(t, srv.Client())
@@ -781,7 +754,7 @@ func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
 
 	png := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
-	body := `{"model":"please-use-deepseek","stream":false,"messages":[` +
+	body := `{"model":"please-use-another-vendor","stream":false,"messages":[` +
 		`{"role":"user","content":"remember this"},` +
 		`{"role":"assistant","content":"noted","reasoning_content":"provider-private-state"},` +
 		`{"role":"user","content":[{"type":"text","text":"describe"},` +
@@ -801,10 +774,6 @@ func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
 	if !strings.Contains(string(responseBody), `"model":"anselm-auto"`) || strings.Contains(string(responseBody), billing.Qwen37Plus) {
 		t.Fatalf("Qwen response must expose only PUBLIC_MODEL_ID, got: %s", responseBody)
 	}
-	if deepSeekHits.Load() != 0 {
-		t.Fatalf("multimodal request reached DeepSeek %d times", deepSeekHits.Load())
-	}
-
 	mu.Lock()
 	path, auth, upstreamBody := gotPath, gotAuth, gotBody
 	mu.Unlock()
@@ -820,8 +789,8 @@ func TestE2EMultimodalRoutesOnlyToQwenAndSettlesQwenCost(t *testing.T) {
 			t.Fatalf("Qwen payload missing %q: %s", want, upstreamBody)
 		}
 	}
-	if strings.Contains(upstreamBody, "please-use-deepseek") || strings.Contains(upstreamBody, "provider-private-state") {
-		t.Fatalf("client model or DeepSeek reasoning state leaked to Qwen: %s", upstreamBody)
+	if strings.Contains(upstreamBody, "please-use-another-vendor") || strings.Contains(upstreamBody, "provider-private-state") {
+		t.Fatalf("client model or historical reasoning state leaked upstream: %s", upstreamBody)
 	}
 
 	wantSpend := qwenCostPUSD(t, 11, 3)
@@ -843,7 +812,7 @@ func TestE2EMultiTurnToolLoopPreserved(t *testing.T) {
 
 	installID := registerInstall(t, srv, client)
 
-	multiTurn := `{"model":"deepseek-chat","stream":true,"messages":[` +
+	multiTurn := `{"model":"client-picked-model","stream":true,"messages":[` +
 		`{"role":"user","content":"weather?"},` +
 		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},` +
 		`{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}` +
@@ -880,7 +849,7 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 
 	installID := registerInstall(t, srv, client)
 
-	body := `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}],` +
+	body := `{"model":"client-picked-model","stream":true,"messages":[{"role":"user","content":"hi"}],` +
 		`"tool_choice":"none",` +
 		`"logit_bias":{"50256":-100},"function_call":"auto","response_format":{"type":"json_object"}}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
@@ -910,7 +879,7 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 // whitelist forwards `stream`) end to end through the real stack:
 //   - (a) the 2xx JSON body is relayed with only model rewritten to PUBLIC_MODEL_ID
 //     (all completion fields preserved; upstream Set-Cookie stripped)
-//   - (b) settlement prices the ACTUAL structured usage under the DeepSeek rate
+//   - (b) settlement prices the ACTUAL structured usage under the frozen rate
 //     card, rather than retaining the pessimistic reservation quote.
 func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	const actualTokens = 11
@@ -974,9 +943,9 @@ func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 
 	// The quote includes the conservative prompt estimate + clamped output bound.
 	// With no client max_tokens, at least 4096 output tokens are reserved at the
-	// DeepSeek output rate; a lower balance would prove an incorrect refund.
+	// the frozen output rate; a lower balance would prove an incorrect refund.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+		strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":false}`))
 	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -985,7 +954,7 @@ func TestE2ENonStreamPostOutputErrorFullSettles(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	minimumQuote := deepSeekCostPUSD(t, 1, 4096)
+	minimumQuote := chatCostPUSD(t, 1, 4096)
 	got := pollGlobalSpend(t, s, func(spend int64) bool { return spend >= minimumQuote })
 	if got < minimumQuote {
 		t.Fatalf("post-output body-read error charged %d pUSD, want full quote >= %d pUSD", got, minimumQuote)
@@ -1020,7 +989,7 @@ func TestE2ENonStream8MBBodyLimit(t *testing.T) {
 
 	installID := registerInstall(t, srv, client)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+		strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":false}`))
 	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1119,7 +1088,7 @@ func TestE2EMaxBodyRejectsHugeBody(t *testing.T) {
 	client := newProofClient(t, srv.Client())
 
 	installID := registerInstall(t, srv, client)
-	huge := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 300*1024) + `"}]}`
+	huge := `{"model":"client-picked-model","messages":[{"role":"user","content":"` + strings.Repeat("a", 300*1024) + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(huge))
 	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
@@ -1149,7 +1118,7 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 	client := newProofClient(t, srv.Client())
 
 	installID := registerInstall(t, srv, client)
-	over := `{"model":"deepseek-chat","messages":[{"role":"user","content":"` + strings.Repeat("a", 5*1024) + `"}]}`
+	over := `{"model":"client-picked-model","messages":[{"role":"user","content":"` + strings.Repeat("a", 5*1024) + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(over))
 	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
@@ -1161,7 +1130,7 @@ func TestE2EConfiguredMaxBodyBytes(t *testing.T) {
 		t.Fatalf("body over the configured 4KiB cap: want 400/413 got %d", resp.StatusCode)
 	}
 
-	small := `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	small := `{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(small))
 	req2.Header.Set("X-Anselm-Install-ID", installID)
 	resp2, err := client.Do(req2)
@@ -1183,7 +1152,7 @@ func TestE2EBadInstallUnauthorized(t *testing.T) {
 	client := newProofClient(t, srv.Client())
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`))
+		strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("X-Anselm-Install-ID", "ins_does_not_exist")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1213,7 +1182,7 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 	installID := registerInstall(t, srv, client)
 	chat := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		req.Header.Set("X-Anselm-Install-ID", installID)
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1243,7 +1212,7 @@ func TestE2EQuotaExhaustion(t *testing.T) {
 // returns 402 BUDGET_EXHAUSTED over the real stack.
 func TestE2EBudgetExhaustion(t *testing.T) {
 	up, _ := fakeChatUpstream(t)
-	// One pUSD is below every non-empty DeepSeek quote, isolating the shared
+	// One pUSD is below every non-empty quote, isolating the shared
 	// operator monthly budget gate.
 	s := buildStackWith(t, up.URL, func(c *config.Config) { c.GlobalMonthlySpendPUSD = 1 })
 	srv := httptest.NewServer(s.handler)
@@ -1252,7 +1221,7 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 
 	installID := registerInstall(t, srv, client)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+		strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 	req.Header.Set("X-Anselm-Install-ID", installID)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1271,7 +1240,7 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 	}
 }
 
-// TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed: a DeepSeek-style 400
+// TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed: an OpenAI-compatible 400
 // (context overflow) end to end through the real stack —
 //   - (a) the client receives 400 UPSTREAM_REJECTED with details.reason ==
 //     "context_length" (the coarse enum; the upstream text never passes through)
@@ -1282,7 +1251,7 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 //     and succeeds, settling to its ACTUAL usage only.
 func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	const rejectN = 6 // past the breaker's 5-consecutive threshold
-	const deepseekBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. ` +
+	const rejectionBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. ` +
 		`However, you requested 200069 tokens (198021 in the messages, 2048 in the completion). ` +
 		`Please reduce the length of the messages or completion.","type":"invalid_request_error",` +
 		`"param":null,"code":"invalid_request_error"}}`
@@ -1291,7 +1260,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 		if calls.Add(1) <= rejectN {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, deepseekBody)
+			_, _ = io.WriteString(w, rejectionBody)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1313,7 +1282,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	installID := registerInstall(t, srv, client)
 	chat := func() (*http.Response, []byte) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		req.Header.Set("X-Anselm-Install-ID", installID)
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1881,10 +1850,8 @@ func errorCode(t *testing.T, body []byte) string {
 // only a full-stack run can: the upstream key never reaches the client, and the
 // artifact URL is relayed verbatim (P13 URL 直通).
 func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
-	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
-	defer deepSeek.Close()
 	native := newFakeDashScope(t)
-	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
+	s := buildStackWith(t, "http://qwen.invalid", generationEnabled(native.srv.URL))
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := newProofClient(t, srv.Client())
@@ -1934,10 +1901,8 @@ func TestE2EImageAndSpeechGenerateOverTheRealStack(t *testing.T) {
 // signed handle, polling that reports phases without moving money, and a second
 // install being unable to read the first one's task.
 func TestE2EVideoSubmitPollAndOwnership(t *testing.T) {
-	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
-	defer deepSeek.Close()
 	native := newFakeDashScope(t)
-	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", generationEnabled(native.srv.URL))
+	s := buildStackWith(t, "http://qwen.invalid", generationEnabled(native.srv.URL))
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := newProofClient(t, srv.Client())
@@ -2009,14 +1974,14 @@ func TestE2EVideoSubmitPollAndOwnership(t *testing.T) {
 // 这条守卫正是 SPEECH_DAILY_LIMIT 那个 bug 会挂在上面的:它经真 socket 耗尽**一个**品类,并证明另外
 // 两个照常工作、且各自以**自己的** wire 码拒绝。
 func TestE2ECategoryLedgersAreIndependent(t *testing.T) {
-	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
-	defer deepSeek.Close()
+	chatUpstream := fakeChatUpstreamNonStream(t, "ok", 10)
+	defer chatUpstream.Close()
 	native := newFakeDashScope(t)
 	// Chat resolves to the multimodal model now, so the chat fake must sit in the QWEN slot — the
 	// final assertion here is "plain chat still works", and it can only mean that if chat has a
 	// reachable upstream at all. 现在 chat 解析到多模态模型,故 chat 假件必须坐在 **qwen** 槽上——本
 	// 用例最后那条断言是「普通 chat 照常」,而只有 chat 真有一个够得着的上游时它才可能有这个含义。
-	s := buildStackWith(t, deepSeek.URL, func(c *config.Config) {
+	s := buildStackWith(t, chatUpstream.URL, func(c *config.Config) {
 		generationEnabled(native.srv.URL)(c)
 		// One of each: the smallest cap that still admits exactly one call.
 		// 各留一发:恰好放行一次调用的最小上限。
@@ -2063,10 +2028,8 @@ func TestE2ECategoryLedgersAreIndependent(t *testing.T) {
 // OWN unavailable code when its switch is off, and that turning one off does not
 // take the others down.
 func TestE2ECapabilitiesOffDegradeHonestly(t *testing.T) {
-	deepSeek := fakeChatUpstreamNonStream(t, "ok", 10)
-	defer deepSeek.Close()
 	native := newFakeDashScope(t)
-	s := buildStackWithProviders(t, deepSeek.URL, "http://qwen.invalid", func(c *config.Config) {
+	s := buildStackWith(t, "http://qwen.invalid", func(c *config.Config) {
 		generationEnabled(native.srv.URL)(c)
 		c.ImageEnabled = false
 		// Video keeps its switch but loses the handle key — the third half.
@@ -2123,12 +2086,12 @@ func TestE2EMixedModalitiesInOneRequest(t *testing.T) {
 			`"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`)
 	}))
 	defer qwen.Close()
-	deepSeek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	chatUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer deepSeek.Close()
+	defer chatUpstream.Close()
 
-	s := buildStackWithProviders(t, deepSeek.URL, qwen.URL, nil)
+	s := buildStackWith(t, qwen.URL, nil)
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 	client := newProofClient(t, srv.Client())
@@ -2184,7 +2147,7 @@ func TestE2EDebugModeOpensTheQuotaGateButStillBills(t *testing.T) {
 	// 的意义正是分辨这一类差别。
 	chat := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-			strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			strings.NewReader(`{"model":"client-picked-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		req.Header.Set("X-Anselm-Install-ID", installID)
 		resp, err := client.Do(req)
 		if err != nil {

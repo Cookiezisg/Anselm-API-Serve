@@ -86,7 +86,7 @@ func testPeriod() quota.Period { return quota.Period{Month: "2026-06", Day: "202
 
 func mustPlan(t *testing.T, provider billing.Provider, prompt, output int64) billing.Plan {
 	t.Helper()
-	model := billing.DeepSeekV4Flash
+	model := billing.Qwen37Plus
 	if provider == billing.ProviderQwen {
 		model = billing.Qwen37Plus
 	}
@@ -192,7 +192,7 @@ func readLedger(t *testing.T, s *Store, requestID string) (state string, charged
 
 func TestReserveDebitsEveryPUSDWallet(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderDeepSeek, 100, 20)
+	p := mustPlan(t, billing.ProviderQwen, 100, 20)
 	r := reserve(t, s, "ins_1", p, limits())
 	if r.ReservedPUSD != p.ReservedPUSD || r.Plan.RateCardID != p.RateCardID {
 		t.Fatalf("reservation lost frozen plan: %+v", r)
@@ -215,7 +215,7 @@ func TestReserveDebitsEveryPUSDWallet(t *testing.T) {
 }
 
 func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
-	plan := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	plan := mustPlan(t, billing.ProviderQwen, 1, 1)
 	cases := []struct {
 		name string
 		edit func(*quota.Limits)
@@ -244,7 +244,7 @@ func TestReserveDenialsRollbackWholeTransaction(t *testing.T) {
 }
 
 func TestReserveHonorsPreexistingConservativeMonthlyWalletFloor(t *testing.T) {
-	plan := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	plan := mustPlan(t, billing.ProviderQwen, 1, 1)
 	const floor int64 = 9_000_000
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -266,7 +266,7 @@ func TestReserveHonorsPreexistingConservativeMonthlyWalletFloor(t *testing.T) {
 
 func TestReserveRejectsForgedPlanWithoutFrozenRateCard(t *testing.T) {
 	s := newTestStore(t)
-	good := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	good := mustPlan(t, billing.ProviderQwen, 1, 1)
 	forged := billing.Plan{
 		Provider: good.Provider, Model: good.Model, RateCardID: good.RateCardID,
 		InputClass: good.InputClass, PromptQuote: good.PromptQuote,
@@ -282,7 +282,7 @@ func TestReserveRejectsForgedPlanWithoutFrozenRateCard(t *testing.T) {
 
 func TestProviderStatsAreRecordedButOnlyGlobalMonthDenies(t *testing.T) {
 	s := newTestStore(t)
-	ds := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	ds := mustPlan(t, billing.ProviderQwen, 1, 1)
 	gm := mustPlan(t, billing.ProviderQwen, 1, 1)
 	lim := limits()
 	lim.GlobalMonthlySpendPUSD = ds.ReservedPUSD + gm.ReservedPUSD
@@ -301,7 +301,7 @@ func TestProviderStatsAreRecordedButOnlyGlobalMonthDenies(t *testing.T) {
 
 func TestConcurrentGlobalReserveNoOversell(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	p := mustPlan(t, billing.ProviderQwen, 1, 1)
 	const capN = 30
 	const attempts = 50
 	lim := limits()
@@ -371,7 +371,7 @@ func TestRollbackExactConservation(t *testing.T) {
 
 func TestRollbackUnderflowRollsBackCASAndAllAdjustments(t *testing.T) {
 	s := newTestStore(t)
-	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 1, 1), limits())
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderQwen, 1, 1), limits())
 	if _, err := s.writer.Exec(context.Background(),
 		`UPDATE install_spend_daily SET spend_pusd=0 WHERE install_id=? AND period_day=?`, r.InstallID, r.Period.Day); err != nil {
 		t.Fatalf("corrupt balance: %v", err)
@@ -401,7 +401,7 @@ func TestSettleRefundAndTopUp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(t)
-			r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+			r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderQwen, 10, 10), limits())
 			actual := tc.actual(r.ReservedPUSD)
 			if err := s.Settle(context.Background(), r, actual); err != nil {
 				t.Fatalf("settle: %v", err)
@@ -428,7 +428,7 @@ func TestSettleRefundAndTopUp(t *testing.T) {
 
 func TestSettleTopUpOverflowRollsBackLedgerAndEveryWallet(t *testing.T) {
 	s := newTestStore(t)
-	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderQwen, 10, 10), limits())
 	const topUp int64 = 12345
 	nearOverflow := math.MaxInt64 - topUp + 1
 	ctx := context.Background()
@@ -465,7 +465,7 @@ func TestSettleTopUpOverflowRollsBackLedgerAndEveryWallet(t *testing.T) {
 
 func TestTerminalCASIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
-	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderQwen, 10, 10), limits())
 	actual := r.ReservedPUSD / 2
 	if err := s.Settle(context.Background(), r, actual); err != nil {
 		t.Fatalf("settle: %v", err)
@@ -506,7 +506,7 @@ func TestOrphanKeepsFullReservedSpend(t *testing.T) {
 
 func TestSettleVsOrphanRaceHasOneWinner(t *testing.T) {
 	s := newTestStore(t)
-	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderDeepSeek, 10, 10), limits())
+	r := reserve(t, s, "ins_1", mustPlan(t, billing.ProviderQwen, 10, 10), limits())
 	if _, err := s.writer.Exec(context.Background(),
 		`UPDATE spend_ledger SET created_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Hour), r.RequestID); err != nil {
 		t.Fatalf("backdate: %v", err)
@@ -532,7 +532,7 @@ func TestSettleVsOrphanRaceHasOneWinner(t *testing.T) {
 
 func TestViewAndPeriodSnapshotReuse(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderDeepSeek, 10, 10)
+	p := mustPlan(t, billing.ProviderQwen, 10, 10)
 	entry := quota.Period{Month: "2026-06", Day: "2026-06-20"}
 	r, err := s.Reserve(context.Background(), "ins_1", p, entry, limits())
 	if err != nil {
@@ -555,7 +555,7 @@ func TestViewAndPeriodSnapshotReuse(t *testing.T) {
 
 func TestOpenReservationsCountsOnlyOpen(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderDeepSeek, 1, 1)
+	p := mustPlan(t, billing.ProviderQwen, 1, 1)
 	open := reserve(t, s, "ins_open", p, limits())
 	done := reserve(t, s, "ins_done", p, limits())
 	if err := s.Settle(context.Background(), done, done.ReservedPUSD); err != nil {
@@ -570,7 +570,7 @@ func TestOpenReservationsCountsOnlyOpen(t *testing.T) {
 
 func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.T) {
 	s := newTestStore(t)
-	p := mustPlan(t, billing.ProviderDeepSeek, 100, 20)
+	p := mustPlan(t, billing.ProviderQwen, 100, 20)
 	open := reserve(t, s, "ins_open", p, limits())
 	settled := reserve(t, s, "ins_settled", p, limits())
 	if err := s.Settle(context.Background(), settled, settled.ReservedPUSD); err != nil {
@@ -726,7 +726,7 @@ func TestReserve_ImageCategoryDailyGate(t *testing.T) {
 	}
 	// A different install has its own ledger; a chat plan on the capped install is untouched.
 	reserve(t, s, "ins_b", imagePlan(t), lim)
-	chat := reserve(t, s, "ins_a", mustPlan(t, billing.ProviderDeepSeek, 10, 10), lim)
+	chat := reserve(t, s, "ins_a", mustPlan(t, billing.ProviderQwen, 10, 10), lim)
 	if chat.CategoryApplied != "" || chat.CategoryUnits != 0 {
 		t.Fatalf("chat reservation carries category %q/%d, want none", chat.CategoryApplied, chat.CategoryUnits)
 	}

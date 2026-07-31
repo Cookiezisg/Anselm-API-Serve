@@ -8,7 +8,7 @@ import (
 
 // A tool-call assistant turn with empty content must marshal to the OpenAI-
 // canonical {role, tool_calls} (content omitted), NOT "content":"" — stricter
-// upstreams (DeepSeek v4-flash) 400 on an empty content beside tool_calls, which
+// upstreams 400 on an empty content beside tool_calls, which
 // would break the multi-turn agentic loop.
 func TestToolCallTurnOmitsEmptyContent(t *testing.T) {
 	body := []byte(`{"messages":[` +
@@ -47,7 +47,7 @@ func TestNormalAssistantKeepsContent(t *testing.T) {
 }
 
 // reasoning_content on an echoed assistant tool-call turn must pass through
-// verbatim — deepseek-v4-flash (thinking model) requires it on the next request
+// verbatim — a thinking model requires it on the next request
 // or the multi-turn tool loop 400s.
 func TestReasoningContentPassesThrough(t *testing.T) {
 	body := []byte(`{"messages":[` +

@@ -15,17 +15,40 @@ import (
 
 	"github.com/sony/gobreaker/v2"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 )
 
 const testKey = "sk-SUPER-SECRET-KEY-DO-NOT-LOG"
 
-func testCfg(baseURL string, headerTimeout time.Duration) *config.Config {
-	return &config.Config{
-		DeepSeekBaseURL:       baseURL,
-		UpstreamHeaderTimeout: headerTimeout,
+// newTestBackend builds a client against a test server the same way the
+// composition root builds the real one. It exists because this resilience suite
+// predates the provider-local constructor: the behaviors it pins (retry, breaker,
+// key rotation, redaction, cancel classification) are unchanged, so the tests
+// were PORTED onto the surviving entry point rather than deleted along with the
+// config-driven one.
+//
+// newTestBackend 按组合根构造真实客户端的同一方式,对着测试服务器构造一个。它存在,是因为这套
+// 韧性测试早于「按 provider 收窄」的构造器:它钉住的行为(重试、熔断、key 轮换、脱敏、取消分类)
+// 一条都没变,故这些测试是被**移植**到活下来的入口上,而不是随配置驱动那个入口一起删掉。
+func newTestBackend(baseURL string, keys []string, headerTimeout time.Duration, logger *slog.Logger, hook MetricsHook) *client {
+	return NewBackend(Options{
+		Backend:            BackendQwen,
+		ChatCompletionsURL: strings.TrimRight(baseURL, "/") + "/chat/completions",
+		APIKeys:            keys,
+		HeaderTimeout:      headerTimeout,
+		Logger:             logger,
+		Hook:               hook,
+	}).(*client)
+}
+
+// call adapts DoCall's CallFailure down to the bare APIError these assertions read.
+func (c *client) call(ctx context.Context, payload []byte, stream bool) (*Stream, *apierr.APIError) {
+	s, f := c.DoCall(ctx, Call{Payload: payload, Stream: stream})
+	if f != nil {
+		return nil, f.APIError
 	}
+	return s, nil
 }
 
 // drain fully reads + closes a stream body (the caller's relay obligation).
@@ -47,8 +70,8 @@ func TestSingleKey_StreamSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	s, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae != nil {
 		t.Fatalf("expected success, got %v", ae)
 	}
@@ -67,8 +90,8 @@ func TestSingleKey_NonStreamSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil)
-	s, ae := c.Do(context.Background(), []byte("{}"), false, testCfg(srv.URL, time.Second))
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
+	s, ae := c.call(context.Background(), []byte("{}"), false)
 	if ae != nil {
 		t.Fatalf("expected success, got %v", ae)
 	}
@@ -90,9 +113,9 @@ func TestKeyNeverInLogs(t *testing.T) {
 	var logbuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	c := New([]string{testKey}, time.Second, logger, nil)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, logger, nil)
 	caller, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader([]byte("{}")))
-	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	s, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae != nil {
 		t.Fatalf("unexpected error: %v", ae)
 	}
@@ -119,9 +142,9 @@ func TestUpstream429MapsBusyNoRetryNoBreaker(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
 	for i := 0; i < 12; i++ {
-		_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+		_, ae := c.call(context.Background(), []byte("{}"), true)
 		if ae == nil || ae.Code != "UPSTREAM_BUSY" {
 			t.Fatalf("expected UPSTREAM_BUSY, got %v", ae)
 		}
@@ -153,11 +176,11 @@ func TestFailover_Key0AuthCooldownKey1Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{"key0", "key1"}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).(*client)
+	c := newTestBackend(srv.URL, []string{"key0", "key1"}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	// Force the first pick to key0.
 	c.transport.rr = 0
 
-	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	s, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae != nil {
 		t.Fatalf("failover should have routed to key1: %v", ae)
 	}
@@ -184,7 +207,7 @@ func TestClientCancelNoBreakerTrip(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	c := New([]string{testKey}, 5*time.Second, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, 5*time.Second, nil, nil)
 
 	// Fire many cancels; were they counted as faults the breaker would trip.
 	for i := 0; i < 12; i++ {
@@ -193,7 +216,7 @@ func TestClientCancelNoBreakerTrip(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 			cancel()
 		}()
-		_, ae := c.Do(ctx, []byte("{}"), true, testCfg(srv.URL, 5*time.Second))
+		_, ae := c.call(ctx, []byte("{}"), true)
 		if ae == nil || ae.Code != "CLIENT_CANCELED" {
 			t.Fatalf("expected CLIENT_CANCELED, got %v", ae)
 		}
@@ -219,10 +242,10 @@ func TestChargeAmbiguous503IsNeverRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
 	c.retry = retryPolicy{maxAttempts: 3, base: time.Millisecond, cap: 5 * time.Millisecond}
 
-	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	s, ae := c.call(context.Background(), []byte("{}"), true)
 	if s != nil {
 		_ = s.Close()
 		t.Fatal("ambiguous 503 must not retry through to a later success")
@@ -245,10 +268,10 @@ func TestPersistent503StillMakesOneBillableAttempt(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
 	c.retry = retryPolicy{maxAttempts: 3, base: time.Millisecond, cap: 2 * time.Millisecond}
 
-	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	_, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae == nil || ae.Code != "UPSTREAM_ERROR" {
 		t.Fatalf("expected UPSTREAM_ERROR after exhausting retries, got %v", ae)
 	}
@@ -272,10 +295,10 @@ func TestFirstByteTimeout(t *testing.T) {
 	defer srv.Close()
 	defer close(hold)
 
-	c := New([]string{testKey}, 30*time.Millisecond, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, 30*time.Millisecond, nil, nil)
 	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
 
-	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, 30*time.Millisecond))
+	_, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae == nil || ae.Code != "UPSTREAM_TIMEOUT" {
 		t.Fatalf("stalled first byte should map to UPSTREAM_TIMEOUT, got %v", ae)
 	}
@@ -327,12 +350,18 @@ func TestRequestSnapshotCanIncreaseFirstByteTimeoutPastConstructorDefault(t *tes
 
 	// A fixed transport ResponseHeaderTimeout of 5ms would defeat the live 300ms
 	// snapshot below. The one request timer is the sole timeout authority.
-	c := New([]string{testKey}, 5*time.Millisecond, nil, nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, 5*time.Millisecond, nil, nil)
 	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
-	s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, 300*time.Millisecond))
-	if ae != nil {
-		t.Fatalf("live first-byte timeout increase was ignored: %v", ae)
+	// The per-request snapshot must WIN over the constructor default; that is the
+	// whole claim, so it is passed on the Call rather than through the helper.
+	// 逐请求快照必须**压过**构造期默认值——这正是本用例的全部主张,故它走 Call 传入、不经 helper。
+	stream, failure := c.DoCall(context.Background(), Call{
+		Payload: []byte("{}"), Stream: true, FirstByteTimeout: 300 * time.Millisecond,
+	})
+	if failure != nil {
+		t.Fatalf("live first-byte timeout increase was ignored: %v", failure.APIError)
 	}
+	s := stream
 	if got := drain(t, s); !strings.Contains(got, "ok") {
 		t.Fatalf("body = %q", got)
 	}
@@ -367,8 +396,8 @@ func TestFirstByteTimerDisarmIdempotentUnderRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Header timeout deliberately tiny to race the first byte.
-			c := New([]string{testKey}, 2*time.Millisecond, nil, nil)
-			s, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, 2*time.Millisecond))
+			c := newTestBackend(srv.URL, []string{testKey}, 2*time.Millisecond, nil, nil)
+			s, ae := c.call(context.Background(), []byte("{}"), true)
 			if ae != nil {
 				return // a genuine pre-first-byte timeout is acceptable
 			}
@@ -390,8 +419,8 @@ func TestPlain429DoesNotCoolKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, nil, nil).(*client)
-	_, _ = c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, nil, nil)
+	_, _ = c.call(context.Background(), []byte("{}"), true)
 
 	ks := c.transport.keys[0]
 	if ks.onCooldown(time.Now()) {
@@ -441,18 +470,18 @@ func TestBreakerTripsOnPersistent5xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	c.retry = retryPolicy{maxAttempts: 1, base: time.Millisecond, cap: time.Millisecond}
 
 	// ConsecutiveFailures >= 5 trips the breaker.
 	for i := 0; i < 6; i++ {
-		_, _ = c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+		_, _ = c.call(context.Background(), []byte("{}"), true)
 	}
 	if !c.BreakerOpen() {
 		t.Fatal("persistent 5xx should trip the process breaker")
 	}
 	// Once open, Do fast-sheds to UPSTREAM_BUSY.
-	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	_, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae == nil || ae.Code != "UPSTREAM_BUSY" {
 		t.Fatalf("open breaker should fast-shed UPSTREAM_BUSY, got %v", ae)
 	}
@@ -469,7 +498,7 @@ func TestSingleKeyOpenIsBusyNotProcessFault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New([]string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).(*client)
+	c := newTestBackend(srv.URL, []string{testKey}, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	c.retry = retryPolicy{maxAttempts: 3, base: time.Millisecond, cap: 2 * time.Millisecond}
 
 	// Force the single key's breaker open: 5 consecutive account faults.
@@ -481,7 +510,7 @@ func TestSingleKeyOpenIsBusyNotProcessFault(t *testing.T) {
 		t.Fatalf("key breaker should be open, got %v", ks.cb.State())
 	}
 
-	_, ae := c.Do(context.Background(), []byte("{}"), true, testCfg(srv.URL, time.Second))
+	_, ae := c.call(context.Background(), []byte("{}"), true)
 	if ae == nil || ae.Code != "UPSTREAM_BUSY" {
 		t.Fatalf("open key with no sibling should yield UPSTREAM_BUSY, got %v", ae)
 	}

@@ -19,7 +19,7 @@ func (f *fakeCfg) Load() *config.Config { return f.c }
 func TestListExposesOneLogicalModel(t *testing.T) {
 	cat := New(&fakeCfg{c: &config.Config{
 		PublicModelID: "anselm-auto", MaxTokensCap: 16_384,
-		DeepSeekAPIKeys: []string{"text"}, QwenAPIKeys: []string{"media"},
+		QwenAPIKeys: []string{"qwen"},
 	}})
 	env := cat.List()
 	if env.Object != dmodel.ObjectList {
@@ -33,7 +33,7 @@ func TestListExposesOneLogicalModel(t *testing.T) {
 		t.Fatalf("data[0] = %+v", m)
 	}
 	if m.AnselmCapabilities == nil ||
-		m.AnselmCapabilities.Text.InputLimit != billing.DeepSeekInputLimit ||
+		m.AnselmCapabilities.Text.InputLimit != billing.Qwen37InputLimit ||
 		m.AnselmCapabilities.Multimodal.InputLimit != billing.Qwen37InputLimit ||
 		m.AnselmCapabilities.Text.OutputLimit != 16_384 {
 		t.Fatalf("route capabilities = %+v", m.AnselmCapabilities)
@@ -107,18 +107,22 @@ func TestMultimodalAvailabilityRequiresBothTheKeyAndTheMediaPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cat := New(&fakeCfg{c: &config.Config{
 				PublicModelID: "anselm-auto", MaxTokensCap: 16_384,
-				DeepSeekAPIKeys: []string{"text"},
-				QwenAPIKeys:     tc.qwenKeys,
-				MediaEnabled:    tc.media,
+				QwenAPIKeys:  tc.qwenKeys,
+				MediaEnabled: tc.media,
 			}})
 			caps := cat.List().Data[0].AnselmCapabilities
 			if caps.Multimodal.Available != tc.want {
 				t.Fatalf("multimodal.available = %v, want %v (qwenKeys=%v mediaEnabled=%v)",
 					caps.Multimodal.Available, tc.want, tc.qwenKeys, tc.media)
 			}
-			// The text route must stay independent of the media capability. 文本路由不受媒体能力牵连。
-			if !caps.Text.Available {
-				t.Fatal("the text route must not be gated on the media path")
+			// Both profiles ride the same credential, but only media additionally
+			// needs the upload/lease path. So text tracks the KEY alone: turning
+			// MEDIA_ENABLED off must never take text chat down with it.
+			// 两份画像共用同一把凭证,但只有媒体额外需要上传/lease 通道。故文本只跟着 **key** 走:
+			// 关掉 MEDIA_ENABLED 绝不能顺手把文本对话也带下去。
+			if want := len(tc.qwenKeys) > 0; caps.Text.Available != want {
+				t.Fatalf("text.available = %v, want %v (it must track the credential, not the media path)",
+					caps.Text.Available, want)
 			}
 		})
 	}

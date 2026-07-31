@@ -179,7 +179,6 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	// 6) Metrics bundle (RED + golden signals). Mounted loopback-only on admin.
 	mx := metrics.New()
 	mx.BudgetLimit.Set(float64(effective.GlobalMonthlySpendPUSD) / float64(billing.PicoUSDPerUSD))
-	mx.BreakerState.WithLabelValues(string(billing.ProviderDeepSeek)).Set(0)
 	mx.BreakerState.WithLabelValues(string(billing.ProviderQwen)).Set(0)
 	inflight := &atomic.Int64{} // shared mirror: chat writes, dashboard reads.
 
@@ -205,32 +204,25 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		log.Info("durable_media_disabled", "reason", "MEDIA_ENABLED=false")
 	}
 
-	// 8) Two provider-local upstream clients. Endpoint, key pool, transport and
-	// breaker are frozen together so auth material can never cross providers.
-	// Qwen is an optional capability: omitting its key leaves the DeepSeek text
-	// path fully operational while multimodal requests fail explicitly in app/chat.
-	deepSeekClient := upstream.NewBackend(upstream.Options{
-		Backend:            upstream.BackendDeepSeek,
-		ChatCompletionsURL: effective.DeepSeekBaseURL + "/chat/completions",
-		APIKeys:            effective.DeepSeekAPIKeys,
+	// 8) The provider-local upstream client. Endpoint, key pool, transport and
+	// breaker are frozen together at construction, so auth material can never
+	// travel to another account's address.
+	//
+	// There is no "credential absent" branch here on purpose: the loader refuses
+	// to start without DASHSCOPE_API_KEY, so a process that reached this line has
+	// one. A defensive nil-check would be describing a state that cannot exist.
+	//
+	// 这里**刻意没有**「凭证缺失」分支:loader 没有 DASHSCOPE_API_KEY 就拒绝启动,故走到这一
+	// 行的进程必然有它。再加一个防御性 nil 检查,等于在描述一个不可能存在的状态。
+	qwenClient := upstream.NewBackend(upstream.Options{
+		Backend:            upstream.BackendQwen,
+		ChatCompletionsURL: effective.QwenBaseURL + "/chat/completions",
+		APIKeys:            effective.QwenAPIKeys,
 		HeaderTimeout:      effective.UpstreamHeaderTimeout,
 		Logger:             log,
-		Hook:               upstreamHook{m: mx, provider: billing.ProviderDeepSeek},
+		Hook:               upstreamHook{m: mx, provider: billing.ProviderQwen},
 	})
-	var qwenClient upstream.BackendClient
-	if len(effective.QwenAPIKeys) > 0 {
-		qwenClient = upstream.NewBackend(upstream.Options{
-			Backend:            upstream.BackendQwen,
-			ChatCompletionsURL: effective.QwenBaseURL + "/chat/completions",
-			APIKeys:            effective.QwenAPIKeys,
-			HeaderTimeout:      effective.UpstreamHeaderTimeout,
-			Logger:             log,
-			Hook:               upstreamHook{m: mx, provider: billing.ProviderQwen},
-		})
-	} else {
-		log.Info("multimodal_upstream_disabled", "reason", "DASHSCOPE_API_KEY not configured")
-	}
-	providers := chatprovider.New(deepSeekClient, qwenClient)
+	providers := chatprovider.New(qwenClient)
 
 	// 9) Shared rate limiter: the SAME bucket the chat RL gate AND the M2 throttle
 	// reach through, so SetKeyLimit tightens the bucket Allow meters (B1). An LRU
@@ -349,8 +341,8 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 	})
 
 	// 12) Health checker (DB writable + cached authenticated provider/model probe
-	// + disk). DeepSeek is required; Qwen joins the aggregate only when its
-	// optional key is configured. freshFor defaults to 90s (3× the 30s prober).
+	// + disk). The one upstream is required, so it is unconditionally part of the
+	// aggregate. freshFor defaults to 90s (3× the 30s prober).
 	prober := newUpstreamProber(effective)
 	health := apphealth.New(dbChecker{w: db.Writer}, prober, dg, 0)
 

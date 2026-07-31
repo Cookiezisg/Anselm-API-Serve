@@ -17,12 +17,10 @@ type usageObj struct {
 }
 
 type usageFields struct {
-	PromptTokens          int64 `json:"prompt_tokens"`
-	CompletionTokens      int64 `json:"completion_tokens"`
-	TotalTokens           int64 `json:"total_tokens"`
-	PromptCacheHitTokens  int64 `json:"prompt_cache_hit_tokens"`
-	PromptCacheMissTokens int64 `json:"prompt_cache_miss_tokens"`
-	PromptTokensDetails   *struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	TotalTokens         int64 `json:"total_tokens"`
+	PromptTokensDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {
@@ -37,8 +35,6 @@ func (u usageObj) vector() billing.Usage {
 	v := billing.Usage{
 		Present: true, PromptTokens: u.Usage.PromptTokens,
 		CompletionTokens: u.Usage.CompletionTokens, TotalTokens: u.Usage.TotalTokens,
-		PromptCacheHitTokens:  u.Usage.PromptCacheHitTokens,
-		PromptCacheMissTokens: u.Usage.PromptCacheMissTokens,
 	}
 	if u.Usage.PromptTokensDetails != nil {
 		v.CachedPromptTokens = u.Usage.PromptTokensDetails.CachedTokens
@@ -47,7 +43,6 @@ func (u usageObj) vector() billing.Usage {
 		v.ReasoningTokens = u.Usage.CompletionTokensDetails.ReasoningTokens
 	}
 	v.Malformed = v.PromptTokens < 0 || v.CompletionTokens < 0 || v.TotalTokens < 0 ||
-		v.PromptCacheHitTokens < 0 || v.PromptCacheMissTokens < 0 ||
 		v.CachedPromptTokens < 0 || v.ReasoningTokens < 0
 	return v
 }

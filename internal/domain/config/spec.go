@@ -46,7 +46,7 @@ type Spec struct {
 // Specs is the registry of every dashboard-surfaced config item, returned in a
 // stable order. Runtime ones (TierRuntimeHot) are exactly the hot-editable set;
 // startup-hard ones are surfaced read-only (incl. the memory-budget inputs which
-// must NEVER hot-reload). Secrets (DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
+// must NEVER hot-reload). Secrets (DASHSCOPE_API_KEY, DASHBOARD_*, INSTALL_POW_SECRET)
 // are deliberately absent — env-only, never persisted, never dumped.
 func Specs() []Spec {
 	return []Spec{
@@ -380,7 +380,6 @@ func Specs() []Spec {
 
 		// Startup hard-constraints (dashboard read-only; memory-budget inputs must
 		// never hot-reload — they gate the PERF-2 worst-case RSS self-check).
-		{Key: "TEXT_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TextUpstreamModel }},
 		{Key: "MULTIMODAL_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.MultimodalUpstreamModel }},
 		{Key: "IMAGE_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.ImageEnabled) }},
 		{Key: "IMAGE_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.ImageUpstreamModel }},
@@ -391,7 +390,6 @@ func Specs() []Spec {
 		{Key: "VIDEO_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.VideoEnabled) }},
 		{Key: "VIDEO_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.VideoUpstreamModel }},
 		{Key: "DASHSCOPE_NATIVE_BASE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DashScopeNativeBase }},
-		{Key: "DEEPSEEK_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DeepSeekBaseURL }},
 		{Key: "DASHSCOPE_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.QwenBaseURL }},
 		{Key: "GOMEMLIMIT_MIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.GoMemLimitMiB) }},
 		{Key: "SQLITE_CACHE_KIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.SQLiteCacheKiB) }},

@@ -42,10 +42,26 @@ func (c *Catalog) List() model.ListEnvelope {
 			AnselmCapabilities: &model.AnselmCapabilities{
 				Version: 1,
 				Routing: model.RoutingByContent,
+				// Text and Multimodal are two PROFILES of one route, not two routes:
+				// both reach the same model, so both report that model's limits and
+				// both depend on that model's credential. They stay separate entries
+				// because they differ in what the caller must have working — media
+				// additionally needs the upload/lease path (see below).
+				//
+				// Text therefore tracks the CREDENTIAL alone. Deriving it from
+				// anything else is how a published capability starts describing a
+				// precondition the route does not actually have.
+				//
+				// Text 与 Multimodal 是**同一条路由的两份画像**、不是两条路由:两者到达同一个
+				// 模型,故都报那个模型的上限、都依赖那把凭证。它们仍然分开,是因为调用方需要
+				// **备齐的东西**不同——媒体额外需要上传/lease 通道(见下)。
+				//
+				// 故 Text 只跟着**凭证**走。从别的东西推导它,正是「已发布的能力开始描述一个该
+				// 路由其实没有的前提」的开端。
 				Text: model.RouteProfile{
-					InputLimit:  billing.DeepSeekInputLimit,
-					OutputLimit: min64(cfg.MaxTokensCap, billing.DeepSeekOutputLimit),
-					Available:   len(cfg.DeepSeekAPIKeys) > 0,
+					InputLimit:  billing.Qwen37InputLimit,
+					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
+					Available:   len(cfg.QwenAPIKeys) > 0,
 				},
 				// Multimodal availability needs BOTH halves. A Qwen key alone is not enough:
 				// with MEDIA_ENABLED=false there is no upload/lease path at all, so a client
