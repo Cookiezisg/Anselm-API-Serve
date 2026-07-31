@@ -367,10 +367,6 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// Kept as a package-local alias so existing same-package tests and any pending
-// refactor compile while the public canonical name is Message.
-type chatMessage = Message
-
 // Modality is the deterministic route classification for a whole request.
 type Modality uint8
 

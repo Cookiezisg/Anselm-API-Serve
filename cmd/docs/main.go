@@ -52,7 +52,16 @@ var (
 
 func main() {
 	root := flag.String("root", ".", "repo root (docs/ lives under it)")
+	writeBase := flag.Bool("write-baseline", false, "regenerate the forbidden-token baseline from the current tree")
 	flag.Parse()
+
+	if *writeBase {
+		if err := writeBaseline(*root); err != nil {
+			fmt.Fprintf(os.Stderr, "docs: write baseline: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
 
 	l := &linter{docsDir: filepath.Join(*root, "docs"), now: time.Now()}
 	if _, err := os.Stat(l.docsDir); err != nil {
@@ -60,6 +69,11 @@ func main() {
 		os.Exit(2)
 	}
 	l.run()
+
+	// The forbidden-token ratchet scans the WHOLE repo, not just docs/: the
+	// deletions it guards live in Go, SQL, shell, and the env template too.
+	// 禁词棘轮扫**整个仓库**、不只 docs/:它守的那些删除同样住在 Go、SQL、shell 与 env 模板里。
+	l.errs = append(l.errs, checkForbidden(*root)...)
 
 	for _, w := range l.warns {
 		fmt.Printf("WARN  %s\n", w)

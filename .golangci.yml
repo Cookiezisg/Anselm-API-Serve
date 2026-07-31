@@ -1,5 +1,5 @@
 # golangci-lint v2 — CI 质量 + 安全门 + 架构分层门(独立于 deploy 的 PR 必过门)。
-# 启用:errcheck/staticcheck/gosec/govet/ineffassign/unconvert/misspell/bodyclose/depguard。
+# 启用:errcheck/staticcheck/gosec/govet/ineffassign/unconvert/misspell/bodyclose/unused/depguard。
 # 本地:make lint  (= go run .../golangci-lint@v2 run ./...)
 version: "2"
 
@@ -17,6 +17,12 @@ linters:
     - unconvert     # redundant type conversions
     - misspell      # comment/string typos (US locale)
     - bodyclose     # unclosed HTTP response bodies (resource leak)
+    # unused collects the bodies: a symbol nobody references gets deleted, not left
+    # in place to mislead the next reader into thinking it is load-bearing.
+    # Package-scoped, so it complements (never replaces) whole-program `deadcode`.
+    # unused 是**收尸**闸:没人引用的符号就删掉,不留在原地误导下一个读者以为它承重。
+    # 它是包级的,故与全程序 `deadcode` 扫描互补、不互相取代。
+    - unused
     - depguard      # ARCHITECTURE: enforce the clean-arch dependency direction (CLAUDE §2)
 
   settings:
