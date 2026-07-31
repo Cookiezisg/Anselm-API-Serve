@@ -288,41 +288,22 @@ type Config struct {
 	ResetTZ  string         // RESET_TZ
 	Location *time.Location // LoadLocation(ResetTZ) 结果
 
-	ListenAddr    string // LISTEN_ADDR
-	AdminAddr     string // ADMIN_ADDR(/metrics 独立 admin 端口;必须 loopback)
+	ListenAddr string // LISTEN_ADDR
+	AdminAddr  string // ADMIN_ADDR(/metrics 独立 admin 端口;必须 loopback)
+	// DashboardAddr is where the dashboard listens — always, and always on
+	// loopback. Authentication is NOT this process's job: a preceding IAP
+	// (Cloudflare Access, Tailscale, an SSH tunnel) owns the login wall, and the
+	// loopback bind is what makes that delegation safe rather than a promise.
+	// The bind is fail-fast, so "reachable but unauthenticated" is not a state
+	// this gateway can reach.
+	//
+	// DashboardAddr 是后台的监听地址——**恒定挂载**,且**恒定 loopback**。鉴权**不是**本进程的
+	// 活:前置的 IAP(Cloudflare Access / Tailscale / SSH 隧道)拥有那道登录墙,而 loopback 绑定
+	// 正是让这份委托**成立**而不是停留在口头承诺的东西。绑定 fail-fast,故「可达但未鉴权」不是
+	// 本网关到得了的状态。
 	DashboardAddr string // DASHBOARD_ADDR(管理后台独立 loopback 监听)
-	// DashboardAuthMode is an env-only, restart-required trust-boundary choice:
-	// disabled starts no dashboard listener; builtin keeps the Go session/CSRF
-	// login; external delegates authentication to a loopback-adjacent IAP such as
-	// Cloudflare Access or Tailscale. It is intentionally not dashboard-editable.
-	DashboardAuthMode string // DASHBOARD_AUTH_MODE(disabled|builtin|external)
-	LogLevel          string // LOG_LEVEL(debug|info|warn|error)
-	DBPath            string // GATEWAY_DB_PATH(SQLite 落盘位置)
-
-	// 管理后台鉴权(机密类:env only,绝不入 settings 表,dump 只掩码)。
-	DashboardUser     string // DASHBOARD_USER
-	DashboardPassword string // DASHBOARD_PASSWORD
-
-	// DEV-ONLY:无 Caddy/TLS 的本机 plain-HTTP 登录时关 cookie Secure 标志。
-	// 生产恒 false(关了 cookie 在明文 HTTP 上可被嗅探/注入)。
-	DashboardDevInsecureCookie bool // DASHBOARD_DEV_INSECURE_COOKIE
-}
-
-const (
-	DashboardAuthModeDisabled = "disabled"
-	DashboardAuthModeBuiltin  = "builtin"
-	DashboardAuthModeExternal = "external"
-)
-
-// ValidateDashboardAuthMode closes the dashboard trust-boundary enum. A typo
-// must never silently turn off a login wall or assume a nonexistent upstream IAP.
-func ValidateDashboardAuthMode(mode string) error {
-	switch mode {
-	case DashboardAuthModeDisabled, DashboardAuthModeBuiltin, DashboardAuthModeExternal:
-		return nil
-	default:
-		return fmt.Errorf("DASHBOARD_AUTH_MODE %q invalid: must be one of disabled|builtin|external", mode)
-	}
+	LogLevel      string // LOG_LEVEL(debug|info|warn|error)
+	DBPath        string // GATEWAY_DB_PATH(SQLite 落盘位置)
 }
 
 // BoundInt64 / BoundInt enforce an inclusive [min,max] range on a parsed value,

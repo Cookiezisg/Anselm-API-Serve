@@ -1,19 +1,22 @@
-// App shell — the dashboard chrome plus the authentication-mode aware route
-// guard. builtin uses the Go login page; external relies on its preceding IAP.
+// App shell — the dashboard chrome and its routes.
+//
+// There is no route guard and no login page, because this SPA is only ever
+// served by a loopback-bound listener sitting behind an IAP. A second, weaker
+// gate rendered in the browser would not add a boundary; it would add a thing
+// that can disagree with the real one.
+//
+// 这里没有路由守卫、也没有登录页,因为本 SPA 只会由一个坐在 IAP 后面的 loopback 监听器送出。
+// 在浏览器里再画一道更弱的门,不会多出一条边界——只会多出一样可能与真边界说法不一致的东西。
 
-import { Layout, Menu, Typography, theme, Button, Spin, Space } from 'antd'
+import { Layout, Menu, Typography, theme } from 'antd'
 import {
   DashboardOutlined,
   TeamOutlined,
   SettingOutlined,
   FileTextOutlined,
   DownloadOutlined,
-  LogoutOutlined,
 } from '@ant-design/icons'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import type { ReactNode } from 'react'
-import { useAuth } from './auth/AuthContext'
-import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Installs from './pages/Installs'
 import Config from './pages/Config'
@@ -30,38 +33,10 @@ const NAV = [
   { key: '/export', icon: <DownloadOutlined />, label: '导出' },
 ]
 
-// RequireAuth gates the authenticated shell: it waits for the session probe to
-// settle (ready), then either renders children or redirects to /login (carrying
-// the attempted path so login can bounce back).
-function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, ready, authMode } = useAuth()
-  const loc = useLocation()
-  if (!ready) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Spin size="large" />
-      </div>
-    )
-  }
-  if (authMode === 'external') {
-    return <>{children}</>
-  }
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: loc.pathname }} />
-  }
-  return <>{children}</>
-}
-
-function Shell() {
+export default function App() {
   const loc = useLocation()
   const nav = useNavigate()
   const { token } = theme.useToken()
-  const { authMode, user, logout } = useAuth()
-
-  const onLogout = async () => {
-    await logout()
-    nav('/login', { replace: true })
-  }
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -104,14 +79,6 @@ function Shell() {
           }}
         >
           <Typography.Text strong>管理后台</Typography.Text>
-          {authMode === 'builtin' && (
-            <Space>
-              <Typography.Text type="secondary">{user}</Typography.Text>
-              <Button icon={<LogoutOutlined />} onClick={onLogout} size="small">
-                登出
-              </Button>
-            </Space>
-          )}
         </Header>
         <Content
           style={{
@@ -133,25 +100,5 @@ function Shell() {
         </Content>
       </Layout>
     </Layout>
-  )
-}
-
-export default function App() {
-  const { authMode, ready } = useAuth()
-  return (
-    <Routes>
-      <Route
-        path="/login"
-        element={ready && authMode === 'external' ? <Navigate to="/overview" replace /> : <Login />}
-      />
-      <Route
-        path="/*"
-        element={
-          <RequireAuth>
-            <Shell />
-          </RequireAuth>
-        }
-      />
-    </Routes>
   )
 }

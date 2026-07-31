@@ -6,8 +6,6 @@
 #   DASHSCOPE_API_KEY(必需), DASHSCOPE_WORKSPACE_ID, MEDIA_SIGNING_SECRET,
 #   GATEWAY_DOMAIN, ACME_EMAIL, MEDIA_DOMAIN
 # Optional secrets:
-#   DASHBOARD_AUTH_MODE (disabled|builtin|external; external for a preceding IAP)
-#   DASHBOARD_USER + DASHBOARD_PASSWORD (required only for builtin)
 #   SITE_DOMAIN (otherwise derived from api.<root>)
 #
 # MEDIA_DOMAIN is the PUBLIC host an upstream fetches a media lease from. It MUST NOT be an
@@ -224,9 +222,6 @@ jobs:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
           MEDIA_SIGNING_SECRET: ${{ secrets.MEDIA_SIGNING_SECRET }}
-          DASHBOARD_AUTH_MODE: ${{ secrets.DASHBOARD_AUTH_MODE }}
-          DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
-          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           GATEWAY_DOMAIN: ${{ secrets.GATEWAY_DOMAIN }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           MEDIA_DOMAIN: ${{ secrets.MEDIA_DOMAIN }}

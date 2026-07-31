@@ -35,7 +35,7 @@ Anselm Gateway 是单二进制、单 SQLite 的**确定性 capability 网关**�
 |---|---|---|---|
 | business | `127.0.0.1:8080` | `/v1/*`、health | Caddy 终止 TLS；device proof |
 | admin | `127.0.0.1:9090` | metrics/readiness/pprof/expvar | 物理 loopback，无应用 auth，绝不反代 |
-| dashboard | `127.0.0.1:8081` | operator SPA/API | loopback + configurable `builtin` session/CSRF or preceding external IAP |
+| dashboard | `127.0.0.1:8081` | operator SPA/API | loopback-only bind (fail-fast);登录墙归前置 IAP,进程内无凭证/session/CSRF |
 
 地址两两不同；admin/dashboard 绑定前 fail-fast 验 loopback。business 优先使用 systemd socket activation，缺失时自绑。
 

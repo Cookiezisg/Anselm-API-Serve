@@ -221,21 +221,18 @@ adapter 剥离历史 `reasoning_content`(provider 私有,回传即再计费),但
 
 ## 4. dashboard mux（`DASHBOARD_ADDR`，默认 `127.0.0.1:8081`）
 
-`SecurityHeaders` 覆盖全部路由，dashboard 永远只监听 loopback。`GET /api/bootstrap` 公开但只返回 `{authMode}`：SPA 据此选择 UI。`builtin` 模式下其余 `/api/*` 要 session，状态变更 POST 还要 `X-CSRF-Token`；`external` 模式下前置 IAP 是唯一鉴权，Go 不创建 session/cookie/CSRF，API 直接提供能力。
+`SecurityHeaders` 覆盖全部路由，dashboard **恒定只监听 loopback**（绑定 fail-fast）。进程内**不构造**任何 credential/session/cookie/CSRF：鉴权边界是前置 IAP，`/api/*` 直连。**没有登录端点**——它的缺席是设计，不是遗漏：在进程里再立一道更弱的墙不会多出边界，只会多出一样要和真边界保持同步的东西。
 
 | 方法 + 路径 | session / CSRF | 说明 |
 |---|---|---|
 | `GET /healthz` | 否 | dashboard liveness |
-| `GET /api/bootstrap` | 否 | `{authMode:"builtin"|"external"}`，无 identity/secret |
-| `POST /login` / `POST /logout` | `builtin` only / 否 | 建立/销毁 session；login 有 per-IP backoff |
-| `GET /api/session` | `builtin` session | session + CSRF token；external mode 不注册（404） |
-| `GET /api/overview` | builtin: session；external: IAP | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.qwen`，为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 是「有没有哪家上游正在甩负载」的聚合 breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
-| `GET /api/config` | builtin: session；external: IAP | secret-free Dump |
-| `POST /api/config` | builtin: session + CSRF；external: IAP | runtime-hot batch，全有或全无 |
-| `GET /api/installs` | builtin: session；external: IAP | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
-| `POST /api/installs/ban` / `unban` | builtin: session + CSRF；external: IAP | install 状态变更 |
-| `POST /api/quota/reset` | builtin: session + CSRF；external: IAP | body `{reason}`（非空，审计原因）；原子清零当前 `RESET_TZ` 月所有 `quota_monthly.requests>0`，返回 `{period,resetInstalls}`；任何 `spend_ledger(open)` 存在时 `409 QUOTA_RESET_BUSY`；绝不改 pUSD 钱包、日统计或 ledger 历史 |
-| `GET /api/audit` / `GET /api/export` | builtin: session；external: IAP | 审计 / 一致 DB snapshot |
+| `GET /api/overview` | 前置 IAP | global budget 为 `{day,usedMicroUsd,limitMicroUsd,remainingMicroUsd,unit:"micro_usd"}`，`day` 当前承载 `YYYY-MM` 月预算窗口；固定带 `providers.qwen`，为 `{configured,breakerOpen}`；`upstreamBreakerOpen` 是「有没有哪家上游正在甩负载」的聚合 breaker 的兼容聚合；另有 inflight/open ledger/disk/rate/install 指标 |
+| `GET /api/config` | 前置 IAP | secret-free Dump |
+| `POST /api/config` | 前置 IAP | runtime-hot batch，全有或全无 |
+| `GET /api/installs` | 前置 IAP | safe 行；`todaySpendMicroUsd`，无 token/fp/ip |
+| `POST /api/installs/ban` / `unban` | 前置 IAP | install 状态变更 |
+| `POST /api/quota/reset` | 前置 IAP | body `{reason}`（非空，审计原因）；原子清零当前 `RESET_TZ` 月所有 `quota_monthly.requests>0`，返回 `{period,resetInstalls}`；任何 `spend_ledger(open)` 存在时 `409 QUOTA_RESET_BUSY`；绝不改 pUSD 钱包、日统计或 ledger 历史 |
+| `GET /api/audit` / `GET /api/export` | 前置 IAP | 审计 / 一致 DB snapshot |
 | `GET /` | 否 | embedded SPA/static fallback |
 
 ## 5. 错误头

@@ -30,7 +30,6 @@ import (
 	appvideo "github.com/sunweilin/anselm/gateway/internal/app/video"
 	appvoice "github.com/sunweilin/anselm/gateway/internal/app/voice"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 	"github.com/sunweilin/anselm/gateway/internal/infra/chatprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/configprovider"
 	"github.com/sunweilin/anselm/gateway/internal/infra/diskguard"
@@ -50,7 +49,6 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/pkg/noncecache"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 	dashhandler "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/dashboard"
-	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/router"
 )
 
@@ -63,7 +61,7 @@ type App struct {
 
 	bizSrv   *http.Server // business :8080
 	adminSrv *http.Server // admin/metrics :9090 (loopback-only)
-	dashSrv  *http.Server // dashboard :8081 (nil when DASHBOARD_AUTH_MODE=disabled)
+	dashSrv  *http.Server // dashboard :8081 (loopback-only; always mounted)
 
 	bgWG       *sync.WaitGroup
 	loopCtx    context.Context
@@ -396,58 +394,43 @@ func Build(ctx context.Context, getenv func(string) string) (*App, error) {
 		ds:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
 		getLimit: func() int64 { return cfgP.Load().GlobalMonthlySpendPUSD },
 	}
-	var dashSrv *http.Server
-	if effective.DashboardAuthMode != config.DashboardAuthModeDisabled {
-		dashSvc := appdash.New(appdash.Deps{
-			Budget:       monthlyBudget,
-			Reservations: quotaStore,
-			Inflight:     inflightSource{v: inflight},
-			Providers:    providers,
-			Rate:         sampler,
-			Alerts:       alerter,
-			Installs:     installSvc,
-			Config:       dashCfgSource{p: cfgP, ss: ss},
-			Lister:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
-			Mutator:      dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
-			QuotaReset:   quotaResetSource{store: quotaStore, loc: effective.Location},
-			Export:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
-			Logger:       dashLogger{l: log},
-		})
-		dashCfg := dashhandler.Config{
-			Service:      dashSvc,
-			DiskDegraded: dg.Degraded,
-			AuthMode:     effective.DashboardAuthMode,
-		}
-		var gate *mwdash.Gate
-		if effective.DashboardAuthMode == config.DashboardAuthModeBuiltin {
-			gate = &mwdash.Gate{
-				Sessions:     mwdash.NewSessionStore(0, time.Now),
-				SecureCookie: !effective.DashboardDevInsecureCookie,
-			}
-			dashCfg.BuiltinAuth = &dashhandler.BuiltinAuth{
-				Gate:     gate,
-				Logins:   mwdash.NewLoginLimiter(time.Now),
-				User:     effective.DashboardUser,
-				Password: effective.DashboardPassword,
-			}
-		}
-		dashH, derr := dashhandler.New(dashCfg)
-		if derr != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("dashboard init: %w", derr)
-		}
-		dashHandler := router.BuildDashboardHandler(router.DashboardDeps{
+	// The dashboard is ALWAYS mounted, and always on loopback. There is no "off"
+	// switch because there is nothing to switch off: the bind is fail-fast, so an
+	// unreachable-from-outside surface is a property of the process, not of a
+	// configuration value someone could get wrong.
+	//
+	// 后台**恒定挂载**,且恒定 loopback。没有「关掉」这个开关,因为没有东西需要关:绑定
+	// fail-fast,故「外部不可达」是**进程的性质**,不是某个可能被配错的配置值。
+	dashSvc := appdash.New(appdash.Deps{
+		Budget:       monthlyBudget,
+		Reservations: quotaStore,
+		Inflight:     inflightSource{v: inflight},
+		Providers:    providers,
+		Rate:         sampler,
+		Alerts:       alerter,
+		Installs:     installSvc,
+		Config:       dashCfgSource{p: cfgP, ss: ss},
+		Lister:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
+		Mutator:      dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
+		QuotaReset:   quotaResetSource{store: quotaStore, loc: effective.Location},
+		Export:       dashStore{w: db.Writer, r: db.Reader, loc: effective.Location},
+		Logger:       dashLogger{l: log},
+	})
+	dashH, derr := dashhandler.New(dashhandler.Config{
+		Service:      dashSvc,
+		DiskDegraded: dg.Degraded,
+	})
+	if derr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("dashboard init: %w", derr)
+	}
+	dashSrv := &http.Server{
+		Addr: effective.DashboardAddr,
+		Handler: router.BuildDashboardHandler(router.DashboardDeps{
 			Handler: dashH,
-			Gate:    gate,
 			Static:  webassets.Handler(), // embedded React SPA (ui/dist): /static/ + SPA shell.
-		})
-		dashSrv = &http.Server{
-			Addr:              effective.DashboardAddr,
-			Handler:           dashHandler,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-	} else {
-		log.Info("dashboard_disabled", "reason", "DASHBOARD_AUTH_MODE=disabled")
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// 16) REL-6 floors are runtime-tunable: hot-reload the guard + rate limiter on

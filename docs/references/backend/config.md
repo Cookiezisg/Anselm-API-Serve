@@ -21,7 +21,7 @@ audience: [human, ai]
 | `TierStartupHard` | 只读（在 `Specs` 中的项） | 禁止 | env + restart |
 | secret（故意不在 `Specs`） | 不出现 | 禁止 | env + restart |
 
-Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一个上游,没有它的部署什么也服务不了,故在启动时失败、不在每个请求上失败)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 与 `DASHBOARD_AUTH_MODE` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。
+Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一个上游,没有它的部署什么也服务不了,故在启动时失败、不在每个请求上失败)、`INSTALL_POW_SECRET`、`MEDIA_SIGNING_SECRET`。它们不能被 apply、不能进入 `settings`/Dump，Snapshot 只报告掩码状态或已配置 key 数量；raw bytes 永不输出。`DASHSCOPE_WORKSPACE_ID` 虽不是 secret，仍是 env-only startup-hard 边界，不可从 dashboard 修改。管理后台**不再持有任何凭证**：它恒定只绑 loopback，登录墙归前置 IAP。
 
 ## 2. runtime-hot registry（`Specs()` 顺序）
 
@@ -134,8 +134,6 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 | `MEM_BUDGET_MIB` | 2048 | >0 |
 | `MEM_SAFETY_MARGIN_MIB` | 400 | ≥0 |
 | `LOG_LEVEL` | `info` | process log level |
-| `DASHBOARD_AUTH_MODE` | `disabled` | closed enum `disabled|builtin|external`；`external` 仅用于已在所有路径前部署 IAP 的 loopback dashboard |
-| `DASHBOARD_DEV_INSECURE_COOKIE` | `false` | 仅 `builtin` dev；生产 cookie 恒 Secure，`external` 不创建 Go cookie |
 
 ## 4. secret-env-only
 
@@ -143,7 +141,6 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 |---|---|
 | `DASHSCOPE_API_KEY` | 必需；支持逗号分隔多 key；与 `DASHSCOPE_WORKSPACE_ID` 一起构造 Qwen 视觉 backend 与 realtime ASR proxy |
 | `DASHSCOPE_WORKSPACE_ID` | 必需（除非显式给出 `DASHSCOPE_BASE_URL`）；只允许字母、数字、`_`、`-`，用于构造新加坡 Model Studio endpoint |
-| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 仅 `DASHBOARD_AUTH_MODE=builtin` 必填且同设；`external` / `disabled` 忽略它们（部署产物不下发） |
 | `INSTALL_POW_SECRET` | 不自动生成；`shadow|enforce` 必须非空，`off` 可空 |
 | `MEDIA_SIGNING_SECRET` | `MEDIA_ENABLED=true` 时必填、至少 32 bytes；HMAC 派生 provider-only fetch credential，重启后可重建，SQLite 仅保存 hash |
 
@@ -158,7 +155,7 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 5. `MULTIMODAL_UPSTREAM_MODEL` 必须精确等于已知 Qwen3.7 Plus rate card；由于 inline 图片/视频无法由本地字节数证明视觉 token，reserve 使用完整 `1,000,000` input + `65,536` output 的最高分段价格，必须装入全局月预算。媒体形状/bytes 单独受限并由 Qwen 判定实际 token；权威 usage 可退款。chat `input_audio` 虽计入公共媒体形状/bytes 闸，但当前没有 provider 配置可使其作为音频理解 route 可用；麦克风 realtime ASR 是单独的 `qwen3-asr-flash-realtime` 时长费率会话，并进入同一 quota/ledger。
 6. `1≤MAX_MEDIA_PARTS≤64`，`1≤MAX_MEDIA_DECODED_BYTES≤MAX_BODY_BYTES`。
 7. `INSTALL_POW_MODE∈{shadow,enforce}` 时必须已有 env-only secret。
-8. `DASHBOARD_AUTH_MODE` 必须为 `disabled|builtin|external`；`builtin` 必须同设非空 `DASHBOARD_USER`/`DASHBOARD_PASSWORD`。`external` 的实际安全前提由 bootstrap 强制 loopback bind，加上部署者的前置 IAP 全路径 policy 共同满足。
+8. 管理后台的安全前提由两半共同满足:bootstrap 强制的 loopback 绑定(fail-fast),加上部署者在**所有路径**前布好的 IAP policy。进程内没有可配错的鉴权开关。
 9. `MEDIA_ENABLED=true` 时 staging root 非空、signing secret 至少 32 bytes、`0<chunk≤MAX_BODY_BYTES≤8MiB` 且 `chunk≤upload max`、两个 TTL 均为正；任一不满足即 fail-fast。
 
 违反任一项 fail-fast，未知模型绝不以旧价格继续运行。金额 rate card 逐字值见 [ADR-0017](../../decisions/0017-qwen-visual-route-and-tiered-cost-ledger.md)。

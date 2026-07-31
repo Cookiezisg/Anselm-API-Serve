@@ -115,7 +115,6 @@ func (p *Provider) Snapshot() []any {
 		"listen_addr", c.ListenAddr,
 		"admin_addr", c.AdminAddr,
 		"dashboard_addr", c.DashboardAddr,
-		"dashboard_auth_mode", c.DashboardAuthMode,
 		"log_level", c.LogLevel,
 		"db_path", c.DBPath,
 		"disk_min_mb", c.DiskMinMB,

@@ -6,23 +6,6 @@
 # 本闸要求本文件与现实**逐条精确**吻合:删了命中却不收缩本文件会失败,反之亦然。终局:空。
 #
 # token	path	count
-dashboard-auth-mode	.env.example	1
-dashboard-auth-mode	.github/workflows/deploy.yml	3
-dashboard-auth-mode	CLAUDE.md	1
-dashboard-auth-mode	Caddyfile	1
-dashboard-auth-mode	README.md	3
-dashboard-auth-mode	README.zh-CN.md	3
-dashboard-auth-mode	deploy/build-stage.sh	10
-dashboard-auth-mode	deploy/build_stage_test.sh	5
-dashboard-auth-mode	docs/references/backend/config.md	4
-dashboard-auth-mode	docs/references/backend/invariants.md	1
-dashboard-auth-mode	docs/references/backend/overview.md	1
-dashboard-auth-mode	internal/bootstrap/build.go	2
-dashboard-auth-mode	internal/domain/config/config.go	2
-dashboard-auth-mode	internal/domain/config/config_test.go	1
-dashboard-auth-mode	internal/infra/configprovider/configprovider_test.go	7
-dashboard-auth-mode	internal/infra/configprovider/load.go	2
-dashboard-auth-mode	internal/transport/httpapi/handlers/dashboard/handler.go	1
 deepseek	docs/references/backend/database.md	8
 deepseek	internal/infra/sqlite/migrations/0002_provider_spend_ledger.sql	9
 deepseek	internal/infra/sqlite/migrations/0003_add_qwen_provider.sql	3

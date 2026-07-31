@@ -4,7 +4,6 @@ import { ConfigProvider, App as AntdApp, theme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { HashRouter } from 'react-router-dom'
 import App from './App'
-import { AuthProvider } from './auth/AuthContext'
 import './index.css'
 
 // HashRouter:dashboard 是 SPA,server 只 serve index.html + 静态资源,路由
@@ -21,9 +20,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     >
       <AntdApp>
         <HashRouter>
-          <AuthProvider>
-            <App />
-          </AuthProvider>
+          <App />
         </HashRouter>
       </AntdApp>
     </ConfigProvider>

@@ -16,177 +16,41 @@ import (
 
 	appdash "github.com/sunweilin/anselm/gateway/internal/app/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
-	"github.com/sunweilin/anselm/gateway/internal/pkg/clientip"
-	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
 	"github.com/sunweilin/anselm/gateway/internal/transport/httpapi/response"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Handler serves the dashboard API over an app/dashboard.Service. In builtin
 // mode it also owns the login endpoints; in external mode it has no credential or
 // session state and records a fixed actor because identity belongs to the IAP.
+// Handler serves the loopback dashboard API. It holds NO credential, session or
+// CSRF state: authentication belongs to the IAP in front of this listener, and
+// the loopback bind is what makes that delegation safe rather than a promise.
+//
+// Handler 服务 loopback 后台 API。它**不持有**任何凭证、会话或 CSRF 状态:鉴权属于这个监听器
+// **前面**的那道 IAP,而 loopback 绑定正是让这份委托**成立**、不停留在口头承诺的东西。
 type Handler struct {
-	svc      *appdash.Service
-	gate     *mwdash.Gate
-	logins   *mwdash.LoginLimiter
-	user     string
-	passHash []byte
+	svc *appdash.Service
 
 	// diskDegraded is a cheap in-process diskguard accessor transport already
 	// holds. Provider state is supplied to the use case through its narrow port.
 	diskDegraded func() bool
-	authMode     string
 }
 
-// BuiltinAuth is the complete credential/session capability used only when
-// DASHBOARD_AUTH_MODE=builtin. Password is bcrypt-hashed by New and discarded.
-type BuiltinAuth struct {
-	Gate     *mwdash.Gate
-	Logins   *mwdash.LoginLimiter
-	User     string
-	Password string
-}
-
-// Config wires a Handler. AuthMode is part of the public dashboard bootstrap
-// response; BuiltinAuth must be non-nil exactly for builtin mode.
+// Config wires a Handler.
 type Config struct {
 	Service      *appdash.Service
 	DiskDegraded func() bool
-	AuthMode     string
-	BuiltinAuth  *BuiltinAuth
 }
 
-// New builds the handler. It hashes a builtin password once (DefaultCost — login
-// is rare) and never retains plaintext. External mode intentionally constructs no
-// credential/session state at all.
+// New builds the handler.
 func New(c Config) (*Handler, error) {
-	if c.AuthMode != config.DashboardAuthModeBuiltin && c.AuthMode != config.DashboardAuthModeExternal {
-		return nil, errString("dashboard handler requires builtin or external auth mode")
-	}
-	h := &Handler{
-		diskDegraded: c.DiskDegraded,
-		svc:          c.Service,
-		authMode:     c.AuthMode,
-	}
-	if c.AuthMode == config.DashboardAuthModeExternal {
-		if c.BuiltinAuth != nil {
-			return nil, errString("external dashboard auth must not construct builtin credentials")
-		}
-		return h, nil
-	}
-	if c.BuiltinAuth == nil {
-		return nil, errBuiltinAuthNotConfigured
-	}
-	if c.BuiltinAuth.Gate == nil || c.BuiltinAuth.Logins == nil || c.BuiltinAuth.User == "" || c.BuiltinAuth.Password == "" {
-		return nil, errBuiltinAuthNotConfigured
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(c.BuiltinAuth.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, err
-	}
-	h.gate = c.BuiltinAuth.Gate
-	h.logins = c.BuiltinAuth.Logins
-	h.user = c.BuiltinAuth.User
-	h.passHash = hash
-	return h, nil
-}
-
-var errBuiltinAuthNotConfigured = errString("builtin dashboard auth not configured")
-
-type errString string
-
-func (e errString) Error() string { return string(e) }
-
-// loginRequest / loginResponse are the POST /login wire shapes. The session id
-// rides the HttpOnly cookie (never a body); the CSRF token is returned so the SPA
-// can echo it on state-changing POSTs.
-type loginRequest struct {
-	User     string `json:"user"`
-	Password string `json:"password"`
-}
-
-type loginResponse struct {
-	CSRFToken string `json:"csrfToken"`
-	User      string `json:"user"`
+	return &Handler{svc: c.Service, diskDegraded: c.DiskDegraded}, nil
 }
 
 // Healthz is always reachable on the loopback dashboard listener for liveness.
 func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
-}
-
-// Bootstrap describes the active dashboard authentication contract to the SPA.
-// It intentionally carries no identity or secret; the SPA uses it only to select
-// its builtin login flow or its IAP-trusted direct API flow.
-func (h *Handler) Bootstrap(w http.ResponseWriter, _ *http.Request) {
-	response.WriteJSON(w, http.StatusOK, struct {
-		AuthMode string `json:"authMode"`
-	}{AuthMode: h.authMode})
-}
-
-// Login authenticates {user,password}. B15: it DECODES + validates the body BEFORE
-// reserving a failure slot, so a malformed body is a 400 that consumes NO slot and
-// never calls Success(). Only a well-formed attempt reaches the per-IP gate; a
-// credential failure (or a lockout) returns with no hint which factor failed and
-// arms/escalates the lockout. A success clears the IP's counter and sets the cookie.
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	ip := loginIP(r)
-
-	// B15: decode + validate FIRST. A bad body must not consume a failure slot.
-	var req loginRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024)).Decode(&req); err != nil {
-		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid login body")
-		return
-	}
-
-	// Now the single-hold gate: check lockout AND reserve a failure slot atomically.
-	if !h.logins.Attempt(ip) {
-		retry := h.logins.RetryAfter(ip)
-		response.WriteError(w, apierr.LoginLocked(retry))
-		return
-	}
-
-	userOK := mwdash.ConstantTimeEq(req.User, h.user)
-	// Always run bcrypt (even on a wrong user) so the response time does not reveal
-	// whether the username matched (timing-oracle defense).
-	passErr := bcrypt.CompareHashAndPassword(h.passHash, []byte(req.Password))
-	if !userOK || passErr != nil {
-		// The failure was already reserved by Attempt(); leave it.
-		response.WriteError(w, apierr.NewError(http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid user or password"))
-		return
-	}
-
-	h.logins.Success(ip)
-	sess := h.gate.Sessions.Create(h.user)
-	h.gate.SetSessionCookie(w, sess.ID)
-	response.WriteJSON(w, http.StatusOK, loginResponse{CSRFToken: sess.CSRF, User: h.user})
-}
-
-// Logout destroys the current session (if any) and clears the cookie. Idempotent
-// and CSRF-free (a forged logout merely logs the victim out — no state damage —
-// and requiring CSRF here would let a lost token wedge a user logged in forever).
-func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(mwdash.CookieName); err == nil && c.Value != "" {
-		h.gate.Sessions.Destroy(c.Value)
-	}
-	h.gate.ClearSessionCookie(w)
-	response.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// Session is the recovery probe behind RequireSession: an authenticated caller
-// gets {user, csrfToken} so the SPA can rehydrate its in-memory CSRF token after an
-// F5. An absent/invalid session never reaches here (RequireSession 401s first), so
-// NO token leaks to an unauthenticated peer.
-func (h *Handler) Session(w http.ResponseWriter, r *http.Request) {
-	sess := mwdash.SessionFrom(r.Context())
-	if sess == nil {
-		response.WriteErrorWith(w, http.StatusUnauthorized, "UNAUTHENTICATED", "login required")
-		return
-	}
-	response.WriteJSON(w, http.StatusOK, loginResponse{CSRFToken: sess.CSRF, User: sess.User})
 }
 
 // Overview returns the live operational snapshot.
@@ -204,13 +68,10 @@ type configResponse struct {
 	Items []appdash.DumpItem `json:"items"`
 }
 
-// PostConfig applies an override batch. Requires CSRF (state-changing). A bad/empty
+// PostConfig applies an override batch. A bad/empty
 // body ⇒ 400 BAD_REQUEST; a rejected override ⇒ 400 CONFIG_REJECTED with the
 // precise reason; success ⇒ the fresh dump.
 func (h *Handler) PostConfig(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCSRF(w, r) {
-		return
-	}
 	var overrides map[string]string
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&overrides); err != nil {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid config body")
@@ -270,9 +131,6 @@ type quotaResetRequest struct {
 
 // Ban flips an install to banned. Requires CSRF + a non-empty reason (audited).
 func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCSRF(w, r) {
-		return
-	}
 	var req banRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&req); err != nil {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid ban body")
@@ -297,9 +155,6 @@ func (h *Handler) Ban(w http.ResponseWriter, r *http.Request) {
 
 // Unban flips an install back to active. Requires CSRF; reason optional.
 func (h *Handler) Unban(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCSRF(w, r) {
-		return
-	}
 	var req unbanRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&req); err != nil {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid unban body")
@@ -321,9 +176,6 @@ func (h *Handler) Unban(w http.ResponseWriter, r *http.Request) {
 // every install in the current RESET_TZ month. It requires a non-empty audit
 // reason and never changes pUSD spending or ledger history.
 func (h *Handler) ResetAllMonthlyQuota(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCSRF(w, r) {
-		return
-	}
 	var req quotaResetRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&req); err != nil {
 		response.WriteErrorWith(w, http.StatusBadRequest, "BAD_REQUEST", "invalid quota reset body")
@@ -403,36 +255,13 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 
 // --- small net/http helpers ---
 
-// loginIP derives the lockout key exclusively from the direct TCP peer. Dashboard
-// traffic reaches this loopback listener directly (including through an SSH
-// tunnel), not through the business listener's trusted Caddy hop, so every
-// X-Forwarded-For value is attacker-controlled here and must be ignored. Key
-// removes the ephemeral source port and applies the shared IPv6 /64 bucketing.
-func loginIP(r *http.Request) string {
-	return clientip.Key(r.RemoteAddr)
-}
-
-// actor returns the builtin session user, or a fixed trust-boundary marker for an
-// external IAP. The IAP's own audit log remains the identity source; copying
-// forwarding headers into this audit ring would create a new PII store.
-func (h *Handler) actor(r *http.Request) string {
-	if h.gate != nil {
-		if sess := mwdash.SessionFrom(r.Context()); sess != nil {
-			return sess.User
-		}
-	}
-	return "external-iap"
-}
-
-// requireCSRF only applies to the cookie-authenticated builtin capability.
-// external mode does not use browser credentials at this hop: the Dashboard is
-// loopback-only and its upstream IAP is the authentication boundary.
-func (h *Handler) requireCSRF(w http.ResponseWriter, r *http.Request) bool {
-	if h.gate == nil {
-		return true
-	}
-	return mwdash.RequireCSRF(w, r)
-}
+// actor records a fixed trust-boundary marker rather than an identity. The IAP's
+// own audit log is the identity source; copying its forwarding headers into this
+// ring would stand up a second, unasked-for PII store.
+//
+// actor 记的是一个固定的信任边界标记、不是身份。身份的事实源是 IAP 自己的审计日志;把它的转发
+// 头拷进这个环,等于凭空立起第二个没人要的 PII 存储。
+func (h *Handler) actor(_ *http.Request) string { return "external-iap" }
 
 // call invokes an optional bool accessor, treating nil as false.
 func call(f func() bool) bool {

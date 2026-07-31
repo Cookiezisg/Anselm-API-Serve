@@ -52,7 +52,7 @@ Inline media 故意采用严格合同,且只允许在 `user` message 中出现�
 
 ## 管理后台
 
-内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出)由二进制提供，始终只监听 loopback。`DASHBOARD_AUTH_MODE=builtin` 使用 Go 自己的 session + CSRF 登录，可经 SSH 隧道访问；`external` 把完整登录门禁交给前置 IAP（如 Cloudflare Access），但 Go 仍只绑定 `127.0.0.1:8081`。
+内嵌的 React SPA(总览、配置编辑、install 封禁/审计、DB 导出)由二进制提供，始终只监听 loopback。它**不持有**任何凭证、session 或 CSRF 状态:登录墙属于隧道前面的那个东西——SSH 隧道、Cloudflare Access、Tailscale——而 fail-fast 的 loopback 绑定,正是让这份委托成为**进程的性质**、而不是一句承诺的东西。
 
 ```sh
 ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localhost:8081
@@ -76,7 +76,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
 运维面(`127.0.0.1:9090`,loopback-only,不反代):`/metrics`、`/readyz`(`{db, upstream, disk}`)、`/debug/pprof/*`、`/debug/vars`。
-管理后台(`127.0.0.1:8081`,loopback):`GET /api/bootstrap` 指示 `builtin` 或 `external`；builtin 另提供 `/login`、`/logout` 和 session 保护的 `/api/*`，external 则由前置 IAP 认证后直接访问 `/api/*`。
+管理后台(`127.0.0.1:8081`,loopback):`/healthz` 加直连的 `/api/*`。**没有登录端点**,这是设计。
 
 成功返回裸实体,失败返回 `{"error":{"code","message"}}`;成功 completion body 只会在严格校验并改写公开模型 alias 后转发，原始上游错误 body/header 与 provider key 绝不透传。完整契约见 [`docs/references/backend/api.md`](docs/references/backend/api.md)。
 
@@ -84,7 +84,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 加载顺序是 env 默认,然后是 `settings` 表 DB 覆盖(运行时可改项可在后台修改)。完整面见 [`.env.example`](.env.example) 与 [`docs/references/backend/config.md`](docs/references/backend/config.md)。
 
-机密 env-only,不入库、不 Dump、不进日志:`DASHSCOPE_API_KEY`(必填,支持逗号分隔多 key——key 池正是一个账号扛过单 key 冷却的方式)、`DASHBOARD_USER`/`DASHBOARD_PASSWORD`(仅 `DASHBOARD_AUTH_MODE=builtin` 必填)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHSCOPE_WORKSPACE_ID` 是用于推导新加坡 Model Studio 视觉推理与实时 ASR endpoint 的非机密标识。`DASHBOARD_AUTH_MODE` 本身不是机密，但同样只能经 env 在启动时选择：`disabled`(默认)、`builtin`、`external`。
+机密 env-only,不入库、不 Dump、不进日志:`DASHSCOPE_API_KEY`(必填,支持逗号分隔多 key——key 池正是一个账号扛过单 key 冷却的方式)、`INSTALL_POW_SECRET`(仅启用 PoW 时必填)。`DASHSCOPE_WORKSPACE_ID` 是用于推导新加坡 Model Studio 视觉推理与实时 ASR endpoint 的非机密标识。
 
 模型 ID 只有两个:`PUBLIC_MODEL_ID=anselm-auto`(客户端唯一看得见的)与 `MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus`(唯一真正到达上游的)。花费上限用整数 microUSD(`1,000,000 = US$1`);生产示例是 `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000`($420/月)。生产 body 上限 8 MiB，最多 8 个 inline media part / 3 MiB 解码媒体。会拒绝请求的使用护栏是每 install `MONTHLY_QUOTA=5000` 和 operator 全局月花费预算；body/message/media 形状与 `N_GLOBAL_CONCURRENCY` 是服务安全护栏。UTF-8 保守 prompt estimate 只用于记账报价，不再做上下文准入；实际 route 的 provider 才是 input hard limit 权威。
 

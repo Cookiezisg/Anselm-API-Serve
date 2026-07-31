@@ -298,26 +298,6 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	}
 	c.LogLevel = g.str("LOG_LEVEL", "info")
 
-	// Dashboard auth is an env-only, startup-hard trust-boundary choice. The
-	// default is disabled so an unconfigured deployment never exposes a new
-	// management surface. builtin keeps Go's own session/CSRF wall; external is
-	// for a preceding IAP and is still enforced loopback-only by bootstrap.
-	c.DashboardAuthMode = g.str("DASHBOARD_AUTH_MODE", config.DashboardAuthModeDisabled)
-	if err := config.ValidateDashboardAuthMode(c.DashboardAuthMode); err != nil {
-		g.failErr(err)
-	}
-
-	// These credentials remain env-only secrets for builtin mode. external and
-	// disabled deliberately tolerate stale values during migration; deploy omits
-	// them from the server environment unless builtin is selected.
-	c.DashboardUser = g.str("DASHBOARD_USER", "")
-	c.DashboardPassword = g.str("DASHBOARD_PASSWORD", "")
-	if c.DashboardAuthMode == config.DashboardAuthModeBuiltin &&
-		((c.DashboardUser == "") != (c.DashboardPassword == "") || c.DashboardUser == "") {
-		g.fail("DASHBOARD_AUTH_MODE=builtin requires DASHBOARD_USER and DASHBOARD_PASSWORD together")
-	}
-	c.DashboardDevInsecureCookie = g.boolean("DASHBOARD_DEV_INSECURE_COOKIE", false)
-
 	if g.err != nil {
 		return config.Config{}, g.err
 	}

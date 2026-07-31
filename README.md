@@ -53,7 +53,7 @@ The gateway owns the simple product tier for model choice and reasoning behavior
 
 ## Dashboard
 
-An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary on a loopback-only port. `DASHBOARD_AUTH_MODE=builtin` keeps the built-in session + CSRF login and is reachable over SSH; `external` delegates the entire login wall to a preceding IAP such as Cloudflare Access, while Go still listens only on `127.0.0.1:8081`.
+An embedded React SPA (overview, config editing, install ban/audit, DB export), served from the binary on a loopback-only port. It holds no credential, session or CSRF state of its own: the login wall belongs to whatever sits in front of the tunnel — an SSH tunnel, Cloudflare Access, Tailscale — and the fail-fast loopback bind is what makes that delegation a property of the process rather than a promise.
 
 ```sh
 ssh -L 8081:127.0.0.1:8081 <user>@<server>   # then open http://localhost:8081
@@ -77,7 +77,7 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
 
 Admin (`127.0.0.1:9090`, loopback-only, not proxied): `/metrics`, `/readyz` (`{db, upstream, disk}`), `/debug/pprof/*`, `/debug/vars`.
-Dashboard (`127.0.0.1:8081`, loopback): `GET /api/bootstrap` selects `builtin` or `external`; builtin additionally exposes `/login`, `/logout`, and session-protected `/api/*`, while external trusts the preceding IAP for direct `/api/*` access.
+Dashboard (`127.0.0.1:8081`, loopback): `/healthz` plus a direct `/api/*`. There is no login endpoint, by design.
 
 Responses are bare entities on success and `{"error":{"code","message"}}` on failure. Successful completion bodies are relayed only after strict validation and public-model alias rewriting; raw upstream error bodies/headers and provider keys are never passed through. Full contract: [`docs/references/backend/api.md`](docs/references/backend/api.md).
 
@@ -85,7 +85,7 @@ Responses are bare entities on success and `{"error":{"code","message"}}` on fai
 
 Loading order is env defaults, then a `settings`-table DB overlay (runtime-editable knobs can be changed from the dashboard). Full surface: [`.env.example`](.env.example) and [`docs/references/backend/config.md`](docs/references/backend/config.md).
 
-Secrets are env-only and are not persisted, dumped, or logged: `DASHSCOPE_API_KEY` (required; supports comma-separated keys, because a key pool is how one account survives a per-key cooldown), `DASHBOARD_USER`/`DASHBOARD_PASSWORD` (required only in `DASHBOARD_AUTH_MODE=builtin`), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint for Qwen visual inference and realtime ASR. `DASHBOARD_AUTH_MODE` itself is a non-secret, env-only startup trust-boundary choice: `disabled` (default), `builtin`, or `external`.
+Secrets are env-only and are not persisted, dumped, or logged: `DASHSCOPE_API_KEY` (required; supports comma-separated keys, because a key pool is how one account survives a per-key cooldown), and `INSTALL_POW_SECRET` (required only if PoW is enabled). `DASHSCOPE_WORKSPACE_ID` is a non-secret endpoint identifier used to derive the Singapore Model Studio endpoint for Qwen visual inference and realtime ASR.
 
 The model IDs are `PUBLIC_MODEL_ID=anselm-auto` (the only one a client ever sees) and `MULTIMODAL_UPSTREAM_MODEL=qwen3.7-plus` (the only one that reaches an upstream). Spend limits use integer microUSD (`1,000,000 = US$1`): the production example sets `GLOBAL_MONTHLY_SPEND_MICRO_USD=420000000` ($420/month). Production accepts an 8 MiB request body with at most 8 inline media parts / 3 MiB decoded media. The request-denying usage guardrails are the per-install `MONTHLY_QUOTA=5000` and the operator global monthly spend budget; structural body/message/media limits and `N_GLOBAL_CONCURRENCY` remain service-safety guardrails. The conservative UTF-8 prompt estimate is accounting evidence only and never a context-admission gate; the selected upstream is the hard input-limit authority.
 

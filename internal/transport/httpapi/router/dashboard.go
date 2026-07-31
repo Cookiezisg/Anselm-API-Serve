@@ -1,7 +1,7 @@
 // Package router assembles the dashboard's loopback admin handler: the mux +
 // middleware stack. It imports the dashboard handler + middleware + net/http
-// ONLY (no infra) — bootstrap constructs the app/dashboard.Service and, for
-// builtin mode only, the session/login state and passes them in via DashboardDeps.
+// ONLY (no infra) — bootstrap constructs the app/dashboard.Service and passes it
+// in via DashboardDeps.
 package router
 
 import (
@@ -12,53 +12,38 @@ import (
 	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
 )
 
-// DashboardDeps bundles the constructed pieces BuildDashboardHandler wires. A nil
-// Gate denotes external mode: a preceding IAP has authenticated the request and
-// the loopback-only listener then exposes the API directly. A non-nil Gate denotes
-// builtin mode. Static is the SPA file server; nil ⇒ a minimal shell.
+// DashboardDeps bundles the constructed pieces BuildDashboardHandler wires.
+// Static is the SPA file server; nil ⇒ a minimal shell.
 type DashboardDeps struct {
 	Handler *dashhandler.Handler
-	Gate    *mwdash.Gate
 	Static  http.Handler
 }
 
 // BuildDashboardHandler builds the routed + security-wrapped dashboard handler.
-// /healthz and /api/bootstrap are always public on the loopback listener. In
-// builtin mode the remaining API requires a Go session and mutating calls require
-// CSRF; in external mode the IAP is the exclusive authentication boundary and the
-// API is direct. Concrete API patterns always beat the SPA fallback.
+//
+// There is no authentication middleware here, and that is the design rather than
+// an omission: this handler is only ever mounted on a loopback listener whose
+// bind is fail-fast, and a preceding IAP (Cloudflare Access, Tailscale, an SSH
+// tunnel) owns the login wall. Adding a second, weaker wall inside the process
+// would not add a boundary — it would add a thing to keep in sync with the real
+// one. Concrete API patterns always beat the SPA fallback.
+//
+// 这里**没有**鉴权中间件,而这是设计、不是遗漏:本 handler 只会挂在一个 fail-fast 绑定的
+// loopback 监听器上,而登录墙归**前置**的 IAP(Cloudflare Access / Tailscale / SSH 隧道)所有。
+// 在进程内再加一道更弱的墙,不会多出一条边界——只会多出一样要和真边界保持同步的东西。
 func BuildDashboardHandler(d DashboardDeps) http.Handler {
 	mux := http.NewServeMux()
 
-	// Public liveness + non-sensitive SPA bootstrap.
 	mux.HandleFunc("GET /healthz", d.Handler.Healthz)
-	mux.HandleFunc("GET /api/bootstrap", d.Handler.Bootstrap)
-
-	if d.Gate != nil {
-		mux.HandleFunc("POST /login", d.Handler.Login)
-		mux.HandleFunc("POST /logout", d.Handler.Logout)
-		requireSession := d.Gate.RequireSession
-		mux.Handle("GET /api/session", requireSession(http.HandlerFunc(d.Handler.Session)))
-		mux.Handle("GET /api/overview", requireSession(http.HandlerFunc(d.Handler.Overview)))
-		mux.Handle("GET /api/config", requireSession(http.HandlerFunc(d.Handler.GetConfig)))
-		mux.Handle("POST /api/config", requireSession(http.HandlerFunc(d.Handler.PostConfig)))
-		mux.Handle("GET /api/installs", requireSession(http.HandlerFunc(d.Handler.Installs)))
-		mux.Handle("POST /api/installs/ban", requireSession(http.HandlerFunc(d.Handler.Ban)))
-		mux.Handle("POST /api/installs/unban", requireSession(http.HandlerFunc(d.Handler.Unban)))
-		mux.Handle("POST /api/quota/reset", requireSession(http.HandlerFunc(d.Handler.ResetAllMonthlyQuota)))
-		mux.Handle("GET /api/audit", requireSession(http.HandlerFunc(d.Handler.Audit)))
-		mux.Handle("GET /api/export", requireSession(http.HandlerFunc(d.Handler.Export)))
-	} else {
-		mux.HandleFunc("GET /api/overview", d.Handler.Overview)
-		mux.HandleFunc("GET /api/config", d.Handler.GetConfig)
-		mux.HandleFunc("POST /api/config", d.Handler.PostConfig)
-		mux.HandleFunc("GET /api/installs", d.Handler.Installs)
-		mux.HandleFunc("POST /api/installs/ban", d.Handler.Ban)
-		mux.HandleFunc("POST /api/installs/unban", d.Handler.Unban)
-		mux.HandleFunc("POST /api/quota/reset", d.Handler.ResetAllMonthlyQuota)
-		mux.HandleFunc("GET /api/audit", d.Handler.Audit)
-		mux.HandleFunc("GET /api/export", d.Handler.Export)
-	}
+	mux.HandleFunc("GET /api/overview", d.Handler.Overview)
+	mux.HandleFunc("GET /api/config", d.Handler.GetConfig)
+	mux.HandleFunc("POST /api/config", d.Handler.PostConfig)
+	mux.HandleFunc("GET /api/installs", d.Handler.Installs)
+	mux.HandleFunc("POST /api/installs/ban", d.Handler.Ban)
+	mux.HandleFunc("POST /api/installs/unban", d.Handler.Unban)
+	mux.HandleFunc("POST /api/quota/reset", d.Handler.ResetAllMonthlyQuota)
+	mux.HandleFunc("GET /api/audit", d.Handler.Audit)
+	mux.HandleFunc("GET /api/export", d.Handler.Export)
 	// A provided Static handler owns every non-API GET (bootstrap passes the
 	// embedded React SPA from infra/webassets, which serves /static/ + the SPA
 	// shell); when absent (e.g. router tests), a minimal placeholder shell.

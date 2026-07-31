@@ -77,9 +77,6 @@ REPO_ROOT="$3"
 : "${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}"
 : "${ACME_EMAIL:?ACME_EMAIL is required}"
 : "${SHA:?SHA is required}"
-DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-disabled}"
-DASHBOARD_USER="${DASHBOARD_USER:-}"
-DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
 SITE_DOMAIN="${SITE_DOMAIN:-}"
 MEDIA_DOMAIN="${MEDIA_DOMAIN:-}"
 RESET_UNLAUNCHED_GATEWAY_DATA="${RESET_UNLAUNCHED_GATEWAY_DATA:-0}"
@@ -91,27 +88,6 @@ done
 	die "MEDIA_SIGNING_SECRET must contain at least 32 bytes"
 [[ "${DASHSCOPE_WORKSPACE_ID}" =~ ^[A-Za-z0-9_-]{1,128}$ ]] ||
 	die "DASHSCOPE_WORKSPACE_ID must contain only letters, digits, underscore, or hyphen"
-require_single_line DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
-case "${DASHBOARD_AUTH_MODE}" in
-	disabled|external)
-		# No Go credential reaches the server in these modes. This also lets a
-		# repository retain old secrets during an external-IAP migration without
-		# unnecessarily materialising them in the deployed EnvironmentFile.
-		DASHBOARD_USER=""
-		DASHBOARD_PASSWORD=""
-		;;
-	builtin)
-		for secret_name in DASHBOARD_USER DASHBOARD_PASSWORD; do
-			require_single_line "${secret_name}" "${!secret_name}"
-		done
-		[[ -n "${DASHBOARD_USER}" && -n "${DASHBOARD_PASSWORD}" ]] ||
-			die "DASHBOARD_AUTH_MODE=builtin requires DASHBOARD_USER and DASHBOARD_PASSWORD"
-		;;
-	*)
-		die "DASHBOARD_AUTH_MODE must be disabled, builtin, or external"
-		;;
-esac
-
 require_single_line GATEWAY_DOMAIN "${GATEWAY_DOMAIN}"
 valid_hostname "${GATEWAY_DOMAIN}" || die "GATEWAY_DOMAIN is not a valid hostname"
 if [[ -z "${SITE_DOMAIN}" ]]; then
@@ -165,11 +141,6 @@ chmod 0600 "${ENV_FILE}"
 write_env DASHSCOPE_API_KEY "${DASHSCOPE_API_KEY}"
 write_env DASHSCOPE_WORKSPACE_ID "${DASHSCOPE_WORKSPACE_ID}"
 write_env MEDIA_SIGNING_SECRET "${MEDIA_SIGNING_SECRET}"
-write_env DASHBOARD_AUTH_MODE "${DASHBOARD_AUTH_MODE}"
-if [[ "${DASHBOARD_AUTH_MODE}" == "builtin" ]]; then
-	write_env DASHBOARD_USER "${DASHBOARD_USER}"
-	write_env DASHBOARD_PASSWORD "${DASHBOARD_PASSWORD}"
-fi
 
 # Production-operable defaults. Runtime-editable values can still be overlaid
 # from SQLite, but a fresh install is safe to expose without a later hardening

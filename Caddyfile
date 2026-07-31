@@ -94,5 +94,5 @@
 }
 
 # 管理后台(dashboard)不经本 Caddy、不上公网:进程在 127.0.0.1:8081 自绑 loopback。
-# DASHBOARD_AUTH_MODE=builtin 时可经 SSH 隧道访问；external 时只允许已在全路径启用 IAP
-# 的 Tunnel/代理转发到 http://127.0.0.1:8081。绝不可把 dashboard 直接公开反代。
+# 访问方式:SSH 隧道,或一个已在**全路径**启用 IAP 的 Tunnel 转发到 http://127.0.0.1:8081。
+# 进程内没有登录墙,故那道 IAP 就是唯一的边界——绝不可把 dashboard 直接公开反代。

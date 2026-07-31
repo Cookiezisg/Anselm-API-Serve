@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/ratesample"
 	dashhandler "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/handlers/dashboard"
-	mwdash "github.com/sunweilin/anselm/gateway/internal/transport/httpapi/middleware/dashboard"
 )
 
 // --- fakes for the app/dashboard ports ---
@@ -56,10 +54,14 @@ func (f *fakeQuotaResetter) ResetAllMonthlyQuota(context.Context) (appdash.Quota
 	return f.result, f.err
 }
 
-// countingRate proves B16: each /api/overview poll calls Snapshot independently;
-// concurrent pollers do not corrupt the shared sampler (pkg/ratesample is the real
-// implementation; we wire it directly and Observe to feed a window).
-func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *mwdash.Gate) {
+// newDashHandler builds the dashboard exactly as bootstrap does: no gate, no
+// session, no CSRF. The listener is loopback-only and the login wall lives in the
+// IAP in front of it, so a test that logged in first would be exercising a wall
+// this process no longer owns.
+//
+// newDashHandler 按 bootstrap 的方式构造后台:无 gate、无 session、无 CSRF。监听器恒 loopback,
+// 登录墙住在它前面的 IAP 里,故一个「先登录」的测试,考的是本进程已经不再拥有的那道墙。
+func newDashHandler(t *testing.T, sampler *ratesample.Sampler) http.Handler {
 	t.Helper()
 	svc := appdash.New(appdash.Deps{
 		Budget:    fakeBudget{},
@@ -70,35 +72,7 @@ func newDashHandler(t *testing.T, sampler *ratesample.Sampler) (http.Handler, *m
 			Period: "2026-07", ResetInstalls: 2,
 		}},
 	})
-	gate := &mwdash.Gate{Sessions: mwdash.NewSessionStore(0, nil), SecureCookie: false}
-	h, err := dashhandler.New(dashhandler.Config{
-		Service:  svc,
-		AuthMode: "builtin",
-		BuiltinAuth: &dashhandler.BuiltinAuth{
-			Gate:     gate,
-			Logins:   mwdash.NewLoginLimiter(nil),
-			User:     "admin",
-			Password: "s3cret",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return BuildDashboardHandler(DashboardDeps{Handler: h, Gate: gate}), gate
-}
-
-func newExternalDashHandler(t *testing.T, sampler *ratesample.Sampler) http.Handler {
-	t.Helper()
-	svc := appdash.New(appdash.Deps{
-		Budget:    fakeBudget{},
-		Providers: fakeProviders{},
-		Rate:      sampler,
-		Config:    fakeConfig{},
-		QuotaReset: &fakeQuotaResetter{result: appdash.QuotaResetResult{
-			Period: "2026-07", ResetInstalls: 2,
-		}},
-	})
-	h, err := dashhandler.New(dashhandler.Config{Service: svc, AuthMode: "external"})
+	h, err := dashhandler.New(dashhandler.Config{Service: svc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +80,10 @@ func newExternalDashHandler(t *testing.T, sampler *ratesample.Sampler) http.Hand
 }
 
 func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, _ := login(t, srv, "admin", "s3cret")
+	srv := newDashHandler(t, ratesample.New(60))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
 	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -141,42 +113,20 @@ func TestOverviewExposesClosedProviderStatusShape(t *testing.T) {
 	}
 }
 
-func TestDashboardBootstrapReportsActiveMode(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		srv  http.Handler
-		want string
-	}{
-		{name: "builtin", srv: func() http.Handler { s, _ := newDashHandler(t, ratesample.New(60)); return s }(), want: "builtin"},
-		{name: "external", srv: newExternalDashHandler(t, ratesample.New(60)), want: "external"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			tc.srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil))
-			if rec.Code != http.StatusOK {
-				t.Fatalf("bootstrap: want 200, got %d", rec.Code)
-			}
-			var got struct {
-				AuthMode string `json:"authMode"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-				t.Fatal(err)
-			}
-			if got.AuthMode != tc.want {
-				t.Fatalf("authMode=%q, want %q", got.AuthMode, tc.want)
-			}
-		})
-	}
-}
-
-func TestExternalDashboardBypassesGoSessionAndCSRF(t *testing.T) {
-	srv := newExternalDashHandler(t, ratesample.New(60))
+// The API answers directly, and the session endpoint does not exist at all — its
+// absence is the assertion: a 404 proves no in-process login surface survived to
+// drift out of sync with the real one.
+//
+// API **直接**作答,而 session 端点**根本不存在**——它的缺席就是断言:404 证明没有任何进程内登录
+// 面残留下来、日后与真正那道墙各走各的。
+func TestDashboardAPIIsDirectAndHasNoSessionEndpoint(t *testing.T) {
+	srv := newDashHandler(t, ratesample.New(60))
 
 	for _, path := range []string{"/api/overview", "/api/config"} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("external GET %s: want 200, got %d (%s)", path, rec.Code, rec.Body.String())
+			t.Fatalf("GET %s: want 200, got %d (%s)", path, rec.Code, rec.Body.String())
 		}
 	}
 
@@ -184,180 +134,34 @@ func TestExternalDashboardBypassesGoSessionAndCSRF(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"RATE_PER_MIN":"60"}`))
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("external POST must not require Go CSRF: got %d (%s)", rec.Code, rec.Body.String())
+		t.Fatalf("POST must not require an in-process CSRF token: got %d (%s)", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/session", nil))
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("external session endpoint: want 404, got %d", rec.Code)
+		t.Fatalf("session endpoint must not exist: want 404, got %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`)))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("external quota reset must not require Go CSRF: got %d (%s)", rec.Code, rec.Body.String())
+		t.Fatalf("quota reset must not require an in-process CSRF token: got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
 
-// login performs POST /login and returns the session cookie + csrf token.
-func login(t *testing.T, srv http.Handler, user, pass string) (*http.Cookie, string) {
-	t.Helper()
-	body := strings.NewReader(`{"user":"` + user + `","password":"` + pass + `"}`)
-	req := httptest.NewRequest(http.MethodPost, "/login", body)
+// A reset still needs an auditable reason. That gate has nothing to do with
+// authentication: it exists so the audit ring records WHY a month's entitlement
+// was handed back, and losing the login wall must not quietly lose it too.
+//
+// 重置**仍然**需要一个可审计的理由。这道闸与鉴权无关:它的存在是为了让审计环记下「为什么」把
+// 一个月的额度还了回去——撤掉登录墙不该把它也顺手带走。
+func TestQuotaResetRequiresAnAuditableReason(t *testing.T) {
+	srv := newDashHandler(t, ratesample.New(60))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"  "}`))
 	req.RemoteAddr = "127.0.0.1:5000"
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login: want 200, got %d (%s)", rec.Code, rec.Body.String())
-	}
-	var lr struct {
-		CSRFToken string `json:"csrfToken"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &lr)
-	var cookie *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == mwdash.CookieName {
-			cookie = c
-		}
-	}
-	if cookie == nil || cookie.Value == "" {
-		t.Fatal("login did not set the session cookie")
-	}
-	return cookie, lr.CSRFToken
-}
-
-func TestLoginSetsSecureSessionCookie(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, csrf := login(t, srv, "admin", "s3cret")
-	if csrf == "" {
-		t.Fatal("login must return a CSRF token")
-	}
-	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie must be HttpOnly+SameSite=Strict: %+v", cookie)
-	}
-}
-
-func TestLoginWrongPasswordNoHint(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
-	req.RemoteAddr = "127.0.0.1:5000"
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("want 401, got %d", rec.Code)
-	}
-	var env struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &env)
-	if env.Error.Code != "INVALID_CREDENTIALS" {
-		t.Fatalf("want INVALID_CREDENTIALS (no factor hint), got %q", env.Error.Code)
-	}
-}
-
-// TestAllAPIRequireSession: every /api/* route 401s without a session.
-func TestAllAPIRequireSession(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	routes := []struct {
-		method, path string
-	}{
-		{http.MethodGet, "/api/session"},
-		{http.MethodGet, "/api/overview"},
-		{http.MethodGet, "/api/config"},
-		{http.MethodPost, "/api/config"},
-		{http.MethodGet, "/api/installs"},
-		{http.MethodPost, "/api/installs/ban"},
-		{http.MethodPost, "/api/installs/unban"},
-		{http.MethodPost, "/api/quota/reset"},
-		{http.MethodGet, "/api/audit"},
-		{http.MethodGet, "/api/export"},
-	}
-	for _, r := range routes {
-		req := httptest.NewRequest(r.method, r.path, nil)
-		req.RemoteAddr = "127.0.0.1:5000"
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("%s %s: want 401 without session, got %d", r.method, r.path, rec.Code)
-		}
-	}
-}
-
-// TestSlidingCookieReissue (B14): every requireSession pass re-issues Set-Cookie
-// so the browser tracks the slide.
-func TestSlidingCookieReissue(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, _ := login(t, srv, "admin", "s3cret")
-
-	req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("authenticated overview: want 200, got %d", rec.Code)
-	}
-	var reissued bool
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == mwdash.CookieName && c.Value == cookie.Value {
-			reissued = true
-		}
-	}
-	if !reissued {
-		t.Fatal("B14: requireSession must re-issue the session cookie on every pass")
-	}
-}
-
-// TestCSRFReject: a state-changing POST without the matching X-CSRF-Token is 403.
-func TestCSRFReject(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, csrf := login(t, srv, "admin", "s3cret")
-
-	// No CSRF header ⇒ 403.
-	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"RATE_PER_MIN":"60"}`))
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("missing CSRF: want 403, got %d", rec.Code)
-	}
-
-	// Matching CSRF ⇒ 200.
-	req = httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"RATE_PER_MIN":"60"}`))
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	req.Header.Set(mwdash.CSRFHeader, csrf)
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("valid CSRF: want 200, got %d (%s)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestQuotaResetRequiresCSRFAndReason(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, csrf := login(t, srv, "admin", "s3cret")
-
-	// Like every dashboard mutation, quota reset cannot be CSRF-forged.
-	req := httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`))
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("missing CSRF: want 403, got %d", rec.Code)
-	}
-
-	// A successful, authenticated reset needs an auditable reason.
-	req = httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"  "}`))
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	req.Header.Set(mwdash.CSRFHeader, csrf)
-	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing reason: want 400, got %d (%s)", rec.Code, rec.Body.String())
@@ -365,8 +169,6 @@ func TestQuotaResetRequiresCSRFAndReason(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodPost, "/api/quota/reset", strings.NewReader(`{"reason":"new cycle"}`))
 	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	req.Header.Set(mwdash.CSRFHeader, csrf)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -381,83 +183,6 @@ func TestQuotaResetRequiresCSRFAndReason(t *testing.T) {
 	}
 }
 
-// TestLoginLockoutMalformedBodyKeepsSlot (B15): a malformed body is a 400 that
-// does NOT consume a failure slot — so after many bad bodies a real credential is
-// still accepted (the lockout never armed).
-func TestLoginLockoutMalformedBodyKeepsSlot(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	for i := 0; i < 20; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("{not json"))
-		req.RemoteAddr = "127.0.0.1:5000"
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("malformed body: want 400, got %d", rec.Code)
-		}
-	}
-	// Despite 20 malformed bodies, a valid login still succeeds (no slot consumed).
-	login(t, srv, "admin", "s3cret")
-}
-
-// TestLoginLockoutArmsAndReturns429 (B15): real failures arm the lockout, which
-// returns 429 LOGIN_LOCKED with a Retry-After header + details.retryAfterSec.
-func TestLoginLockoutArmsAndReturns429(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	var last *httptest.ResponseRecorder
-	for i := 0; i < mwdash.LoginMaxFailures+1; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
-		req.RemoteAddr = "127.0.0.1:5000"
-		last = httptest.NewRecorder()
-		srv.ServeHTTP(last, req)
-	}
-	if last.Code != http.StatusTooManyRequests {
-		t.Fatalf("want 429 after lockout, got %d", last.Code)
-	}
-	if last.Header().Get("Retry-After") == "" {
-		t.Fatal("429 lockout must carry a Retry-After header")
-	}
-	var env struct {
-		Error struct {
-			Code    string         `json:"code"`
-			Details map[string]any `json:"details"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(last.Body.Bytes(), &env)
-	if env.Error.Code != "LOGIN_LOCKED" {
-		t.Fatalf("want LOGIN_LOCKED code, got %q", env.Error.Code)
-	}
-	if _, ok := env.Error.Details["retryAfterSec"]; !ok {
-		t.Fatal("lockout body must carry details.retryAfterSec")
-	}
-}
-
-// TestLoginLockoutIgnoresForwardedFor pins the dashboard's direct-peer trust
-// boundary. The loopback dashboard is reached directly (or through an SSH
-// tunnel), so XFF is client-controlled and rotating it must not mint fresh login
-// buckets. Ephemeral source-port changes from the same peer must not do so either.
-func TestLoginLockoutIgnoresForwardedFor(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	for i := 0; i < mwdash.LoginMaxFailures; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
-		req.RemoteAddr = fmt.Sprintf("127.0.0.1:%d", 5000+i)
-		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("failure %d: want 401 before lockout, got %d", i+1, rec.Code)
-		}
-	}
-
-	final := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"user":"admin","password":"wrong"}`))
-	final.RemoteAddr = "127.0.0.1:65000"
-	final.Header.Set("X-Forwarded-For", "203.0.113.250")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, final)
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("rotating XFF/source port bypassed direct-peer lockout: want 429, got %d (%s)", rec.Code, rec.Body.String())
-	}
-}
-
 // TestOverviewQPSConcurrentPolls (B16): two concurrent /api/overview pollers each
 // get a correct, independent recent-window snapshot (no shared last-point to steal).
 func TestOverviewQPSConcurrentPolls(t *testing.T) {
@@ -465,8 +190,7 @@ func TestOverviewQPSConcurrentPolls(t *testing.T) {
 	for i := 0; i < 120; i++ {
 		sampler.Observe(200) // feed the window so QPS > 0
 	}
-	srv, _ := newDashHandler(t, sampler)
-	cookie, _ := login(t, srv, "admin", "s3cret")
+	srv := newDashHandler(t, sampler)
 
 	var wg sync.WaitGroup
 	results := make([]float64, 2)
@@ -476,7 +200,6 @@ func TestOverviewQPSConcurrentPolls(t *testing.T) {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
 			req.RemoteAddr = "127.0.0.1:5000"
-			req.AddCookie(cookie)
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
 			var o struct {
@@ -497,7 +220,7 @@ func TestOverviewQPSConcurrentPolls(t *testing.T) {
 }
 
 func TestSecurityHeadersOnAllRoutes(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
+	srv := newDashHandler(t, ratesample.New(60))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.RemoteAddr = "127.0.0.1:5000"
 	rec := httptest.NewRecorder()
@@ -506,28 +229,5 @@ func TestSecurityHeadersOnAllRoutes(t *testing.T) {
 	if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Cache-Control") != "no-store" ||
 		h.Get("X-Frame-Options") != "DENY" || !strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatalf("security headers missing: %v", h)
-	}
-}
-
-func TestLogoutClearsCookieIdempotent(t *testing.T) {
-	srv, _ := newDashHandler(t, ratesample.New(60))
-	cookie, _ := login(t, srv, "admin", "s3cret")
-
-	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("logout: want 200, got %d", rec.Code)
-	}
-	// The session is now invalid → /api/overview 401s.
-	req = httptest.NewRequest(http.MethodGet, "/api/overview", nil)
-	req.RemoteAddr = "127.0.0.1:5000"
-	req.AddCookie(cookie)
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("post-logout overview: want 401, got %d", rec.Code)
 	}
 }

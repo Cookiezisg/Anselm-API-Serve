@@ -22,8 +22,6 @@ mkdir -m 0700 "${STAGE}"
 DASHSCOPE_API_KEY='alpha\beta"gamma$delta' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
-	DASHBOARD_USER='' \
-	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \
 	SITE_DOMAIN='' \
 	ACME_EMAIL='ops+anselm@example.com' \
@@ -36,7 +34,6 @@ first_line="$(head -n 1 "${STAGE}/gateway.env")"
 
 for pair in \
 	'GATEWAY_MODE="debug"' \
-	'DASHBOARD_AUTH_MODE="disabled"' \
 	'GLOBAL_MONTHLY_SPEND_MICRO_USD="420000000"' \
 	'INPUT_TOKEN_CAP="0"' \
 	'MAX_TOKENS_CAP="16384"' \
@@ -72,8 +69,10 @@ done
 if grep -q '^DASHSCOPE_NATIVE_BASE=' "${STAGE}/gateway.env"; then
 	fail "deploy env must not pin DASHSCOPE_NATIVE_BASE (it derives from the credential)"
 fi
-if grep -q '^DASHBOARD_USER=' "${STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${STAGE}/gateway.env"; then
-	fail "disabled dashboard mode must not materialise builtin credentials"
+# No dashboard credential may ever reach the server: there is no in-process login.
+# 服务器上**永远不该**出现后台凭证:进程内根本没有登录。
+if grep -qE '^DASHBOARD_(AUTH_MODE|USER|PASSWORD|DEV_INSECURE_COOKIE)=' "${STAGE}/gateway.env"; then
+	fail "no dashboard credential may be materialised on the server"
 fi
 (cd "${STAGE}" && sha256sum --strict -c manifest.sha256 >/dev/null) || fail "payload manifest failed"
 grep -Fqx '0' "${STAGE}/meta/reset-unlaunched-gateway-data" || fail "default reset flag is not disabled"
@@ -112,41 +111,20 @@ redactor_output="$(printf '%s\n' \
 	"${redactor_output}" != *sk-ws-raw-secret-token* ]] ||
 	fail "gateway startup diagnostics do not redact credentials"
 
-BUILTIN_STAGE="${TEST_ROOT}/builtin-stage"
-mkdir -m 0700 "${BUILTIN_STAGE}"
-	DASHSCOPE_API_KEY='dashscope-test-key' \
-	DASHSCOPE_WORKSPACE_ID='ws-test' \
-	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
-	DASHBOARD_AUTH_MODE='builtin' \
-	DASHBOARD_USER='admin' \
-	DASHBOARD_PASSWORD='builtin-secret' \
-	GATEWAY_DOMAIN='api.example.com' \
-	SITE_DOMAIN='example.com' \
-	ACME_EMAIL='ops@example.com' \
-	SHA='0123456789ab' \
-	bash "${SCRIPT_DIR}/build-stage.sh" "${BUILTIN_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
-grep -Fqx 'DASHBOARD_AUTH_MODE="builtin"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin mode missing"
-grep -Fqx 'DASHBOARD_USER="admin"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin user missing"
-grep -Fqx 'DASHBOARD_PASSWORD="builtin-secret"' "${BUILTIN_STAGE}/gateway.env" || fail "builtin password missing"
-
-EXTERNAL_STAGE="${TEST_ROOT}/external-stage"
-mkdir -m 0700 "${EXTERNAL_STAGE}"
+RESET_STAGE="${TEST_ROOT}/reset-stage"
+mkdir -m 0700 "${RESET_STAGE}"
 	DASHSCOPE_API_KEY='dashscope-test-key' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	RESET_UNLAUNCHED_GATEWAY_DATA='1' \
-	DASHBOARD_AUTH_MODE='external' \
-	DASHBOARD_USER='stale-user' \
-	DASHBOARD_PASSWORD='stale-password' \
 	GATEWAY_DOMAIN='api.example.com' \
 	SITE_DOMAIN='example.com' \
 	ACME_EMAIL='ops@example.com' \
 	SHA='0123456789ab' \
-	bash "${SCRIPT_DIR}/build-stage.sh" "${EXTERNAL_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
-grep -Fqx 'DASHBOARD_AUTH_MODE="external"' "${EXTERNAL_STAGE}/gateway.env" || fail "external mode missing"
-grep -Fqx '1' "${EXTERNAL_STAGE}/meta/reset-unlaunched-gateway-data" || fail "confirmed reset flag missing"
-if grep -q '^DASHBOARD_USER=' "${EXTERNAL_STAGE}/gateway.env" || grep -q '^DASHBOARD_PASSWORD=' "${EXTERNAL_STAGE}/gateway.env"; then
-	fail "external dashboard mode must not materialise stale builtin credentials"
+	bash "${SCRIPT_DIR}/build-stage.sh" "${RESET_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
+grep -Fqx '1' "${RESET_STAGE}/meta/reset-unlaunched-gateway-data" || fail "confirmed reset flag missing"
+if grep -qE '^DASHBOARD_(AUTH_MODE|USER|PASSWORD|DEV_INSECURE_COOKIE)=' "${RESET_STAGE}/gateway.env"; then
+	fail "no dashboard credential may be materialised on the server"
 fi
 
 RENDERED_CADDY="${TEST_ROOT}/rendered.Caddyfile"
@@ -181,8 +159,6 @@ mkdir -m 0700 "${BAD_STAGE}"
 if DASHSCOPE_API_KEY=$'bad\nsecret' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
-	DASHBOARD_USER='' \
-	DASHBOARD_PASSWORD='' \
 	GATEWAY_DOMAIN='api.example.com' \
 	SITE_DOMAIN='example.com' \
 	ACME_EMAIL='ops@example.com' \
