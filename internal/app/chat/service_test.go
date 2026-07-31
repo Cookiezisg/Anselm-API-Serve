@@ -719,15 +719,15 @@ func TestClientFacingModelIsPublicAcrossProvidersAndResponseModes(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			var upstreamBody, wantClientBody string
 			if tc.stream {
-				upstreamBody = `data: {"id":"chunk-1", "model": "` + tc.upstreamModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+				upstreamBody = `data: {"id":"chunk-1", "model" : "` + tc.upstreamModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
 					`data: {"model":"` + tc.upstreamModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
 					"data: [DONE]\n"
-				wantClientBody = `data: {"id":"chunk-1", "model": "` + publicModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
+				wantClientBody = `data: {"id":"chunk-1", "model" : "` + publicModel + `","choices":[{"delta":{"tool_calls":[{"id":"call_1"}]}}]}` + "\n" +
 					`data: {"model":"` + publicModel + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n" +
 					"data: [DONE]\n"
 			} else {
-				upstreamBody = `{"id":"cmpl-1", "model": "` + tc.upstreamModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
-				wantClientBody = `{"id":"cmpl-1", "model": "` + publicModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+				upstreamBody = `{"id":"cmpl-1", "model" : "` + tc.upstreamModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
+				wantClientBody = `{"id":"cmpl-1", "model" : "` + publicModel + `","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
 			}
 
 			cfg := testCfg()

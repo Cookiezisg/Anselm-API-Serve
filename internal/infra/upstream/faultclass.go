@@ -17,10 +17,10 @@ import (
 // other site re-derives the class (ADR-011).
 //
 // Each class carries the four orthogonal decisions a caller needs:
-// - apiErr: normalized client-facing error (never the upstream body)
-// - retryable: retry pre-output? (only definitely-unbilled per-key signals)
-// - breakerFlt: count toward the PROCESS-wide breaker? (only genuine faults)
-// - exposure: may the provider have charged? (independent of fault health)
+//   - apiErr:     normalized client-facing error (never the upstream body)
+//   - retryable:  retry pre-output? (only definitely-unbilled per-key signals)
+//   - breakerFlt: count toward the PROCESS-wide breaker? (only genuine faults)
+//   - exposure:   may the provider have charged? (independent of fault health)
 type faultClass int
 
 const (

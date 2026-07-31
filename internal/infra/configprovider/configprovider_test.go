@@ -196,7 +196,7 @@ func TestLoadBaseInputTokenCapZeroCompatibilityValue(t *testing.T) {
 func TestLoadBaseTrimsBaseURLAndKeys(t *testing.T) {
 	env := minimalEnv()
 	env["DASHSCOPE_BASE_URL"] = "https://x.example/"
-	env["DASHSCOPE_API_KEY"] = " sk-1,, sk-2 "
+	env["DASHSCOPE_API_KEY"] = " sk-1 , , sk-2 "
 	c := mustLoad(t, env)
 	if c.QwenBaseURL != "https://x.example" {
 		t.Fatalf("base url not trimmed: %q", c.QwenBaseURL)
@@ -219,7 +219,7 @@ func TestLoadBaseQwenKeyIsRequiredAndWorkspaceDerived(t *testing.T) {
 	if _, err := LoadBase(envMap(env)); !errors.Is(err, ErrQwenKeyRequired) {
 		t.Fatalf("a deployment with no Qwen key must refuse to start, got %v", err)
 	}
-	env["DASHSCOPE_API_KEY"] = " qwen-a,,qwen-b "
+	env["DASHSCOPE_API_KEY"] = " qwen-a, ,qwen-b "
 	env["DASHSCOPE_WORKSPACE_ID"] = "ws_test-1"
 	c := mustLoad(t, env)
 	if len(c.QwenAPIKeys) != 2 || c.QwenAPIKeys[1] != "qwen-b" {
@@ -242,7 +242,7 @@ func TestLoadBaseFailFast(t *testing.T) {
 		// 凭证是启动门禁,因为**每一条**路由都要它:没有它的网关什么也答不了,故必须在**启动时**
 		// 失败,而不是每个请求失败一次。
 		{"missing Qwen key", func(m map[string]string) { delete(m, "DASHSCOPE_API_KEY") }, ErrQwenKeyRequired, ""},
-		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = ", " }, ErrQwenKeyRequired, ""},
+		{"blank Qwen key", func(m map[string]string) { m["DASHSCOPE_API_KEY"] = "  , " }, ErrQwenKeyRequired, ""},
 		{"DashScope base URL userinfo", func(m map[string]string) { m["DASHSCOPE_BASE_URL"] = "https://secret@example.com/compatible-mode/v1" }, nil, "absolute HTTPS base URL"},
 		{"Qwen key needs endpoint", func(m map[string]string) { delete(m, "DASHSCOPE_WORKSPACE_ID") }, nil, "DASHSCOPE_API_KEY requires"},
 		{"invalid workspace id", func(m map[string]string) { m["DASHSCOPE_WORKSPACE_ID"] = "bad.example" }, nil, "DASHSCOPE_WORKSPACE_ID"},
@@ -643,7 +643,7 @@ func TestProviderDebugMasksLoadButNotConfigured(t *testing.T) {
 	if eff.MonthlyQuota != config.MaxMonthlyQuota {
 		t.Fatalf("debug MonthlyQuota = %d, want ceiling", eff.MonthlyQuota)
 	}
-	//...while the operator's real numbers survive untouched behind it.
+	// ...while the operator's real numbers survive untouched behind it.
 	cfgd := p.Configured()
 	if cfgd.RatePerMin != 8 || cfgd.DailySublimit != 100 || cfgd.MonthlyQuota != 5000 {
 		t.Fatalf("configured values corrupted by the mask: %+v", cfgd)
@@ -689,7 +689,7 @@ func TestHotFlipToProductionArmsConfiguredValuesAndBack(t *testing.T) {
 		t.Fatalf("mode not persisted: %v", ss.data)
 	}
 
-	//...and back, still without losing anything.
+	// ...and back, still without losing anything.
 	if _, err := p.ApplyOverrides(context.Background(),
 		map[string]string{"GATEWAY_MODE": "debug"}, ss); err != nil {
 		t.Fatalf("flip back to debug: %v", err)

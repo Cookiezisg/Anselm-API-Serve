@@ -1,7 +1,7 @@
 //go:build integration
 
 // Package e2e is the black-box, full-stack integration harness for the clean-arch
-// gateway. It stands up the REAL:8080 business handler (router.BuildHandler =
+// gateway. It stands up the REAL :8080 business handler (router.BuildHandler =
 // Recover→DenyCORS→MaxBody→ServeMux) over httptest.NewServer, wires it to the SAME
 // app services (app/quota, app/install, app/chat, app/model) over the SAME infra
 // (sqlite in t.TempDir, the real upstream client pointed at a fake upstream
@@ -409,11 +409,11 @@ func fakeChatUpstream(t *testing.T) (*httptest.Server, func() (auth, body string
 }
 
 // fakeChatUpstreamNonStream is a NON-streaming upstream (stream:false path). Modes:
-// - "ok": a complete OpenAI JSON body with usage.total_tokens=usageTokens
-// - "truncate": 2xx headers + a Content-Length larger than the bytes actually
-// written, then the conn is hijacked & closed mid-body so the gateway's bounded
-// ReadAll of the upstream body errors AFTER output is committed (exercises
-// nonStreamThrough's post-output error branch that must still full-settle).
+//   - "ok":       a complete OpenAI JSON body with usage.total_tokens=usageTokens
+//   - "truncate": 2xx headers + a Content-Length larger than the bytes actually
+//     written, then the conn is hijacked & closed mid-body so the gateway's bounded
+//     ReadAll of the upstream body errors AFTER output is committed (exercises
+//     nonStreamThrough's post-output error branch that must still full-settle).
 func fakeChatUpstreamNonStream(t *testing.T, mode string, usageTokens int64) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -877,10 +877,10 @@ func TestE2EDangerFieldsStripped(t *testing.T) {
 
 // TestE2ENonStreamRelayAndSettle drives the stream:false path (reachable: the
 // whitelist forwards `stream`) end to end through the real stack:
-// - (a) the 2xx JSON body is relayed with only model rewritten to PUBLIC_MODEL_ID
-// (all completion fields preserved; upstream Set-Cookie stripped)
-// - (b) settlement prices the ACTUAL structured usage under the frozen rate
-// card, rather than retaining the pessimistic reservation quote.
+//   - (a) the 2xx JSON body is relayed with only model rewritten to PUBLIC_MODEL_ID
+//     (all completion fields preserved; upstream Set-Cookie stripped)
+//   - (b) settlement prices the ACTUAL structured usage under the frozen rate
+//     card, rather than retaining the pessimistic reservation quote.
 func TestE2ENonStreamRelayAndSettle(t *testing.T) {
 	const actualTokens = 11
 	up := fakeChatUpstreamNonStream(t, "ok", actualTokens)
@@ -1242,13 +1242,13 @@ func TestE2EBudgetExhaustion(t *testing.T) {
 
 // TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed: an OpenAI-compatible 400
 // (context overflow) end to end through the real stack —
-// - (a) the client receives 400 UPSTREAM_REJECTED with details.reason ==
-// "context_length" (the coarse enum; the upstream text never passes through)
-// - (b) the reservation is rolled back: the shared daily spend returns to 0
-// (reserve committed BEFORE the upstream call, so 0 proves the rollback landed)
-// - (c) rejections are NON-fault (ADR-011): even past the breaker's
-// 5-consecutive-failure threshold, a follow-up request still reaches upstream
-// and succeeds, settling to its ACTUAL usage only.
+//   - (a) the client receives 400 UPSTREAM_REJECTED with details.reason ==
+//     "context_length" (the coarse enum; the upstream text never passes through)
+//   - (b) the reservation is rolled back: the shared daily spend returns to 0
+//     (reserve committed BEFORE the upstream call, so 0 proves the rollback landed)
+//   - (c) rejections are NON-fault (ADR-011): even past the breaker's
+//     5-consecutive-failure threshold, a follow-up request still reaches upstream
+//     and succeeds, settling to its ACTUAL usage only.
 func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	const rejectN = 6 // past the breaker's 5-consecutive threshold
 	const rejectionBody = `{"error":{"message":"This model's maximum context length is 131072 tokens. ` +
@@ -1337,7 +1337,7 @@ func TestE2EUpstreamRejectedRollsBackAndKeepsBreakerClosed(t *testing.T) {
 	if got := calls.Load(); got != rejectN+1 {
 		t.Fatalf("upstream calls = %d want %d (rejections never retried, follow-up not shed)", got, rejectN+1)
 	}
-	//...and settles to its ACTUAL priced usage only — the sole wallet spend.
+	// ...and settles to its ACTUAL priced usage only — the sole wallet spend.
 	wantSpend := qwenCostPUSD(t, 3, 8)
 	if got := waitGlobalSpend(t, s, wantSpend); got != wantSpend {
 		t.Fatalf("spend after success = %d pUSD want %d pUSD", got, wantSpend)
@@ -1371,9 +1371,9 @@ func TestE2ECORSPreflightForbidden(t *testing.T) {
 }
 
 // TestE2EMethodAndRouteErrors: ServeMux method/route handling end to end —
-// - GET on the POST-only chat route → 405 (mux method mismatch)
-// - unknown path → 404
-// - GET /healthz → 200 (liveness, the only public health surface) + X-Request-ID
+//   - GET on the POST-only chat route → 405 (mux method mismatch)
+//   - unknown path → 404
+//   - GET /healthz → 200 (liveness, the only public health surface) + X-Request-ID
 func TestE2EMethodAndRouteErrors(t *testing.T) {
 	up, _ := fakeChatUpstream(t)
 	s := buildStack(t, up.URL)

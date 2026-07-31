@@ -2,15 +2,15 @@
 #
 # Clean-checkout PR gate:每个 job 都从干净 checkout 起跑,在 PR 上必过、push main 复跑、
 # 并按 schedule 周期重扫漏洞(新 CVE 可能命中既有依赖,故定时而非只在改动时扫)。门项:
-# - golangci-lint v2.6.1(repo.golangci.yml:errcheck/staticcheck/gosec/govet/...+depguard 分层门)
-# - govulncheck(Go 漏洞数据库)
-# - gofmt -l 零漂移 + go mod verify(校验和未被篡改)+ go vet
-# - go test -race -cover + 钱相关包覆盖率地板(app/quota>=70% app/chat>=65%)
-# - integration e2e(-tags=integration./internal/e2e/...)
-# - fuzz smoke 30s/个(domain/chat + pkg/clientip + pkg/pow 的公网解析面)
-# - SBOM(anchore/syft,SPDX JSON)
-# - frontend drift-guard:npm ci + npm run build + git diff --exit-code(证明已提交的
-# dist 与源同步,修 B0;dist 由 Go embed 进二进制,部署不跑 Node)
+#   - golangci-lint v2.6.1(repo .golangci.yml:errcheck/staticcheck/gosec/govet/...+depguard 分层门)
+#   - govulncheck(Go 漏洞数据库)
+#   - gofmt -l 零漂移 + go mod verify(校验和未被篡改)+ go vet
+#   - go test -race -cover + 钱相关包覆盖率地板(app/quota>=70% app/chat>=65%)
+#   - integration e2e(-tags=integration ./internal/e2e/...)
+#   - fuzz smoke 30s/个(domain/chat + pkg/clientip + pkg/pow 的公网解析面)
+#   - SBOM(anchore/syft,SPDX JSON)
+#   - frontend drift-guard:npm ci + npm run build + git diff --exit-code(证明已提交的
+#     dist 与源同步,修 B0;dist 由 Go embed 进二进制,部署不跑 Node)
 #
 # Actions 全部钉 40 位 commit SHA(供应链加固),行尾注释对应 tag。最小权限 contents:read。
 
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-      - name: golangci-lint (repo.golangci.yml incl depguard arch门)
+      - name: golangci-lint (repo .golangci.yml incl depguard arch门)
         uses: golangci/golangci-lint-action@0a35821d5c230e903fcfe077583637dea1b27b47 # v9.0.0
         with:
           version: v2.6.1
@@ -61,14 +61,14 @@ jobs:
       - name: gofmt (no diff)
         run: |
           # gofmt -l lists files that are NOT formatted; any output → fail.
-          out="$(gofmt -l.)"
+          out="$(gofmt -l .)"
           if [ -n "$out" ]; then
             echo "::error::gofmt would reformat:"; echo "$out"; exit 1
           fi
       - name: go mod verify
         run: go mod verify
       - name: go vet
-        run: go vet./...
+        run: go vet ./...
 
   # SBOM: emit a Software Bill of Materials (SPDX JSON) for the whole Go module via
   # anchore/syft and archive it. When a new CVE lands against a dependency, the SBOM
@@ -80,7 +80,7 @@ jobs:
       - name: generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          path:.
+          path: .
           format: spdx-json
           artifact-name: anselm-gateway-sbom.spdx.json
 
@@ -92,7 +92,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: test (race + coverage)
-        run: go test -race -count=1 -coverprofile=cover.out -covermode=atomic./...
+        run: go test -race -count=1 -coverprofile=cover.out -covermode=atomic ./...
       - name: integration e2e (real http stack, build tag)
         # Full-stack black-box behind the `integration` build tag so it never runs
         # in the plain unit pass. Skip cleanly until the e2e package lands so the
@@ -100,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d internal/e2e ]; then
-            go test -tags=integration -race -count=1./internal/e2e/...
+            go test -tags=integration -race -count=1 ./internal/e2e/...
           else
             echo "internal/e2e absent — skipping integration e2e"
           fi
@@ -111,9 +111,9 @@ jobs:
         # panics/regressions, not an exhaustive search.
         run: |
           set -euo pipefail
-          go test -run '^$' -fuzz '^FuzzDecodeInbound$' -fuzztime=30s./internal/domain/chat/
-          go test -run '^$' -fuzz '^FuzzIPKey$' -fuzztime=30s./internal/pkg/clientip/
-          go test -run '^$' -fuzz '^FuzzVerify$' -fuzztime=30s./internal/pkg/pow/
+          go test -run '^$' -fuzz '^FuzzDecodeInbound$' -fuzztime=30s ./internal/domain/chat/
+          go test -run '^$' -fuzz '^FuzzIPKey$'        -fuzztime=30s ./internal/pkg/clientip/
+          go test -run '^$' -fuzz '^FuzzVerify$'       -fuzztime=30s ./internal/pkg/pow/
       - name: coverage thresholds (money packages)
         run: |
           # Gate the two correctness-critical money packages (quota = accounting,
@@ -127,25 +127,25 @@ jobs:
               | sed -nE 's/.*coverage: ([0-9.]+)% of statements.*/\1/p')"
             [ -n "$pct" ] || { echo "::error::could not read coverage for ${pkg}"; exit 1; }
             echo "coverage ${pkg} = ${pct}% (min ${min}%)"
-            awk -v c="$pct" -v m="$min" 'BEGIN { exit (c+0 >= m+0) ? 0: 1 }' \
+            awk -v c="$pct" -v m="$min" 'BEGIN { exit (c+0 >= m+0) ? 0 : 1 }' \
               || { echo "::error::${pkg} coverage ${pct}% below ${min}%"; exit 1; }
           }
-          check./internal/app/quota/... 70
-          check./internal/app/chat/... 65
+          check ./internal/app/quota/... 70
+          check ./internal/app/chat/...  65
           # The three generation capabilities spend money on the same wallet and
           # each owns its own reserve/settle/rollback decision, so they are money
           # packages too. domain/video is here because a bug in the
           # handle signature is an AUTHORIZATION bug, not a billing one — it would
           # let one install read another's video.
-          check./internal/app/image/... 70
-          check./internal/app/tts/... 70
-          check./internal/app/video/... 70
-          check./internal/domain/video/... 90
+          check ./internal/app/image/...   70
+          check ./internal/app/tts/...     70
+          check ./internal/app/video/...   70
+          check ./internal/domain/video/... 90
           # app/voice spends money too, and unlike the other three what it buys PERSISTS: an
           # enrollment leaves a registration in our own provider account that outlives the request
           # and can only be removed by an explicit delete. A stripped test here would let the
           # order-and-rollback argument — the entire correctness of the package — rot silently.
-          check./internal/app/voice/... 70
+          check ./internal/app/voice/...   70
 
   # Frontend drift-guard: the dashboard SPA dist is committed under
   # internal/infra/webassets/ui/dist and Go-embedded into the binary, so deploy

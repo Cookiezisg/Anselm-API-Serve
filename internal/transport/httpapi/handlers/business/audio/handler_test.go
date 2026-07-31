@@ -120,7 +120,7 @@ func TestHandler_ClosedShapeRejections(t *testing.T) {
 		"badJSON":        `{`,
 		"unknownField":   `{"input":"hi","speed":1.2}`,
 		"formatRejected": `{"input":"hi","format":"mp3"}`,
-		"emptyInput":     `{"input":" "}`,
+		"emptyInput":     `{"input":"   "}`,
 		"missingInput":   `{"voice":"longanhuan_v3.6"}`,
 		"oversizedInput": `{"input":"` + long + `"}`,
 		"oversizedVoice": `{"input":"hi","voice":"` + strings.Repeat("v", maxVoiceChars+1) + `"}`,

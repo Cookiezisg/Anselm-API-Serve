@@ -1,7 +1,7 @@
 // Package router assembles the single public business HTTP handler: the Go 1.22
 // method+path ServeMux route table (install / challenge / chat / quota / models /
 // healthz) wrapped by the shared middleware chain exactly as the gateway serves
-// it. It is the ONE source of truth for the:8080 stack so main and the e2e
+// it. It is the ONE source of truth for the :8080 stack so main and the e2e
 // harness exercise IDENTICAL routing + middleware ordering — no hand-copied twin
 // that can drift (测试装配漂移红线). Each business route (NOT /healthz) is wrapped
 // for HTTP RED (OBS-2) under a fixed low-cardinality label via the Wrapper port —

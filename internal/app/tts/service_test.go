@@ -136,7 +136,7 @@ func TestSynthesize_BillsRunesNotBytes(t *testing.T) {
 func TestSynthesize_DefaultVoiceFillsIn(t *testing.T) {
 	up := &fakeUpstream{audio: wantAudio}
 	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
-	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", " "); ae != nil {
+	if _, ae := svc.Synthesize(context.Background(), "ins_1", "hi", "  "); ae != nil {
 		t.Fatalf("synthesize: %v", ae)
 	}
 	if up.gotVoice != "longanhuan_v3.6" {

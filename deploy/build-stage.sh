@@ -25,7 +25,7 @@ valid_hostname() {
 	local value="$1" label
 	[[ ${#value} -ge 1 && ${#value} -le 253 ]] || return 1
 	[[ "${value}" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
-	[[ "${value}" !=.* && "${value}" != *. && "${value}" != *..* ]] || return 1
+	[[ "${value}" != .* && "${value}" != *. && "${value}" != *..* ]] || return 1
 	IFS=. read -r -a labels <<<"${value}"
 	for label in "${labels[@]}"; do
 		[[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
@@ -256,7 +256,7 @@ write_meta sha "${SHA}"
 
 (
 	cd "${STAGE}"
-	find. -type f ! -name manifest.sha256 -print0 |
+	find . -type f ! -name manifest.sha256 -print0 |
 		LC_ALL=C sort -z |
 		xargs -0 sha256sum >manifest.sha256
 )

@@ -59,9 +59,9 @@ type App struct {
 	cfg *configprovider.Provider
 	db  *sqlite.DB
 
-	bizSrv   *http.Server // business:8080
-	adminSrv *http.Server // admin/metrics:9090 (loopback-only)
-	dashSrv  *http.Server // dashboard:8081 (loopback-only; always mounted)
+	bizSrv   *http.Server // business :8080
+	adminSrv *http.Server // admin/metrics :9090 (loopback-only)
+	dashSrv  *http.Server // dashboard :8081 (loopback-only; always mounted)
 
 	bgWG       *sync.WaitGroup
 	loopCtx    context.Context

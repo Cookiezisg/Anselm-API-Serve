@@ -19,11 +19,11 @@ import (
 // model id and rejects data URLs outright. Mock tests were green throughout — the whole contract
 // was fiction. What the endpoint actually serves (真机实测 2026-07-28):
 //
-//	model voice-enrollment
-//	action create_voice / query_voice / delete_voice (`create`/`delete` → "invalid action")
-//	input url — a PUBLICLY FETCHABLE address. A data: URL makes it run ASR on the literal
+//	model   voice-enrollment
+//	action  create_voice / query_voice / delete_voice   (`create`/`delete` → "invalid action")
+//	input   url  — a PUBLICLY FETCHABLE address. A data: URL makes it run ASR on the literal
 //	             string and 500. There is no base64 path at all.
-//	async create_voice returns immediately with a voice_id in status DEPLOYING; it is not usable
+//	async   create_voice returns immediately with a voice_id in status DEPLOYING; it is not usable
 //	             until query_voice reports OK.
 //
 // **The user's name never reaches the upstream.** `create_voice` takes a `prefix` (a namespace the
@@ -37,11 +37,11 @@ import (
 // `Model not exist.`,并且**直接拒绝** data URL。而 mock 测试全程是绿的——整份契约是虚构的。
 // 端点真正提供的(真机实测 2026-07-28):
 //
-//	model voice-enrollment
-//	action create_voice / query_voice / delete_voice (`create`/`delete` → "invalid action")
-//	input url —— 一个**公网可取**的地址。data: URL 会让它把那串字面量拿去跑 ASR 然后 500。
+//	model   voice-enrollment
+//	action  create_voice / query_voice / delete_voice  (`create`/`delete` → "invalid action")
+//	input   url —— 一个**公网可取**的地址。data: URL 会让它把那串字面量拿去跑 ASR 然后 500。
 //	             **根本没有 base64 这条路。**
-//	async create_voice 立刻返回一个状态为 DEPLOYING 的 voice_id;在 query_voice 报 OK 之前不可用。
+//	async   create_voice 立刻返回一个状态为 DEPLOYING 的 voice_id;在 query_voice 报 OK 之前不可用。
 //
 // **用户起的名字永远不上游。** `create_voice` 收的是 `prefix`(供应商拼在它铸出的 id 前面的命名空间),
 // 不是名字。我们的名字住在我们自己的表里;把它发上去等于把用户的措辞白白泄进一个共享的 provider

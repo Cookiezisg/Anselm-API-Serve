@@ -291,7 +291,7 @@ func (s *Store) Settle(ctx context.Context, r *quota.Reservation, actualPUSD int
 }
 
 // Rollback exactly reverses every reservation for a definitely non-billable
-// pre-output failure. No MAX(0,...) is used: missing rows or underflow are
+// pre-output failure. No MAX(0, ...) is used: missing rows or underflow are
 // accounting corruption and roll the entire transaction back, including CAS.
 func (s *Store) Rollback(ctx context.Context, r *quota.Reservation) error {
 	if err := validateReservation(r); err != nil {

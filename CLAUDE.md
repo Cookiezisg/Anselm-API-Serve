@@ -5,20 +5,20 @@
 
 ## 0. 项目一句话
 
-`github.com/sunweilin/anselm/gateway`：纯 Go + SQLite(WAL) 单二进制**确定性 capability 薄网关**，给 Anselm(Flutter)客户端一个 provider-neutral 逻辑模型：**文本与多模态同走 Qwen3.7 Plus**，由内容形状决定的是**能力**（媒体额外需要上传/lease 通道）而非 provider；无语义分级、无 fallback。key 只在服务端。项目尚未上线。心智模型见 [`docs/concepts/architecture.md`](docs/concepts/architecture.md)，硬契约见 [`docs/references/backend/`](docs/references/backend/)。
+`github.com/sunweilin/anselm/gateway`：纯 Go + SQLite(WAL) 单二进制**确定性 capability 薄网关**，给 Anselm(Flutter)客户端一个 provider-neutral 逻辑模型：**文本与多模态同走 Qwen3.7 Plus**，由内容形状决定的是**能力**（媒体额外需要上传/lease 通道）而非 provider；无语义分级、无 fallback。chat 之外另有**四条付费生成能力**（图像 / 语音合成 / 视频 / 克隆音色，共 6 条端点），它们共用 `app/genrun` 的一份钱骨架、同一个 pUSD 钱包与各自的品类日闸。key 只在服务端。项目尚未上线。心智模型见 [`docs/concepts/architecture.md`](docs/concepts/architecture.md)，硬契约见 [`docs/references/backend/`](docs/references/backend/)。
 
 ## 1. 三条工程铁律(违反 = 严重 Bug，与编译失败同级)
 
 1. **正确性 > 架构纯度 > 速度**。这是花 operator 真钱的网关:记账永不超卖、崩溃只多扣不少扣、key 永不出端、admin 面绝不公网。不变式登记册 [`docs/references/backend/invariants.md`](docs/references/backend/invariants.md)(GW-INV-NN)是一切改动的**验收准绳**——动代码前先看它要守哪几条。
 2. **文档与代码物理同步**(doc-code parity):碰了 GOVERNANCE §7 触发表里的东西(API/config/DB/error-code/不变量/行为/provider·rate-card·pUSD 账务/ADR/前端 wire)却没在**同一提交**同步对应文档 → 改动**未完成**。
-3. **每片绿了再下一片**:`go build./... && go vet./... && gofmt -l(空) && go test -race./...` 全绿 + 相关 GW-INV 验收过，才算完成。
+3. **每片绿了再下一片**:`go build ./... && go vet ./... && gofmt -l(空) && go test -race ./...` 全绿 + 相关 GW-INV 验收过，才算完成。
 
-## 2. 依赖方向铁律(import-lint 强制，见 architecture §3 +.golangci.yml depguard)
+## 2. 依赖方向铁律(import-lint 强制，见 architecture §3 + .golangci.yml depguard)
 
 ```
 cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
                  └─▶ infra ───────────────▶ domain
-        transport, app, infra, domain ─▶ pkg
+        transport, app, infra, domain  ─▶ pkg
 ```
 - `domain` 只依赖 stdlib + pkg;`app` 在本包声明 infra 端口(interface)，**禁** import infra/`database/sql`/HTTP server;`infra` 结构化满足端口、唯一碰 OS/DB/网络;`bootstrap` 唯一可跨全层、**无人 import 它**;`pkg` 叶内核谁都不依赖。
 - **事务聚合**(quota/install):事务边界 owned 在 `infra/store/*`(`orm.DB.Transaction`/`BEGIN IMMEDIATE`)，app 端口只暴露**一个原子聚合操作**，`*sql.Tx` 永不漏出 infra。
@@ -39,9 +39,9 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 ## 5. 门禁命令
 
 ```sh
-make verify # vet + build + test -race + e2e(-tags=integration)+ lint + docs(本地门禁,与 CI 同一套规则)
-make docs # cmd/docs:frontmatter/类型·状态·目录/review-due/INDEX≤50/孤儿链接/working 90 天
-make lint # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
+make verify   # vet + build + test -race + e2e(-tags=integration)+ lint + docs(本地门禁,与 CI 同一套规则)
+make docs     # cmd/docs:frontmatter/类型·状态·目录/review-due/INDEX≤50/孤儿链接/working 90 天
+make lint     # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
 ```
 提交前:`gofmt -l`(空)+ build/vet/test-race 绿 + GOVERNANCE §12 收尾清单逐条勾。CI(`.github/workflows/ci.yml`)另跑 go mod verify / govulncheck / integration e2e / fuzz smoke / SBOM / 前端漂移门 / 覆盖率地板(quota ≥70%、chat ≥65%)。
 
@@ -50,5 +50,5 @@ make lint # golangci-lint v2.6.1(errcheck/staticcheck/gosec/govet/depguard/...)
 - 仓库:`<repo>` · 分支 `main`(线上 lineage)
 - 入口:`cmd/gateway`(瘦壳)→ `internal/bootstrap`(组合根) · 三监听器:业务 8080(公网/socket-activated)· admin 9090(loopback)· dashboard 8081(loopback)
 - 路由:`PUBLIC_MODEL_ID`(默认 `anselm-auto`)· text 与 image/video 同为 `qwen3.7-plus`（1M input / 64K output、thinking-on）· audio=协议已知但当前 `AUDIO_UNAVAILABLE`· no fallback
-- SQLite:0001..0007 七个迁移;应用表含 identity/config、pUSD 账本、媒体 staging/lease、品类日账本与音色库存,外加 `schema_migrations`。v1 accounting 三表仅读保留(阶段 4 压平时移除)。
+- SQLite:**单个 `0001_init.sql`**(已压平,无 baseline 需求故不用 `IF NOT EXISTS`);15 张应用表含 identity/config、pUSD 账本、媒体 staging/lease、品类日账本与音色库存,外加 `schema_migrations`。schema 由 golden 测试逐字钉死——比对的是 SQLite **建出来**的结构,不是我们写的那份 SQL。
 - Go:`mise which go`(1.25) · 文档体系:[`docs/INDEX.md`](docs/INDEX.md)(会话入口)
