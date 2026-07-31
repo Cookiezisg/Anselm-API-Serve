@@ -60,21 +60,25 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 
 `cmd/gateway` 只调用 bootstrap。依赖方向由 depguard 强制；事务只暴露聚合 port，`*sql.Tx` 不穿过 infra 边界。
 
-## 3. 双 provider 是两个故障域
+## 3. 一个 provider,但故障域的形状仍然是「按账号隔离」
 
 bootstrap 固定构造：
 
 ```text
-chatprovider.Registry（按 provider 建键;今天恰好只有一个成员）
+chatprovider.Registry（按 provider 建键;今天只有一个成员）
 └── Qwen Backend（DASHSCOPE_API_KEY + endpoint/workspace 启动必需）
     ├── endpoint + key pool（构造期冻结,请求改不了它的去向）
     ├── per-key breaker/cooldown
     └── process breaker
 ```
 
-唯一 `N_GLOBAL_CONCURRENCY` 总信号量界住全部在飞;而任何两个 backend 都不共享 endpoint、key、breaker、provider 扩展或账单身份。故一个账号的故障熔断不了另一个,换 key/retry 也不会放大总在飞。
+**收敛到一家的代价必须写下来**：一次上游故障现在带走**整个 chat 面**，而不是只损失多模态。这不是 bug，是收敛换来的（GW-INV-54）。
+
+隔离的**形状**仍然保留，因为它守的不是「有几家」而是「一个账号的故障不能污染另一个」：任何两个 backend 都不共享 endpoint、key、breaker、provider 扩展或账单身份，唯一 `N_GLOBAL_CONCURRENCY` 总信号量界住全部在飞。故换 key/retry 不会放大总在飞。
 
 Registry 没有 fallback API。billing Plan 冻结之后再换 provider 会同时破坏能力、认证、价格与审计，因此从类型/装配上禁止;registry 按 provider 建键、未知值失败关闭,故将来接第二个账号是加一个 map 条目、不是在每个调用方加分支。adapter 固定注入 `enable_thinking=true`,并剥离历史 `reasoning_content`(provider 私有,回传即再计费)。
+
+四条**付费生成能力**不走这个 registry：它们各自持一个原生 DashScope client（`infra/upstream` 的 `nativeClient`，同一把 key、同一个 origin、**无 failover 池**——单次确定性预留必须对应单次上游尝试），钱那一半共用 `app/genrun`。
 
 Qwen key 是启动必需(每一条路由都要它)。readiness 每 30s 缓存一次无推理费用的认证 `/models` 结果：那个固定模型必须通过。它不为每个请求现场探测 provider。
 
