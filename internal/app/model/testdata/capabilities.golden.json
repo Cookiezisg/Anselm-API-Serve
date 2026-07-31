@@ -1,0 +1,36 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "anselm-auto",
+      "object": "model",
+      "owned_by": "anselm-gateway",
+      "anselm_capabilities": {
+        "version": 1,
+        "routing": "content",
+        "text": {
+          "input_limit": 1000000,
+          "output_limit": 16384,
+          "available": true
+        },
+        "multimodal": {
+          "input_limit": 1000000,
+          "output_limit": 16384,
+          "available": true
+        },
+        "image_generation": {
+          "available": true,
+          "daily_limit": 10
+        },
+        "speech_generation": {
+          "available": true,
+          "daily_limit": 50000
+        },
+        "video_generation": {
+          "available": true,
+          "daily_limit": 10
+        }
+      }
+    }
+  ]
+}

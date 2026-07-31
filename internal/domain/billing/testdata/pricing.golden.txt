@@ -1,0 +1,37 @@
+# Pricing golden table — every quote and settlement in pUSD (1 USD = 10^12 pUSD).
+# Regenerate deliberately: go test ./internal/domain/billing -run TestPricingMatchesGolden -update-golden
+
+## token path (chat)
+model=qwen3.7-plus
+small request                      prompt=100       output=20     reserved=192000000            settled=176000000            refundable=true
+small request, cache hit           prompt=100       output=20     reserved=192000000            settled=73600000             refundable=true
+at the 256K tier boundary          prompt=256000    output=1      reserved=409601600000         settled=409760000000         refundable=true
+one token past the boundary        prompt=256001    output=1      reserved=1228809600000        settled=1229284800000        refundable=true
+full hard-limit reservation        prompt=1000000   output=65536  reserved=5114572800000        settled=4804800000000        refundable=true
+reasoning beyond visible completion prompt=1000      output=100    reserved=1760000000           settled=2400000000           refundable=true
+
+## unit paths (generation capabilities)
+
+audio-seconds (realtime ASR)  model=qwen3-asr-flash-realtime class=1
+  units=1        reserved=90000000             settled=90000000             card=qwen3-asr-flash-realtime-sg-2026-07-24
+  units=30       reserved=2700000000           settled=2700000000           card=qwen3-asr-flash-realtime-sg-2026-07-24
+  units=120      reserved=10800000000          settled=10800000000          card=qwen3-asr-flash-realtime-sg-2026-07-24
+
+images  model=qwen-image-2.0 class=2
+  units=1        reserved=35000000000          settled=35000000000          card=qwen-image-2.0-assumed-2026-07-27
+  units=2        reserved=70000000000          settled=70000000000          card=qwen-image-2.0-assumed-2026-07-27
+  units=6        reserved=210000000000         settled=210000000000         card=qwen-image-2.0-assumed-2026-07-27
+
+characters (speech synthesis)  model=qwen-audio-3.0-tts-flash class=3
+  units=1        reserved=14000000             settled=14000000             card=qwen-audio-3.0-tts-flash-assumed-2026-07-28
+  units=1000     reserved=14000000000          settled=14000000000          card=qwen-audio-3.0-tts-flash-assumed-2026-07-28
+  units=4000     reserved=56000000000          settled=56000000000          card=qwen-audio-3.0-tts-flash-assumed-2026-07-28
+
+video-seconds  model=wan2.7-t2v class=4
+  units=1        reserved=83000000000          settled=83000000000          card=wan2.7-t2v-assumed-2026-07-27
+  units=5        reserved=415000000000         settled=415000000000         card=wan2.7-t2v-assumed-2026-07-27
+  units=15       reserved=1245000000000        settled=1245000000000        card=wan2.7-t2v-assumed-2026-07-27
+
+voices (clone enrollment)  model=qwen-tts-clone class=5
+  units=1        reserved=200000000000         settled=200000000000         card=qwen-tts-clone-2026-07-28
+  units=2        reserved=400000000000         settled=400000000000         card=qwen-tts-clone-2026-07-28

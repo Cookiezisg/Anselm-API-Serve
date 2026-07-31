@@ -1,0 +1,52 @@
+# Wire error envelope — status + code + message, frozen.
+# Regenerate deliberately: go test ./internal/domain/apierr -run TestErrorEnvelopeMatchesGolden -update-golden
+
+ErrAccountBanned             403 ACCOUNT_BANNED             this install has been disabled
+ErrAudioUnavailable          503 AUDIO_UNAVAILABLE          audio input is not available on this deployment
+ErrBadRequest                400 BAD_REQUEST                invalid request body
+ErrBudgetExhausted           402 BUDGET_EXHAUSTED           daily service budget reached, try again tomorrow
+ErrDeviceProofInvalid        401 DEVICE_PROOF_INVALID       device proof is invalid
+ErrDeviceProofNonceInvalid   401 DEVICE_PROOF_NONCE_INVALID device proof challenge expired; fetch a fresh challenge
+ErrDeviceProofReplayed       409 DEVICE_PROOF_REPLAYED      device proof was already used
+ErrDeviceProofRequired       401 DEVICE_PROOF_REQUIRED      device proof is required
+ErrDiskLow                   503 DISK_LOW                   service temporarily read-only: low disk space
+ErrImageQuotaExhausted       429 IMAGE_QUOTA_EXHAUSTED      daily image generation quota reached, try again tomorrow
+ErrImageSourceInvalid        400 IMAGE_SOURCE_INVALID       the edit source must be a base64 data URL, not an address
+ErrImageUnavailable          503 IMAGE_UNAVAILABLE          image generation is not available on this deployment
+ErrInstallCapReached         429 INSTALL_CAP_REACHED        install issuance is temporarily at capacity, retry later
+ErrInstallFPLimited          429 INSTALL_FP_LIMITED         too many installs for this client, retry later
+ErrInstallPoWInvalid         403 INSTALL_POW_INVALID        invalid proof-of-work: fetch a fresh challenge from GET /v1/install/challenge and retry
+ErrInstallPoWRequired        403 INSTALL_POW_REQUIRED       proof-of-work is required: solve GET /v1/install/challenge and resubmit with X-PoW
+ErrInstallRateLimited        429 INSTALL_RATE_LIMITED       too many installs from this address, retry later
+ErrInvalidInstall            401 INVALID_INSTALL            missing or invalid install id
+ErrMediaIntegrityFailed      422 MEDIA_INTEGRITY_FAILED     media upload failed integrity verification
+ErrMediaLeaseNotFound        404 MEDIA_LEASE_NOT_FOUND      media lease was not found
+ErrMediaUnavailable          503 MEDIA_UNAVAILABLE          durable media upload is not enabled on this deployment
+ErrMediaUploadConflict       409 MEDIA_UPLOAD_CONFLICT      media upload is not writable in its current state
+ErrMediaUploadInvalid        400 MEDIA_UPLOAD_INVALID       invalid media upload request
+ErrMediaUploadNotFound       404 MEDIA_UPLOAD_NOT_FOUND     media upload was not found
+ErrMultimodalUnavailable     503 MULTIMODAL_UNAVAILABLE     multimodal input is unavailable on this deployment
+ErrQuotaExhausted            429 QUOTA_EXHAUSTED            monthly free-tier quota exhausted
+ErrQuotaResetBusy            409 QUOTA_RESET_BUSY           quota reset is waiting for active requests to settle
+ErrRateLimited               429 RATE_LIMITED               rate or daily sub-limit exceeded
+ErrRequestBodyTooLarge       413 REQUEST_BODY_TOO_LARGE     request body exceeds the configured size limit
+ErrSpeechUnavailable         503 SPEECH_UNAVAILABLE         speech transcription is not available on this deployment
+ErrTTSQuotaExhausted         429 TTS_QUOTA_EXHAUSTED        daily speech synthesis quota reached, try again tomorrow
+ErrTTSUnavailable            503 TTS_UNAVAILABLE            speech synthesis is not available on this deployment
+ErrUpstreamBusy              429 UPSTREAM_BUSY              upstream capacity is busy, retry shortly
+ErrUpstreamError             502 UPSTREAM_ERROR             upstream model provider error
+ErrUpstreamTimeout           504 UPSTREAM_TIMEOUT           upstream model provider timeout
+ErrVideoFrameInvalid         400 VIDEO_FRAME_INVALID        the first frame must be a base64 data URL, not an address
+ErrVideoQuotaExhausted       429 VIDEO_QUOTA_EXHAUSTED      daily video generation quota reached, try again tomorrow
+ErrVideoTaskNotFound         404 VIDEO_TASK_NOT_FOUND       video task was not found
+ErrVideoUnavailable          503 VIDEO_UNAVAILABLE          video generation is not available on this deployment
+ErrVoiceCapacityReached      503 VOICE_CAPACITY_REACHED     the service cannot register new voices right now
+ErrVoiceInventoryFull        409 VOICE_INVENTORY_FULL       voice inventory is full — delete a voice to make room
+ErrVoiceNameTaken            409 VOICE_NAME_TAKEN           a voice with this name already exists — delete it first
+ErrVoiceNotFound             404 VOICE_NOT_FOUND            voice not found
+ErrVoiceQuotaExhausted       429 VOICE_QUOTA_EXHAUSTED      daily voice enrollment quota reached, try again tomorrow
+ErrVoiceSampleInvalid        400 VOICE_SAMPLE_INVALID       the voice sample must be a base64 data URL, not an address
+ErrVoiceUnavailable          503 VOICE_UNAVAILABLE          voice cloning is not available on this deployment
+
+# constructed
+Internal()                   500 INTERNAL                   internal error
