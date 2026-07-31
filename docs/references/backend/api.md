@@ -25,14 +25,14 @@ audience: [human, ai]
 | `POST /v1/chat/completions` | `chat_completions` | device proof | OpenAI-compatible chat；proof 绑定 exact body；按 content capability 确定性路由 |
 | `GET /v1/speech/asr` | `speech_asr` | device proof | Realtime speech-to-text WebSocket；binary PCM 输入，Qwen ASR 事件输出；proof 绑定空 GET body |
 | `GET /v1/quota` | `quota` | device proof | 裸 `{limit,used,remaining,resetAt,available}`；前三项是月请求次数，available 也折入 operator 月钱包 |
-| `POST /v1/images/generations` | `images_generate` | device proof | 同步图像生成:请求 `{model?,prompt,size?,n?}`——`model` 是逻辑别名不选上游、`prompt` 非空≤2000 字符、`size` 为 `WxH`(边 256–4096 且总像素 512²–2048²,默认 `1024x1024`)、`n` 缺席或恒 1,未知字段拒;响应 `{created,data:[{url}]}`——上游 24h OSS 产物 URL 直通(GW-INV-51);上游走原生 DashScope multimodal-generation 同步形;成功即按张 settle(GW-INV-50);拒绝码 `IMAGE_UNAVAILABLE`/`IMAGE_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
-| `POST /v1/images/edits` | `images_edit` | device proof | **改图**:请求 = generations 的形状 + **`image`**(必填,**base64 data URL**);其余每一道闸与 generations 共用(prompt ≤2000、size 包络、n=1、未知字段拒),因为一次改图**花的是一张图的钱、产出的也是一张图**。**`image` 必须是 `data:` 且不含 `://`**——这是 ADR 0011(桌面仓)那条形状约束在改图上的落点——本仓既有的 media 上传/内联转发同守它,**不是校验客套而是全部的 SSRF 缓解**:一个本网关会去取的地址是指向我们自己网络的原语(含 `169.254.169.254` 这类看起来最人畜无害的),而 data URL **取不了**——它就是字节。闸在 **service 层**、不在 handler:一条「只在某个调用方守规矩时才成立」的边界不是边界。上游 = 与出图**同一条** multimodal-generation 端点、多一个 image 块(官方文档核准),模型取 `IMAGE_UPSTREAM_MODEL`——**与出图同一个**:`qwen-image-2.0` 官方描述即「生成与编辑的融合」,两次真钱验证成立(2026-07-28,同模型先生成后改图、皆 200 出图);单独的 `qwen-image-edit*` 那几个 id **正在退役**,留着第二个配置项等于为模型原生就会做的事维护一个排期消失的 model id;按**图像**卡计价、走图像日额度、不开新品类;拒绝码 `IMAGE_SOURCE_INVALID`/`IMAGE_UNAVAILABLE`/`IMAGE_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
-| `POST /v1/audio/speech` | `audio_speech` | device proof | 同步语音合成(改走双工 WebSocket):请求 `{model?,input,voice?}`——`model` 是逻辑别名不选上游、`input` 非空≤500 **字符**(按 rune 计)、`voice` 缺席取 `TTS_DEFAULT_VOICE`(默认 `longanhuan_v3.6`,**属于模型**:qwen-audio-3.0 的音色带 `_v3.6` 后缀且**直接拒绝** qwen3-tts 那套名字,故留一个过期默认值会让每一次省略 voice 的合成都在上游失败),未知字段拒。**响应是裸 `audio/wav` 字节,不是 `{data:[{url}]}` 信封**——上游 `qwen-audio-3.0-tts-flash` **只**在 `api-ws/v1/inference` 双工上提供服务(两种 HTTP 形状都答 `url error`,真机实测),而双工流回来的是**帧、没有产物 URL 可直通**;见 [ADR 0018](../../decisions/0018-speech-raw-bytes-over-websocket.md)。选它是因为它是**唯一**既能用预置音色、又能用 `voice-enrollment` 铸出的克隆音色合成的模型,故「音色合成与普通语音走同一配额」是同一模型同一次调用这一物理事实、不是产品硬凑。计费判别按**有没有字节流出来**:`task-failed` 在任何音频之前=可证明未计费可回滚,一旦有字节即保留计费,空的 `task-finished` 按歧义保留(GW-INV-50)。拒绝码 `TTS_UNAVAILABLE`/`TTS_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
-| `POST /v1/videos/generations` | `videos_generate` | device proof | **异步**视频生成提交:请求 `{model?,prompt,seconds?,aspect?,resolution?}`——`model` 是逻辑别名不选上游、`prompt` 非空≤2000 字符、`seconds` 缺席=5 且必须落在 2–15、`aspect` ∈ `landscape`(默认)/`portrait`/`square`(线缆收**形状词**而非 `16:9`,故换一家比例不同的上游时客户端不必改)、`resolution` ∈ `720p`(默认)/`1080p`,未知字段拒;响应 **202** `{id,object:"video.generation",status:"pending",created}`——`id` 是**签名句柄**(见 §1.3),不是上游 task id;钱在**提交处**落定(见 §1.3 钱的形状);拒绝码 `VIDEO_UNAVAILABLE`/`VIDEO_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
-| `POST /v1/videos/animations` | `videos_animate` | device proof | **图生视频**:请求 = generations 的形状 + **`image`**(必填,**base64 data URL**,首帧)。每一道闸与 generations 共用(prompt 上限、**预留之前**就拒的时长窗、未知字段拒),因为一段动起来的片子**花的是视频的秒数、产出的也是视频**。**`image` 必须是 `data:` 且不含 `://`** —— 与改图同一条 SSRF 缓解、同一条边界(service 层),自己的码 `VIDEO_FRAME_INVALID` 而非复用 `IMAGE_SOURCE_INVALID`(一个在让图动起来的客户端被告知「**改图**的源无效」会去查错的请求)。**`aspect`/`resolution` 照常解析但**转发时整个丢弃**——片子继承首帧几何,转发我们的等于静默要求上游对用户刚递来的图做信箱边或裁切;仍解析故词表外的值依旧 400、不被静默忽略。上游 = 与出视频**同一对**提交/轮询端点、input 多一个 `img_url`(官方文档核准);按**秒**计价、走视频日额度、不开新品类;轮询与取回共用 `GET /v1/videos/{videoId}`(同一套签名句柄) |
-| `POST /v1/voices` | `voice_enroll` | device proof | **参考音色登记**:请求 `{name,leaseId}`——`name` 非空≤120 字符;**`leaseId` 指名一个本 install 已上传好的媒体 lease,绝不是地址**(ADR 0011 入站那半原样不动:调用方不能递给网关一个可取的东西)。样本走普通断点上传,故 30 秒的音频不必塞进 JSON body。**上游契约是真机实测出来的,与最初照猜的那份完全不同**:`model=voice-enrollment`、`action=create_voice/query_voice/delete_voice`、**只收公网可取 URL**(`data:` 会被拿去跑 ASR 然后 500)、**登记异步**(返回时状态 DEPLOYING,须轮询到 OK 才可用)、`target_model=qwen-audio-3.0-tts-flash`(必须与 TTS 路由真调的模型一致,否则不匹配**只在合成时**暴露、那时钱早花完)。用户起的名字**永不上游**——`create_voice` 收的是 `prefix` 命名空间,名字只住在我们表里。**出站那一跳**由网关把 lease 解析成**它自己的** `MEDIA_DOMAIN` 公开地址(ADR 0012 第 4 条为此留的门),上游取**一次**之后**立刻吊销该 lease**——那个 URL 是持有型凭据,撤销比缩短 TTL 紧且不依赖时钟。三道闸:逐 install 库存 2(`VOICE_INVENTORY_FULL`,补救是「删一个」)、账号级 `VOICE_ACCOUNT_CEILING`(满则拒 + WARN、绝不驱逐)、品类日闸 `VOICE_DAILY_LIMIT`(默认 2)。钱走与出图/语音/视频**同一个** pUSD 钱包(卡 `qwen-tts-clone-2026-07-28`,**非** assumed),reserve 在付费调用之前、settle 按全额;可证明的创建前拒绝才 rollback,一切歧义保留计费(GW-INV-50)。**部署慢不丢音色**:等待超时只记 WARN,登记照样落库——它已付费、上游做完就能用。拒绝码 `VOICE_UNAVAILABLE`/`VOICE_SAMPLE_INVALID`/`VOICE_INVENTORY_FULL`/`VOICE_NAME_TAKEN`/`VOICE_CAPACITY_REACHED`/`VOICE_QUOTA_EXHAUSTED`/`BAD_REQUEST`/`UPSTREAM_*` |
-| `GET /v1/voices` | `voice_list` | device proof | 列出本 install 的音色:`{voices:[{voiceId,name,createdAt}],capacity,remaining}`。**N4 豁免①**——有界可枚举资源(库存上限**就是**那个界),返全集、无游标。`capacity`/`remaining` 随响应走,因为上限正是调用方来读它的理由:一个列出两行却不说「就这些了」的列表,会让下一次登记的失败无从解释。空库存序列化为 `[]` 而非 `null` |
-| `POST /v1/voices:delete` | `voice_delete` | device proof | 删除一个音色,请求 `{voiceId}`,成功 **204**。**是 `:action`(N5)而不是 `DELETE /v1/voices/{id}`**:本网关受管面每条路由都是「header 带 device proof + POST」,一条带路径参数的 DELETE 会是整个面上唯一的异形;顺带让音色 id 不进 URL、因而不进代理日志与 referrer。**先删上游、再删记录**——记录是唯一持有上游 id 的东西,上游失败即中止且记录留着(可重试、库存计数继续说真话);在这里「成功」会留下一份还活着、已付费、永久不可见的登记。删除收回的是**库存位、不是费用**。别的 install 的 id 读作不存在(`VOICE_NOT_FOUND`),故音色 id 不是存在性预言机 |
+| `POST /v1/images/generations` | `images_generate` | device proof | 同步图像生成。请求 `{model?,prompt,size?,n?}`——`model` 是逻辑别名不选上游、`prompt` 非空 ≤2000 字符、`size` 为 `WxH`(边 256–4096 且总像素 512²–2048²,默认 `1024x1024`)、`n` 缺席或恒 1,未知字段拒;响应 `{created,data:[{url}]}`。详见 §1.5 |
+| `POST /v1/images/edits` | `images_edit` | device proof | **改图** = generations 的形状 + **`image`**(必填,**base64 data URL**)。每一道闸与 generations 共用,按同一张图像卡计价、走同一条图像日额度。详见 §1.5 |
+| `POST /v1/audio/speech` | `audio_speech` | device proof | 同步语音合成。请求 `{model?,input,voice?}`——`input` 非空 ≤500 **字符**(按 rune 计)、`voice` 缺席取 `TTS_DEFAULT_VOICE`,未知字段拒;**响应是裸 `audio/wav` 字节,不是 JSON 信封**。详见 §1.6 |
+| `POST /v1/videos/generations` | `videos_generate` | device proof | **异步**视频生成提交。请求 `{model?,prompt,seconds?,aspect?,resolution?}`——`seconds` 缺席=5 且必须落在 2–15、`aspect` ∈ `landscape`(默认)/`portrait`/`square`、`resolution` ∈ `720p`(默认)/`1080p`,未知字段拒;响应 **202** `{id,object:"video.generation",status:"pending",created}`,`id` 是**签名句柄**。详见 §1.3 |
+| `POST /v1/videos/animations` | `videos_animate` | device proof | **图生视频** = generations 的形状 + **`image`**(必填,**base64 data URL**,首帧);`aspect`/`resolution` 照常解析但**转发时整个丢弃**。详见 §1.3 |
+| `POST /v1/voices` | `voice_enroll` | device proof | **参考音色登记**。请求 `{name,leaseId}`——`name` 非空 ≤120 字符;**`leaseId` 指名一个本 install 已上传好的媒体 lease,绝不是地址**。详见 §1.7 |
+| `GET /v1/voices` | `voice_list` | device proof | 列出本 install 的音色:`{voices:[{voiceId,name,createdAt}],capacity,remaining}`。返全集、无游标(**N4 豁免①**:有界可枚举资源)。详见 §1.7 |
+| `POST /v1/voices:delete` | `voice_delete` | device proof | 删除一个音色,请求 `{voiceId}`,成功 **204**。是 `:action`(**N5**)而非 `DELETE /v1/voices/{id}`。详见 §1.7 |
 | `GET /v1/videos/{videoId}` | `video_status` | device proof | 轮询一个签名句柄:响应 `{id,object:"video.generation",status,url?}`——`status` ∈ `pending`/`running`/`succeeded`/`failed`(网关**自己的**封闭词表、非上游六态),`url` 仅 `succeeded` 时出现且是裸预签名 OSS 链接(取它时**不带**任何 Authorization 头);**完全不动钱**——不碰钱包、不碰品类账本,唯一的闸是限流器;签名验不过与上游已忘掉该任务**同答** `VIDEO_TASK_NOT_FOUND`(区分两者等于确认「有别的 install 拥有它」) |
 | `GET /v1/models` | `models` | device proof | OpenAI list 中恰一个逻辑模型；model object 另带 namespaced `anselm_capabilities`，见 §2.3 |
 | `POST /v1/media/uploads` | `media_create` | device proof | 创建 proof-bound resumable upload，返回 opaque `uploadId`、`offset=0`、过期时间与 chunk 上限 |
@@ -85,6 +85,58 @@ audience: [human, ai]
 **两个账本数不同的单位**。钱按**秒**报价(`InputVideoSeconds`,wan 720P 每秒一张卡);`install_category_daily` 的 `video` 品类按**条**配给(`VIDEO_DAILY_LIMIT`,默认 **10**)。人心里配给的是整条片子,而不是秒数——按秒配给只会让用户写更短的提示词、而不是少生成视频。
 
 **不可能的时长在预留之前被拒**。`seconds` 越界返 400 且分文未付,而不是把当天的一条额度花在一个上游 400 上。
+
+**图生视频(`/v1/videos/animations`)共用以上每一条**。它与 generations 只差一个必填的 `image` 首帧,其余闸(prompt 上限、预留之前就拒的时长窗、未知字段拒)、计价单位、日额度、轮询端点与签名句柄全部相同——一段动起来的片子**花的是视频的秒数、产出的也是视频**。`image` 必须是 `data:` 且不含 `://`(§1.4 的形状闸),自己的码 `VIDEO_FRAME_INVALID` 而非复用 `IMAGE_SOURCE_INVALID`:一个在让图动起来的客户端被告知「**改图**的源无效」会去查错的请求。`aspect`/`resolution` 照常解析、**转发时整个丢弃**——片子继承首帧几何,转发我们的等于静默要求上游对用户刚递来的那张图做信箱边或裁切;仍然解析,故词表外的值依旧 400、不被静默忽略。上游是与出视频**同一对**提交/轮询端点、input 多一个 `img_url`。
+
+**拒绝码**:`VIDEO_UNAVAILABLE` / `VIDEO_QUOTA_EXHAUSTED` / `VIDEO_FRAME_INVALID`(仅 animations) / `BAD_REQUEST` / `UPSTREAM_*`;轮询另有 `VIDEO_TASK_NOT_FOUND`。
+
+### 1.4 两条贯穿生成能力的规则
+
+**产物 URL 直通(图像与视频)**。这两条路由的响应主形是**上游 OSS 签名 URL 原样直通**,不是把字节内联回来。理由是物理的:本部署公网出方向约 1Mbps,一张 1–3MiB 的图 base64 内联要占 11–30 秒的上行,而 DashScope 的生成结果本就是 24 小时有效、不含任何网关凭证的签名链接——直通让客户端**直连上游**下载,网关的水管零占用。
+
+这条规则带三个后果,都必须写下来:①计费点在**生成成功**,不在客户端下载——URL 给出去没人取也照扣(GW-INV-50);②直通的 URL 必须可证明不含任何**网关配置的** key(GW-INV-51;OSS 签名参数 `OSSAccessKeyId` 是上游临时访问标识、不在此列);③它**对语音不适用**——那条路根本没有产物 URL 可直通(§1.6),所以「响应形状不统一」是上游形态的事实、不是疏漏。
+
+**受管媒体输入只收 `data:`,绝不收地址**。`/v1/images/edits` 的 `image`、`/v1/videos/animations` 的首帧都必须是 base64 data URL 且不含 `://`。这**不是校验客套,而是全部的 SSRF 缓解**:一个本网关会去取的地址是一枚指向我们自己网络的原语(包括 `169.254.169.254` 这种看起来最人畜无害的),而 data URL **取不了**——它就是字节。闸在 **service 层**、不在 handler:一条「只在某个调用方守规矩时才成立」的边界不是边界。ADR 0011 的**入站**那半由此原样成立;唯一的窄缝例外是音色登记的**出站**一跳(§1.7)。
+
+### 1.5 图像生成与改图
+
+上游走**原生** DashScope multimodal-generation 同步形,成功即按张 settle(reserve == settle,确定性成本)。
+
+**出图与改图是同一个模型、同一条端点**。`IMAGE_UPSTREAM_MODEL` 一个配置项服务两条路由:`qwen-image-2.0` 官方描述即「生成与编辑的融合」,两次真钱验证成立(2026-07-28,同模型先生成后改图、皆 200 出图);单独的 `qwen-image-edit*` 那几个 id **正在退役**,留第二个配置项等于为模型原生就会做的事维护一个排期消失的 model id。改图按**图像**卡计价、走图像日额度、不开新品类。
+
+**拒绝码**:`IMAGE_UNAVAILABLE` / `IMAGE_QUOTA_EXHAUSTED` / `IMAGE_SOURCE_INVALID`(仅 edits) / `BAD_REQUEST` / `UPSTREAM_*`。
+
+### 1.6 语音合成
+
+**响应是裸 `audio/wav` 字节,不是 `{data:[{url}]}` 信封**——这是上游逼的,不是偏好。`qwen-audio-3.0-tts-flash` **只**在 `api-ws/v1/inference` 双工 WebSocket 上提供服务(两种 HTTP 形状都答 `url error`,真机实测),而双工流回来的是**帧、没有产物 URL 可直通**。见 [ADR 0018](../../decisions/0018-speech-raw-bytes-over-websocket.md)。
+
+**为什么是这个模型**:它是**唯一**既能用预置音色、又能用 `voice-enrollment` 铸出的克隆音色合成的模型。故「克隆音色与普通语音走同一配额」是**同一模型同一次调用**这个物理事实,不是产品硬凑。
+
+**默认音色属于模型、不属于产品**。`TTS_DEFAULT_VOICE` 默认 `longanhuan_v3.6`:qwen-audio-3.0 的音色带 `_v3.6` 后缀且**直接拒绝** qwen3-tts 那套名字,故留一个过期默认值会让**每一次**省略 `voice` 的合成都在上游失败。线缆上**没有** format 字段。
+
+**计费判别按有没有字节流出来**:`task-failed` 出现在任何音频之前 = 可证明未计费、可回滚;一旦有字节即保留计费;空的 `task-finished` 按歧义保留(GW-INV-50)。
+
+**拒绝码**:`TTS_UNAVAILABLE` / `TTS_QUOTA_EXHAUSTED` / `BAD_REQUEST` / `UPSTREAM_*`。
+
+### 1.7 克隆音色
+
+样本由 **lease id 指名,绝不由地址指名**——ADR 0011 的入站那半原样不动。样本走普通断点上传,故 30 秒的音频不必塞进 JSON body。
+
+**上游契约是真机实测出来的,与最初照猜的那份完全不同**:`model=voice-enrollment`、`action=create_voice/query_voice/delete_voice`、**只收公网可取 URL**(`data:` 会被拿去跑 ASR 然后 500)、**登记异步**(返回时状态 DEPLOYING,须轮询到 OK 才可用)、`target_model=qwen-audio-3.0-tts-flash`(必须与 TTS 路由真调的模型一致,否则不匹配**只在合成时**暴露、那时钱早花完)。用户起的名字**永不上游**——`create_voice` 收的是 `prefix` 命名空间,名字只住在我们表里。
+
+**出站那一跳是唯一的窄缝例外**。网关把自己已经拥有的 lease 解析成**它自己的** `MEDIA_DOMAIN` 公开地址(ADR 0012 第 4 条为此留的门),上游取**一次**之后**立刻吊销该 lease**——那个 URL 是持有型凭据,撤销比缩短 TTL 紧且不依赖时钟。
+
+**三道闸,顺序恒为「本地前置 → 钱包 → 上游」**:逐 install 库存 2(`VOICE_INVENTORY_FULL`,补救话术是「删一个」而非「过会儿再试」)、账号级 `VOICE_ACCOUNT_CEILING`(满则拒 + WARN,**绝不驱逐**别人的音色)、品类日闸 `VOICE_DAILY_LIMIT`(默认 2)。钱走与图像/语音/视频**同一个** pUSD 钱包(卡 `qwen-tts-clone-2026-07-28`,**非** assumed),reserve 在付费调用之前、settle 按全额;可证明的创建前拒绝才 rollback,一切歧义保留计费(GW-INV-50)。
+
+**库存上限不是花钱上限**:它界的是**同时**持有几个,而删除会腾位,故没有日闸与钱包时 enroll→delete 循环可以无界烧掉真钱。
+
+**部署慢不丢音色**:等待超时只记 WARN,登记照样落库——它已付费、上游做完就能用。
+
+**列表返全集、无游标**(N4 豁免①:有界可枚举资源,而库存上限**就是**那个界)。`capacity`/`remaining` 随响应走,因为上限正是调用方来读它的理由:一个列出两行却不说「就这些了」的列表,会让下一次登记的失败无从解释。空库存序列化为 `[]` 而非 `null`。
+
+**删除是 `:action`(N5)而不是 `DELETE /v1/voices/{id}`**:本网关受管面每条路由都是「header 带 device proof + POST」,一条带路径参数的 DELETE 会是整个面上唯一的异形;顺带让音色 id 不进 URL、因而不进代理日志与 referrer。**先删上游、再删记录**——记录是唯一持有上游 id 的东西,上游失败即中止且记录留着(可重试、库存计数继续说真话);在这里「成功」会留下一份还活着、已付费、永久不可见的登记。删除收回的是**库存位、不是费用**。别的 install 的 id 读作不存在(`VOICE_NOT_FOUND`),故音色 id **不是存在性预言机**。
+
+**拒绝码**:`VOICE_UNAVAILABLE` / `VOICE_SAMPLE_INVALID` / `VOICE_INVENTORY_FULL` / `VOICE_NAME_TAKEN` / `VOICE_CAPACITY_REACHED` / `VOICE_QUOTA_EXHAUSTED` / `BAD_REQUEST` / `UPSTREAM_*`;列表与删除另有 `VOICE_NOT_FOUND`。
 
 ## 2. `POST /v1/chat/completions`
 

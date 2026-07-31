@@ -226,7 +226,12 @@ jobs:
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           MEDIA_DOMAIN: ${{ secrets.MEDIA_DOMAIN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
-          RESET_UNLAUNCHED_GATEWAY_DATA: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          # Read the INPUT, not the event type. The two are equivalent today only
+          # because admission refuses any workflow_dispatch that did not set the
+          # boolean AND type the confirmation string. Deriving "wipe the database"
+          # from "somebody pressed Run workflow" would turn the first non-reset
+          # manual dispatch anyone ever adds into a silent data loss.
+          RESET_UNLAUNCHED_GATEWAY_DATA: ${{ (github.event_name == 'workflow_dispatch' && inputs.reset_unlaunched_gateway_data) && '1' || '0' }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
           set -euo pipefail
