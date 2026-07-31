@@ -53,12 +53,12 @@ audience: [human, ai]
 | GW-INV-23 | provider 429 独立归一 `UPSTREAM_BUSY`、`DefinitelyUnbilled`：不 retry、不计 process/per-key breaker；`Retry-After>5s` 只给当前 key cooldown，当前请求仍 rollback | 429 retry 风暴、误熔断或已知拒绝仍收费 |
 | GW-INV-24 | 关停严格 ①取消扫描 loop ②关闭三 HTTP server ③等待 bgWG≤30s ④最后关 DB；所有 detached settle/rollback/reconcile 均挂 bgWG | 结算中关 DB 留 open/半写账本 |
 | GW-INV-25 | 流式每帧滚动 `SetWriteDeadline(now+30s)`；server 不设全局 `WriteTimeout` | 长回答被固定墙钟截断 |
-| GW-INV-26 | 自动 retry 总 attempt≤3，且只重试可证明未收费并能绕过当前 key 的 401/403 cooldown 或 key-breaker-open；connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、终止并 full settle，429/其它 3xx/4xx虽可退款也不 retry；始终同 provider/plan/slot | 一份 reservation 隐藏多次可能 provider charge，账本无法守恒 |
+| GW-INV-26 | 自动 retry 总 attempt≤3，且只重试可证明未收费并能绕过当前 key 的 401/403 cooldown 或 key-breaker-open；connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、终止并 full settle，429/其它 3xx/4xx 虽可退款也不 retry；始终同 provider/plan/slot | 一份 reservation 隐藏多次可能 provider charge，账本无法守恒 |
 | GW-INV-27 | `UPSTREAM_HEADER_TIMEOUT_SEC` per attempt 界定 connect→header→first body byte；stream/non-stream 都必须成功 `Peek(1)` 才 handoff，2xx header 不提前停表；handoff 后 timer 已幂等 disarm，且不覆盖其余 body/stream。timeout 是 ChargePossible，不 retry、保留 full quote | non-stream headers-only stall 钉死 slot；timer race 截断已返回 stream；timeout retry 造成多次潜在收费 |
 | GW-INV-28 | `QUEUE_WAIT_MS` 是共享信号量的有界等待：0=立即拒绝，超时→429，排队取消→499 审计；三者都在 Open 前 rollback 且不占/放大 slot | 无界排队、并发放大或取消请求虚占钱包 |
 | GW-INV-29 | diskguard 每 30s 探测数据盘，低于 MB 或百分比阈值时在任何 reserve 前返回 `503 DISK_LOW`；启动同步预热、探测失败 fail-open、恢复自动清 | 磁盘满时中途写坏账本或探测抖动永久只读 |
 | GW-INV-30 | 每个上游账号自带固定 endpoint、API key pool、per-key breaker/cooldown、process breaker，两个账号不共享其中任何一样；禁止 fallback、禁止跨池取 key；单 key 配置行为不变 | 一个账号的故障污染另一个账号，或实际费用与冻结 plan 不一致 |
-| GW-INV-41 | provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`，只暴露 `details.reason∈{context_length,max_tokens,invalid_request}`；Exposure=DefinitelyUnbilled，不 retry/不计 breaker并 rollback；其它明确 3xx/4xx也 DefinitelyUnbilled，但可归一成不同 APIError/fault class | 恶意超长输入触发全站 breaker、上游原文泄露或用 code 代替 exposure |
+| GW-INV-41 | provider 400/413/422 归一为 `400 UPSTREAM_REJECTED`，只暴露 `details.reason∈{context_length,max_tokens,invalid_request}`；Exposure=DefinitelyUnbilled，不 retry/不计 breaker 并 rollback；其它明确 3xx/4xx 也 DefinitelyUnbilled，但可归一成不同 APIError/fault class | 恶意超长输入触发全站 breaker、上游原文泄露或用 code 代替 exposure |
 
 ## D. 输入、能力与模型路由
 

@@ -39,8 +39,8 @@ audience: [human, ai]
 | `MULTIMODAL_UNAVAILABLE` | **503** | multimodal input is unavailable on this deployment | 防御性稳定码；正式部署会在 `DASHSCOPE_API_KEY` / endpoint 缺失时启动失败，不能静默降级；无 fallback |
 | `AUDIO_UNAVAILABLE` | **503** | audio input is not available on this deployment | 请求含合法 `input_audio`，但当前路由表无音频上游；严格校验后、reserve/Open 前拒绝；不受 Qwen 视觉配置影响；无 fallback |
 | `SPEECH_UNAVAILABLE` | **503** | speech transcription is not available on this deployment | 实时麦克风 ASR WebSocket 未配置或上游不可达；不同于 chat `input_audio` 音频理解路由 |
-| `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote且不 retry |
-| `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker并 rollback |
+| `UPSTREAM_ERROR` | 502 | upstream model provider error | **不能推导账务**：明确 3xx/4xx（如 401/402、key failover 耗尽）可为 DefinitelyUnbilled；connect/TLS/5xx 为 ChargePossible；以后者为 full quote 且不 retry |
+| `UPSTREAM_REJECTED` | 400 | upstream rejected the request: reduce input size or max_tokens, or fix request parameters | 所选 provider 400/413/422；`details.reason ∈ {context_length,max_tokens,invalid_request}`；明确未生成，故不 retry/不计 breaker 并 rollback |
 | `MEDIA_UNAVAILABLE` | 503 | durable media upload is not enabled on this deployment | `MEDIA_ENABLED=false`；同一 attachment 重试无效，operator 必须完成 staging/secret 配置 |
 | `IMAGE_UNAVAILABLE` | **503** | image generation is not available on this deployment | `IMAGE_ENABLED=false` 或无 Qwen 凭证；重试无效,区别于日额度 |
 | `IMAGE_SOURCE_INVALID` | **400** | the edit source must be a base64 data URL, not an address | **形状**拒绝、非校验客套:ADR 0011 禁止带 scheme/host 的受管媒体输入,因为一个本网关会去取的地址是指向**我们自己网络**的 SSRF 原语;要求 `data:` **就是**那个缓解(data URL 取不了、它就是字节)。缺席的源同码 |
@@ -61,7 +61,7 @@ audience: [human, ai]
 | `MEDIA_UPLOAD_INVALID` | 400 | invalid media upload request | create JSON/sha/MIME/长度、offset、chunk/body 形状非法 |
 | `MEDIA_UPLOAD_NOT_FOUND` | 404 | media upload was not found | 未知或非本 install 的 upload；故意不暴露存在性 |
 | `MEDIA_UPLOAD_CONFLICT` | 409 | media upload is not writable in its current state | stale offset、完成前字节未满、已完成/已过期/replay |
-| `MEDIA_INTEGRITY_FAILED` | 422 | media upload failed integrity verification | staged bytes大小或 SHA-256 不匹配；客户端必须重建 upload |
+| `MEDIA_INTEGRITY_FAILED` | 422 | media upload failed integrity verification | staged bytes 大小或 SHA-256 不匹配；客户端必须重建 upload |
 | `UPSTREAM_TIMEOUT` | 504 | upstream model provider timeout | ChargePossible；不 retry，保留 full quote |
 
 Realtime speech WebSocket 建连后的帧内错误不走 HTTP envelope，仍使用稳定 `code` 字段：`SPEECH_AUDIO_FRAME_INVALID`（空帧或单帧超过 256KiB）、`SPEECH_AUDIO_TOO_LONG`（本次会话累计 PCM 超过预留 120s）、`SPEECH_CONTROL_INVALID`、`SPEECH_UPSTREAM_WRITE_FAILED`、`SPEECH_UPSTREAM_CLOSED`。这些码只结束本次 ASR 会话；已经成功转发的音频按时长结算，没有转发音频则 rollback。
@@ -70,7 +70,7 @@ Realtime speech WebSocket 建连后的帧内错误不走 HTTP envelope，仍使�
 
 infra 返回 `CallFailure{APIError, Exposure}`；app 只以 `Exposure.MayHaveCharged()` 决定 full settle/rollback。`ChargePossible` 是零值，未知值同样视为可能收费；只有显式 `DefinitelyUnbilled` 可退款。APIError 负责 client 归一，**任何 code/status/message 都不是财务凭证**。
 
-自动 retry 只限 `DefinitelyUnbilled` 的 401/403 key cooldown 或 key-breaker-open failover，总 attempt≤3。connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、立即终止；明确 429/其它 3xx/4xx虽可 rollback，也不 retry。
+自动 retry 只限 `DefinitelyUnbilled` 的 401/403 key cooldown 或 key-breaker-open failover，总 attempt≤3。connect/TLS/read/timeout/5xx/client-cancel 全部 ChargePossible、立即终止；明确 429/其它 3xx/4xx 虽可 rollback，也不 retry。
 
 ## 3. /install reject 码（DISTINCT，便于审计分离，GW-INV-20）
 

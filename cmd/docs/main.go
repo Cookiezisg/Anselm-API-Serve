@@ -74,6 +74,7 @@ func main() {
 	// deletions it guards live in Go, SQL, shell, and the env template too.
 	// 禁词棘轮扫**整个仓库**、不只 docs/:它守的那些删除同样住在 Go、SQL、shell 与 env 模板里。
 	l.errs = append(l.errs, checkForbidden(*root)...)
+	l.errs = append(l.errs, checkScars(*root)...)
 
 	for _, w := range l.warns {
 		fmt.Printf("WARN  %s\n", w)

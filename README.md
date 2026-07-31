@@ -6,7 +6,7 @@ A single-binary Go + SQLite gateway that exposes one OpenAI-compatible model in 
 
 It does three things:
 
-1. **Route** — OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming, with `tools`/`tool_choice` for multi-turn tool calls). The complete message history determines the provider; the client cannot choose one, and there is no cross-provider fallback.
+1. **Route** — OpenAI-compatible `/v1/chat/completions` (streaming and non-streaming, with `tools`/`tool_choice` for multi-turn tool calls), plus six paid generation endpoints: images, image edits, speech synthesis, async video submit/poll, and cloned-voice enrollment. The complete message history determines which CAPABILITIES a request may use — never which provider, because there is only one. The client's `model` string never selects anything either.
 2. **Meter** — before each upstream call it converts the exact provider/model rate card into cost, then atomically reserves the per-install monthly request count plus the operator global monthly spend budget. Successful calls settle against reported usage; ambiguous failures retain a conservative charge.
 3. **Bind and rate-limit** — every call proves possession of an installation Ed25519 key; copied ids and captured requests are unusable. Optional Proof-of-Work and issuance gates add Sybil cost. The realtime speech proxy is also device-proof gated and never exposes Qwen credentials to clients.
 
@@ -14,7 +14,7 @@ The code uses clean architecture (domain / app / infra / transport, plus a boots
 
 ## Cost accounting
 
-The two request-denying guardrails — per-install monthly request count and operator global monthly spend — are reserved in one `BEGIN IMMEDIATE` transaction on a single-writer pool. Token vectors from different providers are never added together: each request is priced with its frozen exact-model rate card, then only integer pico-US-dollar cost enters the shared wallet. Daily install/provider/global tables remain as accounting statistics, not traffic gates.
+The two request-denying guardrails — per-install monthly request count and operator global monthly spend — are reserved in one `BEGIN IMMEDIATE` transaction on a single-writer pool. Capabilities bill in units that cannot be added together — tokens, images, characters, seconds, enrollments — so nothing is ever summed in its own unit: each request is priced with its frozen exact-model rate card, and only the integer pico-US-dollar cost enters the shared wallet. Generation capabilities carry a second, per-category daily gate consumed inside the SAME transaction. Daily install/provider/global tables remain accounting statistics, not traffic gates.
 
 A rejection before the request can reach a provider rolls the reservation back. Once the request has been handed to a provider, missing usage, a timeout, a disconnect, or a crash keeps the conservative reservation; complete usage settles to the calculated cost. Ledger transitions are compare-and-swap and idempotent, so the failure mode is over-charging rather than silently spending operator money without accounting for it.
 
@@ -47,7 +47,7 @@ Clients see one logical model, `anselm-auto`; `GET /v1/models` and the top-level
 - A valid `input_audio` part is accepted by the public protocol but returns `503 AUDIO_UNAVAILABLE` before routing or billing, until an audio-capable upstream is deployed.
 - Realtime microphone transcription is a separate `GET /v1/speech/asr` WebSocket endpoint. It accepts PCM frames and relays Qwen ASR events so the desktop app can fill editable text; it is not a chat audio-content route.
 
-Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback between providers. `DASHSCOPE_API_KEY` and `DASHSCOPE_WORKSPACE_ID` are required for the Qwen visual route; an incomplete deployment fails at startup instead of silently dropping a product capability.
+Inline media is intentionally strict and allowed only in `user` messages. Images use an `image_url` base64 data URI for JPEG, PNG, or WebP; videos use a `video_url` base64 data URI for MP4; audio uses an `input_audio` object with strict raw base64 `data` and a MIME-matched `wav` or `mp3` `format`. Remote URLs, PDFs, files, unknown part types, MIME/magic mismatches, and media beyond the configured part/decoded-byte limits are rejected instead of forwarded. There is no fallback. `DASHSCOPE_API_KEY` and `DASHSCOPE_WORKSPACE_ID` are required; an incomplete deployment fails at startup instead of silently dropping a product capability.
 
 The gateway owns the simple product tier for model choice and reasoning behavior. Thinking is always enabled through Qwen's top-level `enable_thinking=true`; client-supplied `thinking` and `reasoning_effort` do not change this tier. Historical `reasoning_content` is never sent back upstream: it is provider-private and is billed again when preserved. A positive `max_tokens` is clamped to `MAX_TOKENS_CAP` and the selected model's output limit; an absent or non-positive value is normalized to that same explicit product cap, so wire behavior, accounting, and client context headroom agree. Both profiles expose the model's 1M input context and 64K output ceiling. `GET /v1/models` publishes them in the namespaced `anselm_capabilities` extension so the desktop agent reads its budget rather than guessing, and so it can tell that media is unavailable without discovering it mid-conversation.
 
@@ -74,6 +74,15 @@ Business surface (`127.0.0.1:8080`, public behind Caddy):
 | `GET` | `/v1/speech/asr` | device proof | Realtime microphone transcription proxy; binary PCM in, Qwen ASR events out |
 | `GET` | `/v1/models` | device proof | OpenAI model list with one public ID plus route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
+| `POST` | `/v1/images/generations` | device proof | Synchronous image generation; relays the upstream artifact URL |
+| `POST` | `/v1/images/edits` | device proof | Same shape plus a base64 data-URL source; same model, same card |
+| `POST` | `/v1/audio/speech` | device proof | Speech synthesis; responds with raw `audio/wav` bytes, not a URL |
+| `POST` | `/v1/videos/generations` | device proof | Async submit; **202** with a signed handle. Charged at submit |
+| `POST` | `/v1/videos/animations` | device proof | Image-to-video: the same shape plus a first frame |
+| `GET` | `/v1/videos/{videoId}` | device proof | Poll one signed handle. Touches no money at all |
+| `POST` | `/v1/voices` | device proof | Enroll a cloned voice from an uploaded media lease |
+| `GET` / `POST` | `/v1/voices`, `/v1/voices:delete` | device proof | List this install's voices; delete one (upstream first) |
+| `POST` … | `/v1/media/uploads…` | device proof | Resumable proof-bound upload; completes into an opaque lease |
 | `GET` | `/healthz` | none | Process liveness; does not touch DB or upstream |
 
 Admin (`127.0.0.1:9090`, loopback-only, not proxied): `/metrics`, `/readyz` (`{db, upstream, disk}`), `/debug/pprof/*`, `/debug/vars`.

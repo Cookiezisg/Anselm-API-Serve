@@ -42,7 +42,7 @@ import (
 const (
 	// maxInputChars bounds ONE synthesis. qwen3-tts caps a single request around
 	// 500 characters, and the gateway holds the harder line deliberately:
-	// chunking长 text HERE would make one reservation cover N upstream calls, and a
+	// chunking long text HERE would make one reservation cover N upstream calls, and a
 	// partial failure across them is exactly the ambiguous-billing hole GW-INV-50
 	// exists to keep shut. The desktop splits at sentence boundaries and
 	// concatenates PCM — where the retry story is already per-chunk.

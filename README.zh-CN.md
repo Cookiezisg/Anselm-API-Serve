@@ -6,7 +6,7 @@
 
 它做三件事:
 
-1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用)。整段 messages 历史决定 provider;客户不能选 provider,两路之间也不 fallback。
+1. **路由** —— OpenAI 兼容的 `/v1/chat/completions`(流式与非流式,支持 `tools`/`tool_choice` 多轮工具调用),外加六条付费生成端点:出图、改图、语音合成、异步视频提交/轮询、克隆音色登记。整段 messages 历史决定的是**这条请求能用哪些能力**——不是 provider,因为只有一家。客户端的 `model` 字符串同样什么都不选。
 2. **计量** —— 进上游前,按精确 provider/model 费率卡换算成本,再原子预占每 install 月请求数和 operator 全局月花费预算。成功依上游 usage 结算;无法判定的失败保留保守扣费。
 3. **设备绑定与限流** —— 每次调用都证明持有本机 Ed25519 私钥；复制 install id 或抓一条请求无法继续滥用。PoW 与领号闸继续增加批量造号成本。实时语音代理同样受 device proof 保护，且不会把 Qwen 凭据暴露给客户端。
 
@@ -14,7 +14,7 @@
 
 ## 成本记账
 
-两道会拒绝请求的护栏 —— 每 install 月请求数、operator 全局月花费 —— 在单写连接池的一个 `BEGIN IMMEDIATE` 事务里预占。不同 provider 的 token 向量绝不直接相加:每个请求先按冻结的精确模型费率卡换算,只有整数 picoUSD 成本进入共享钱包。install/provider/global 日表继续记录统计,不再作为流量闸门。
+两道会拒绝请求的护栏 —— 每 install 月请求数、operator 全局月花费 —— 在单写连接池的一个 `BEGIN IMMEDIATE` 事务里预占。各能力的计费单位互不相加(token、张、字符、秒、个):每个请求先按冻结的精确模型费率卡换算,只有整数 picoUSD 成本进入共享钱包。生成能力另有一道**逐品类日闸**,与预留在**同一个**事务里消耗。install/provider/global 日表继续记录统计,不再作为流量闸门。
 
 确定没有达到 provider 前的拒绝会回滚预占。一旦请求已交给 provider,缺 usage、超时、断连或崩溃都保留保守预占;完整 usage 则结算到计算成本。账本转移是 compare-and-swap 且幂等,因此失败模式是多扣,不是花了 operator 的钱却没记账。
 
@@ -46,7 +46,7 @@ curl -s localhost:8080/healthz   # → {"status":"ok"}
 - 合法 `input_audio` 会被公共协议接收，但在路由、记账前固定返回 `503 AUDIO_UNAVAILABLE`，直到部署音频上游。
 - 实时麦克风转写是独立的 `GET /v1/speech/asr` WebSocket。它接收 PCM 帧并转发 Qwen ASR 事件，用于桌面 app 填入可编辑文本；它不是 chat 音频内容理解路由。
 
-Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。两路之间没有 fallback。`DASHSCOPE_API_KEY` 与 `DASHSCOPE_WORKSPACE_ID` 是 Qwen 视觉 route 的启动必需配置；配置不全时直接启动失败，不会静默失去产品能力。
+Inline media 故意采用严格合同,且只允许在 `user` message 中出现。图片用 `image_url` part，URL 必须是 JPEG、PNG 或 WebP 的 base64 data URI；视频用 `video_url` part，URL 必须是 MP4 的 base64 data URI；音频用 `input_audio` object，`data` 是严格 raw base64，`format` 只能是与魔数匹配的 `wav` 或 `mp3`。远程 URL、PDF、文件、未知 part、MIME/魔数不匹配，以及超出 part/解码字节上限的媒体都会直接拒绝，不向上游转发。没有 fallback。`DASHSCOPE_API_KEY` 与 `DASHSCOPE_WORKSPACE_ID` 是 Qwen 视觉 route 的启动必需配置；配置不全时直接启动失败，不会静默失去产品能力。
 
 网关只为模型选择和 reasoning 行为定义一个傻瓜式产品档位。thinking 永远经 Qwen 顶层 `enable_thinking=true` 开启；客户端传入的 `thinking`、`reasoning_effort` 不改变这个档位。历史 `reasoning_content` **绝不回传**:它是 provider 私有的,且回传时会**再计一次费**。正数 `max_tokens` 在 `MAX_TOKENS_CAP` 和实际模型 output hard limit 内 clamp；未传或非正值也归一成同一个显式产品 cap，使 wire、账务与客户端预留的上下文 headroom 一致。两份画像都报该模型的 1M input 与 64K output 上限；`GET /v1/models` 通过 namespaced `anselm_capabilities` 发布它们,桌面 Agent 因此是**读**预算而不是猜,也因此能在发第一条媒体消息**之前**就知道媒体不可用。
 
@@ -73,6 +73,15 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 | `GET` | `/v1/speech/asr` | device proof | 实时麦克风转写代理；binary PCM 输入，Qwen ASR 事件输出 |
 | `GET` | `/v1/models` | device proof | 一个公开 ID，并带 route-specific `anselm_capabilities` |
 | `GET` | `/v1/quota` | device proof | `{limit, used, remaining, resetAt, available}` |
+| `POST` | `/v1/images/generations` | device proof | 同步出图;直通上游产物 URL |
+| `POST` | `/v1/images/edits` | device proof | 同一形状 + base64 data URL 源图;同模型、同费率卡 |
+| `POST` | `/v1/audio/speech` | device proof | 语音合成;返**裸 `audio/wav` 字节**,不是 URL |
+| `POST` | `/v1/videos/generations` | device proof | 异步提交;**202** + 签名句柄。**钱落在提交** |
+| `POST` | `/v1/videos/animations` | device proof | 图生视频:同一形状 + 首帧 |
+| `GET` | `/v1/videos/{videoId}` | device proof | 轮询一个签名句柄。**完全不动钱** |
+| `POST` | `/v1/voices` | device proof | 用一个已上传的媒体 lease 登记克隆音色 |
+| `GET` / `POST` | `/v1/voices`、`/v1/voices:delete` | device proof | 列出本 install 的音色;删一个(**先删上游**) |
+| `POST` … | `/v1/media/uploads…` | device proof | proof 绑定的断点上传;完成后换成 opaque lease |
 | `GET` | `/healthz` | 无 | 进程存活,不碰 DB / 上游 |
 
 运维面(`127.0.0.1:9090`,loopback-only,不反代):`/metrics`、`/readyz`(`{db, upstream, disk}`)、`/debug/pprof/*`、`/debug/vars`。

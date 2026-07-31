@@ -1,5 +1,5 @@
 // Package model holds the OpenAI-compatible /v1/models catalog shapes (the
-// discovery-driven model-list事实源). PURE domain: stdlib only, no config/infra/
+// discovery-driven model-list source of truth). PURE domain: stdlib only, no config/infra/
 // transport — these structs ARE the wire contract the app layer assembles and a
 // transport handler later serializes verbatim.
 package model

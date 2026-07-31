@@ -20,7 +20,7 @@ import (
 // 返回的**相对** `fetchPath` 指称。
 //
 // 为什么只收相对形、绝不收绝对形:光有归属校验不够——攻击者拿自己**合法**的 lease 就能发
-// `https://evil.example/v1/media/leases/{自己的id}/content?token=…`;归属能过,然后**上游 provider 会去
+// `https://evil.example/v1/media/leases/{自己的 id}/content?token=…`;归属能过,然后**上游 provider 会去
 // 拉 evil.example**,这是一条经 provider 的 SSRF。只收相对形意味着 host 根本不是客户端能提供的值:
 // 网关用自己配置的公开 base 绝对化。风险不是被检查掉,而是**不可表达**。
 

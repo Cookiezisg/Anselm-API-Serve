@@ -241,7 +241,7 @@ adapter 剥离历史 `reasoning_content`(provider 私有,回传即再计费),但
 
 `output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值。
 
-`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：byte estimate 只作账务证据、在模型 input limit 处 clamp;reserve 恒用完整模型 input/output hard limits后按自洽 usage 退款。
+`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：byte estimate 只作账务证据、在模型 input limit 处 clamp;reserve 恒用完整模型 input/output hard limits 后按自洽 usage 退款。
 
 `DASHSCOPE_API_KEY` 与 Qwen endpoint/workspace 是启动期必需配置；缺失会 fail-fast，绝不以“纯文本照常”静默降级。音频不依赖 Qwen 视觉配置，始终先返回 `503 AUDIO_UNAVAILABLE`；未来音频 route 只能经新 capability 决策启用。Qwen 故障同样只返回自身归一错误，不跨 provider。
 

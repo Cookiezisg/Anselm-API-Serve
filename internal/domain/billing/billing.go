@@ -215,7 +215,7 @@ var rateCards = map[Provider]map[string]RateCard{
 			InputLimit: QwenImageInputLimit, OutputLimit: QwenImageOutputLimit,
 			// WORKING ASSUMPTION: ¥0.25/image ≈ $0.035 = 35e9 pUSD. This card
 			// only budgets the operator's own wallet gate (reserve == settle, deterministic);
-			// the upstream bills its真实 list price regardless. MUST be reconciled against the
+			// the upstream bills its real list price regardless. MUST be reconciled against the
 			// official pricing page before launch — the "assumed" ID keeps that debt visible.
 			// 工作假设:¥0.25/张≈$0.035=35e9 pUSD。此卡只作 operator 自家钱包预算闸
 			// (reserve==settle,确定性成本);上游按真实价目计费不受影响。上线前必须对官方价页
