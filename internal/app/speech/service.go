@@ -2,6 +2,16 @@
 // chat route: it authenticates an install and exposes the configured Qwen ASR
 // endpoint/key to the transport WebSocket proxy without leaking prompt or key
 // material to logs or clients.
+//
+// It uses genrun's ports and steps but not genrun.Do: a WebSocket has no single
+// upstream call to wrap. The transport drives the session, reserving for the
+// maximum duration up front and settling the audio actually spoken when it ends.
+//
+// speech 包持有实时麦克风转写闸。它不是一条 chat 路由:它鉴权 install,并把配置好的 Qwen ASR
+// 端点/key 交给 transport 的 WebSocket 代理,不向日志或客户端泄漏 prompt 与 key 材料。
+//
+// 它用 genrun 的端口与步骤,但**不用** genrun.Do:一个 WebSocket 没有单次上游调用可包。会话由
+// transport 驱动——先按最长时长预留,结束时按**实际说了多少**结算。
 package speech
 
 import (
@@ -10,12 +20,10 @@ import (
 	"math"
 	"net/url"
 	"strings"
-	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/app/genrun"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
-	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
 	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 )
 
@@ -25,60 +33,28 @@ const (
 	pcmBytesPerFrame = int64(2) // PCM16 mono.
 )
 
-type Authenticator interface {
-	LookupInstall(ctx context.Context, installID string) (id string, status dominstall.Status, found bool, err error)
-}
-
-type RateLimiter interface {
-	Allow(key string) bool
-}
-
-type Config interface {
-	Load() *config.Config
-}
-
-type Quota interface {
-	SnapshotPeriod(now time.Time) domquota.Period
-	Reserve(ctx context.Context, installID string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error)
-	Settle(ctx context.Context, r *domquota.Reservation, actualPUSD int64) error
-	Rollback(ctx context.Context, r *domquota.Reservation) error
-}
-
-type Clock interface {
-	Now() time.Time
-}
-
-type Metrics interface {
-	SettleFailure()
-	RollbackFailure()
-}
-
 type Service struct {
-	auth  Authenticator
-	quota Quota
-	rl    RateLimiter
-	cfg   Config
-	clock Clock
-	mx    Metrics
+	gen genrun.Runner
 }
 
 type Deps struct {
-	Auth    Authenticator
-	Quota   Quota
-	RL      RateLimiter
-	Config  Config
-	Clock   Clock
-	Metrics Metrics
+	Auth    genrun.Authenticator
+	Quota   genrun.Quota
+	RL      genrun.RateLimiter
+	Config  genrun.Config
+	Clock   genrun.Clock
+	Metrics genrun.Metrics
 }
 
 func New(d Deps) *Service {
-	s := &Service{auth: d.Auth, quota: d.Quota, rl: d.RL, cfg: d.Config, clock: d.Clock, mx: d.Metrics}
-	if s.mx == nil {
-		s.mx = noopMetrics{}
-	}
-	return s
+	return &Service{gen: genrun.New(genrun.Ports{Auth: d.Auth, RL: d.RL, Config: d.Config,
+		Quota: d.Quota, Clock: d.Clock, Metrics: d.Metrics})}
 }
 
+// Upstream is the realtime endpoint and the credential to reach it with. It never
+// leaves this process boundary except into the proxy dialer.
+//
+// Upstream 是实时端点与到达它的凭证。除了进入代理拨号器,它不越过本进程边界。
 type Upstream struct {
 	URL    string
 	APIKey string
@@ -86,33 +62,17 @@ type Upstream struct {
 }
 
 func (s *Service) Authorize(ctx context.Context, installID string) (string, *apierr.APIError) {
-	if s == nil || s.auth == nil || s.cfg == nil {
+	if s == nil || s.gen.Settings() == nil {
 		return "", apierr.Internal()
 	}
-	if installID == "" {
-		return "", apierr.ErrInvalidInstall
-	}
-	got, status, found, err := s.auth.LookupInstall(ctx, installID)
-	if err != nil {
-		return "", apierr.Internal()
-	}
-	if !found || got == "" {
-		return "", apierr.ErrInvalidInstall
-	}
-	if status == dominstall.StatusBanned {
-		return "", apierr.ErrAccountBanned
-	}
-	if s.rl != nil && !s.rl.Allow(got) {
-		return "", apierr.ErrRateLimited
-	}
-	return got, nil
+	return s.gen.Authorize(ctx, installID)
 }
 
 func (s *Service) Upstream() (Upstream, *apierr.APIError) {
-	if s == nil || s.cfg == nil {
+	if s == nil {
 		return Upstream{}, apierr.Internal()
 	}
-	c := s.cfg.Load()
+	c := s.gen.Settings()
 	if c == nil || len(c.QwenAPIKeys) == 0 || strings.TrimSpace(c.QwenBaseURL) == "" {
 		return Upstream{}, apierr.ErrSpeechUnavailable
 	}
@@ -123,49 +83,37 @@ func (s *Service) Upstream() (Upstream, *apierr.APIError) {
 	return Upstream{URL: u, APIKey: c.QwenAPIKeys[0], Model: DefaultModel}, nil
 }
 
+// Reserve holds the session's MAXIMUM billable duration before a single frame is
+// spoken, because a stream cannot be refused halfway through politely.
+//
+// Reserve 在说出第一帧之前就按会话的**最长**可计费时长预留,因为一条流没法在中途被礼貌地拒掉。
 func (s *Service) Reserve(ctx context.Context, installID string, maxAudioSeconds int64) (*domquota.Reservation, *apierr.APIError) {
-	if s == nil || s.quota == nil || s.clock == nil {
+	if s == nil {
 		return nil, apierr.Internal()
 	}
 	plan, err := billing.NewUnitPlan(billing.ProviderQwen, DefaultModel, billing.InputAudioSeconds, maxAudioSeconds)
 	if err != nil {
 		return nil, apierr.Internal()
 	}
-	r, err := s.quota.Reserve(ctx, installID, plan, s.quota.SnapshotPeriod(s.clock.Now()))
-	if err != nil {
-		if ae, ok := err.(*apierr.APIError); ok {
-			return nil, ae
-		}
-		return nil, apierr.Internal()
-	}
-	return r, nil
+	return s.gen.Reserve(ctx, installID, plan)
 }
 
+// Settle closes the session at the seconds actually spoken.
+//
+// Settle 按**实际说了多少秒**给会话收口。
 func (s *Service) Settle(ctx context.Context, r *domquota.Reservation, audioBytes int64) error {
 	if r == nil {
 		return nil
 	}
-	seconds := AudioBytesToBillableSeconds(audioBytes)
-	cost, err := r.Plan.UnitCost(billing.InputAudioSeconds, seconds)
+	cost, err := r.Plan.UnitCost(billing.InputAudioSeconds, AudioBytesToBillableSeconds(audioBytes))
 	if err != nil {
 		return err
 	}
-	if err := s.quota.Settle(ctx, r, cost); err != nil {
-		s.mx.SettleFailure()
-		return err
-	}
-	return nil
+	return s.gen.Settle(ctx, r, cost)
 }
 
 func (s *Service) Rollback(ctx context.Context, r *domquota.Reservation) error {
-	if r == nil {
-		return nil
-	}
-	if err := s.quota.Rollback(ctx, r); err != nil {
-		s.mx.RollbackFailure()
-		return err
-	}
-	return nil
+	return s.gen.Rollback(ctx, r)
 }
 
 func AudioBytesToBillableSeconds(n int64) int64 {
@@ -175,11 +123,6 @@ func AudioBytesToBillableSeconds(n int64) int64 {
 	bytesPerSecond := pcmSampleRateHz * pcmBytesPerFrame
 	return int64(math.Ceil(float64(n) / float64(bytesPerSecond)))
 }
-
-type noopMetrics struct{}
-
-func (noopMetrics) SettleFailure()   {}
-func (noopMetrics) RollbackFailure() {}
 
 func RealtimeURL(baseURL, model string) (string, error) {
 	base, err := url.Parse(strings.TrimSpace(baseURL))

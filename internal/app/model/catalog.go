@@ -61,7 +61,7 @@ func (c *Catalog) List() model.ListEnvelope {
 				Text: model.RouteProfile{
 					InputLimit:  billing.Qwen37InputLimit,
 					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
-					Available:   len(cfg.QwenAPIKeys) > 0,
+					Available:   cfg.Credentialed(),
 				},
 				// Multimodal availability needs BOTH halves. A Qwen key alone is not enough:
 				// with MEDIA_ENABLED=false there is no upload/lease path at all, so a client
@@ -75,13 +75,13 @@ func (c *Catalog) List() model.ListEnvelope {
 				Multimodal: model.RouteProfile{
 					InputLimit:  billing.Qwen37InputLimit,
 					OutputLimit: min64(cfg.MaxTokensCap, billing.Qwen37OutputLimit),
-					Available:   len(cfg.QwenAPIKeys) > 0 && cfg.MediaEnabled,
+					Available:   cfg.MultimodalAvailable(),
 				},
 				// Image generation follows the same whole-path rule: the flag is true only
 				// when the capability is on AND a credential exists (WRK-082 批B).
 				// 图像生成同守整条路法则:能力开 **且** 凭证在才 true(批B)。
 				ImageGeneration: &model.GenProfile{
-					Available:  cfg.ImageEnabled && len(cfg.QwenAPIKeys) > 0,
+					Available:  cfg.ImageAvailable(),
 					DailyLimit: cfg.ImageDailyLimit,
 				},
 				// Speech synthesis, same whole-path rule and its OWN switch: an operator may
@@ -90,7 +90,7 @@ func (c *Catalog) List() model.ListEnvelope {
 				// 语音合成同守整条路法则、且是**自己的**开关:运营者可能只开其中一个,客户端不得
 				// 从一个推另一个(批C)。此处 DailyLimit 的单位是**字符**。
 				SpeechGeneration: &model.GenProfile{
-					Available:  cfg.SpeechEnabled && len(cfg.QwenAPIKeys) > 0,
+					Available:  cfg.SpeechAvailable(),
 					DailyLimit: cfg.SpeechDailyLimit,
 				},
 				// Video is the third generation capability, same whole-path rule with one
@@ -101,7 +101,7 @@ func (c *Catalog) List() model.ListEnvelope {
 				// 永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能(H1)。
 				// 此处 DailyLimit 的单位是**条**。
 				VideoGeneration: &model.GenProfile{
-					Available:  cfg.VideoEnabled && len(cfg.QwenAPIKeys) > 0 && len(cfg.VideoHandleKey) > 0,
+					Available:  cfg.VideoAvailable(),
 					DailyLimit: cfg.VideoDailyLimit,
 				},
 			},

@@ -52,7 +52,7 @@ cmd ─▶ bootstrap ─▶ transport/httpapi ─▶ app ─▶ domain
 | 层 | 职责 | 关键边界 |
 |---|---|---|
 | `domain` | strict chat union、capability classification、billing rate card/Plan、quota types、config rules、wire errors | stdlib + pkg；无 DB/HTTP/OS infra |
-| `app` | auth/rate/disk/input/routing/reserve/forward/settle 用例编排；在本包声明 infra port | 不 import infra/transport/`database/sql`；`app/chat` 是唯一可组合 install+quota 的协调者 |
+| `app` | auth/rate/disk/input/routing/reserve/forward/settle 用例编排；在本包声明 infra port | 不 import infra/transport/`database/sql`；**同层可互相 import**（付费能力共用 `app/genrun` 的端口与骨架）；`app/chat` 是唯一可组合 install+quota 的协调者 |
 | `infra` | SQLite/migrations/stores、provider-local upstream engine、chatprovider adapters、metrics/config/disk/webassets | 唯一网络/DB/OS 实现；结构化满足 app port |
 | `transport` | 三 mux、中间件、HTTP↔app 薄 handler、统一 envelope | 不 import infra/bootstrap |
 | `bootstrap` | 构造 upstream backend registry、stores、services、routers、loops、lifecycle | 唯一跨全层组合根；无人 import 它 |
@@ -154,7 +154,9 @@ open ── usage / conservative full quote ──▶ settled
 - dashboard 金额在展示边界从 pUSD 转成整数 microUSD；DB 仍保留精确 pUSD。
 - low disk 在 reserve 前 shed；所有 detached accounting goroutine 由 bgWG 跟踪，DB 在 shutdown 最后关闭。
 
-## 8. 七个业务关注点
+## 8. 业务关注点
+
+**基础面**——每个恰好回答一件事：
 
 | 域 | app | 核心职责 |
 |---|---|---|
@@ -162,9 +164,23 @@ open ── usage / conservative full quote ──▶ settled
 | media | `app/media` | install-bound staged upload、opaque lease(chat 引用凭据 + 内联内容源,ADR 0012)与回收 |
 | quota | `app/quota` | Plan reserve/settle/rollback/reconcile + client quota view |
 | install | `app/install` | public-key identity、Sybil/PoW issuance |
-| model | `app/model` | 恰一个 provider-neutral public model |
+| deviceproof | `app/deviceproof` | 逐请求 Ed25519 proof 校验与防重放 |
+| model | `app/model` | 恰一个 provider-neutral public model + 已发布能力面 |
 | health | `app/health` | liveness/readiness 聚合；active providers 的认证 exact-model cached probe |
 | dashboard | `app/dashboard` | spend/ledger/health/config/install 运维 read/write model |
+
+**付费生成能力**——五个都走同一条钱路径，故那条路径只有一份：
+
+| 域 | app | 计费单位 | 独有的那一点 |
+|---|---|---|---|
+| — | `app/genrun` | — | 六个共享端口 + auth→ban→rate-limit→reserve→上游→settle/rollback 骨架（GW-INV-50 只在这里表述一次） |
+| image | `app/image` | 张 | `Edit` 的 data-URL 形状闸（ADR 0011 的 SSRF 缓解） |
+| tts | `app/tts` | 字符(rune) | `resolveVoice`：句柄→供应商 id，按调用方 install 收窄 |
+| video | `app/video` | 秒 | 异步提交 + 签名句柄；钱落在提交，轮询不动钱 |
+| voice | `app/voice` | 个 | 双上限库存 + 记录写前结算；唯一用不了 `genrun.Do` 的 |
+| speech | `app/speech` | 秒 | 实时 WebSocket：先按最长时长预留，结束按实说结算 |
+
+「一个能力是否存在」是配置自身的属性，故那条**双半规则**（开关开 **且** Qwen 凭证在）住在 `domain/config`，`app/model` 发布的能力面与各服务的 `Available()` 读的是同一个答案。
 
 ## 9. 决策索引
 

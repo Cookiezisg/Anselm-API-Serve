@@ -1,5 +1,5 @@
-// Package voice owns the cloned-voice use case (WRK-082 H9): enroll a reference clip as a named
-// voice, list what an install has, and delete one.
+// Package voice owns the cloned-voice use case: enroll a reference clip as a named voice, list what
+// an install has, and delete one.
 //
 // **The resource lives in OUR provider account, and that single fact shapes the whole package.**
 // Every install's clone is registered under one DashScope credential, so this service guards two
@@ -12,7 +12,11 @@
 // "delete one", never "try again later" — and when OUR ceiling is the one that is full, the answer
 // is to refuse and log loudly, never to evict somebody else's voice to make room.
 //
-// Package voice 拥有克隆音色用例(H9):把一段参考音频登记成具名音色、列出某 install 有什么、删掉一个。
+// It is also the one capability that cannot use genrun.Do: it settles BEFORE its record write and
+// rolls back at two points that have no upstream call between them, so it takes the same skeleton
+// apart into steps instead.
+//
+// Package voice 拥有克隆音色用例:把一段参考音频登记成具名音色、列出某 install 有什么、删掉一个。
 //
 // **资源住在我们的 provider 账号里,而这一个事实塑造了整个包。** 每个 install 的克隆都登记在**同一把**
 // DashScope 凭证之下,故本服务守的是**两条**上限而非一条:逐 install 的库存(用户能留多少)与**账号级**
@@ -21,34 +25,22 @@
 // 两个方向上它都是**库存、不是配额**:时间流逝不腾位、创建花一次钱、一个音色占着位直到被删。故这里的
 // 拒绝话术一律是「删一个」、绝不是「过会儿再试」——而当满的是**我们**那条上限时,答案是**拒绝并大声记
 // 日志**,绝不是驱逐别人的音色来腾地方。
+//
+// 它也是唯一一个用不了 genrun.Do 的能力:它在**记录写之前**结算,且有两个中间没有上游调用的回滚点,
+// 故它把同一套骨架**拆成步骤**来用。
 package voice
 
 import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
+	"github.com/sunweilin/anselm/gateway/internal/app/genrun"
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
 	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
-	"github.com/sunweilin/anselm/gateway/internal/domain/config"
-	dominstall "github.com/sunweilin/anselm/gateway/internal/domain/install"
-	domquota "github.com/sunweilin/anselm/gateway/internal/domain/quota"
 	domvoice "github.com/sunweilin/anselm/gateway/internal/domain/voice"
 	"github.com/sunweilin/anselm/gateway/internal/pkg/secureurl"
 )
-
-type Authenticator interface {
-	LookupInstall(ctx context.Context, installID string) (id string, status dominstall.Status, found bool, err error)
-}
-
-type RateLimiter interface {
-	Allow(key string) bool
-}
-
-type Config interface {
-	Load() *config.Config
-}
 
 // Store is the voice-inventory port.
 //
@@ -88,33 +80,16 @@ type Samples interface {
 	RevokeSample(ctx context.Context, installID, leaseID string) error
 }
 
-// Quota is the pUSD wallet port — the same one image, tts and video reserve against, because the
-// money leaves the SAME provider credential. Enrollment has no usage feedback to settle against:
-// the price is fixed and known before the call, so reserve == settle for a success.
-//
-// Quota 是 pUSD 钱包端口——与 image/tts/video 预留的是同一个,因为钱从**同一把** provider 凭证出去。
-// 登记没有可结算的用量回报:价格固定、调用前已知,故成功时 reserve == settle。
-type Quota interface {
-	SnapshotPeriod(now time.Time) domquota.Period
-	Reserve(ctx context.Context, installID string, plan billing.Plan, p domquota.Period) (*domquota.Reservation, error)
-	Settle(ctx context.Context, r *domquota.Reservation, actualPUSD int64) error
-	Rollback(ctx context.Context, r *domquota.Reservation) error
-}
-
-type Clock interface {
-	Now() time.Time
-}
-
 type IDGen interface {
 	New() string
 }
 
-// Logger reports the two conditions an operator must act on, as two distinct signals — they are
-// different problems with different remedies, and collapsing them into one would send whoever reads
-// the log looking in the wrong place.
+// Logger reports the conditions an operator must act on, as distinct signals — they are different
+// problems with different remedies, and collapsing them into one would send whoever reads the log
+// looking in the wrong place. Its last two methods are also this package's genrun.Metrics port.
 //
-// Logger 报告运营者**必须**处理的两个状况,作为**两个不同的信号**——它们是不同的问题、不同的补救办法,
-// 合并成一个会让读日志的人去错的地方找。
+// Logger 报告运营者**必须**处理的状况,作为**不同的信号**——它们是不同的问题、不同的补救办法,合并成
+// 一个会让读日志的人去错的地方找。它最后两个方法同时也是本包的 genrun.Metrics 端口。
 type Logger interface {
 	// AccountVoiceCeilingReached: our shared account is full. Remedy: raise the ceiling or delete
 	// unused voices upstream. 我们的共享账号满了。补救:抬上限,或去上游删掉没人用的音色。
@@ -132,10 +107,9 @@ type Logger interface {
 	// VoiceSlowToDeploy:已付费、已记录,但在我们不再等的时候还不能用。
 	VoiceSlowToDeploy(upstreamID string)
 	// SettleFailure / RollbackFailure: the books did not close. Money that fails to settle is money
-	// the operator's wallet under-reports until the orphan scanner finalizes it, so it must be
-	// observable rather than silently deferred (B2, the same rule as the other three capabilities).
+	// the operator's wallet under-reports until the orphan scanner finalizes it.
 	// SettleFailure / RollbackFailure:账没平。结算失败的钱,在孤儿扫描收口之前会被 operator 钱包
-	// **少报**,故它必须可观测、而不是被静默推迟(B2,与另外三个能力同一条规矩)。
+	// **少报**。
 	SettleFailure()
 	RollbackFailure()
 }
@@ -144,52 +118,53 @@ type Logger interface {
 //
 // Service 登记、列出、删除音色。
 type Service struct {
-	auth     Authenticator
+	gen      genrun.Runner
 	samples  Samples
-	quota    Quota
-	rl       RateLimiter
-	cfg      Config
 	store    Store
 	upstream Upstream
-	clock    Clock
 	ids      IDGen
 	log      Logger
 }
 
 // Deps wires the service.
 type Deps struct {
-	Auth     Authenticator
+	Auth     genrun.Authenticator
 	Samples  Samples
-	Quota    Quota
-	RL       RateLimiter
-	Config   Config
+	Quota    genrun.Quota
+	RL       genrun.RateLimiter
+	Config   genrun.Config
 	Store    Store
 	Upstream Upstream
-	Clock    Clock
+	Clock    genrun.Clock
 	IDs      IDGen
 	Log      Logger
 }
 
-// New builds the service.
+// New builds the service. The logger is defaulted before it is handed to genrun, so the money
+// steps and the voice-specific signals report through the same object.
+//
+// New 造出服务。logger 在交给 genrun **之前**补默认值,使钱那几步与音色专属信号经由同一个对象上报。
 func New(d Deps) *Service {
 	log := d.Log
 	if log == nil {
 		log = noopLogger{}
 	}
-	return &Service{auth: d.Auth, samples: d.Samples, quota: d.Quota, rl: d.RL, cfg: d.Config, store: d.Store,
-		upstream: d.Upstream, clock: d.Clock, ids: d.IDs, log: log}
+	return &Service{
+		gen: genrun.New(genrun.Ports{Auth: d.Auth, RL: d.RL, Config: d.Config,
+			Quota: d.Quota, Clock: d.Clock, Metrics: log}),
+		samples:  d.Samples,
+		store:    d.Store,
+		upstream: d.Upstream,
+		ids:      d.IDs,
+		log:      log,
+	}
 }
 
-// Available reports whether voice cloning is configured at all (it rides the speech capability —
-// a deployment that cannot speak has no use for a voice).
+// Available reports whether voice cloning is configured at all.
 //
-// Available 报告音色克隆是否配置了(它搭在语音能力上——说不了话的部署要音色没有用)。
+// Available 报告音色克隆是否配置了。
 func (s *Service) Available() bool {
-	if s == nil || s.cfg == nil {
-		return false
-	}
-	c := s.cfg.Load()
-	return c.SpeechEnabled && len(c.QwenAPIKeys) > 0
+	return s != nil && s.gen.Settings().VoiceAvailable()
 }
 
 // Enroll registers a sample as a named voice.
@@ -206,14 +181,13 @@ func (s *Service) Available() bool {
 // 先登记、后记不下来,会在我们账号里留下一个孤儿——占着共享上限的一个位,而再没有东西寻址得到它。
 // 万一记录仍然失败,上游登记会被**回滚**而不是被丢下。
 func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (domvoice.Voice, *apierr.APIError) {
-	if s == nil || s.auth == nil || s.cfg == nil || s.store == nil || s.upstream == nil ||
-		s.clock == nil || s.ids == nil || s.quota == nil || s.samples == nil {
+	if s == nil || !s.gen.Ready() || s.store == nil || s.upstream == nil || s.ids == nil || s.samples == nil {
 		return domvoice.Voice{}, apierr.Internal()
 	}
 	if !s.Available() {
 		return domvoice.Voice{}, apierr.ErrVoiceUnavailable
 	}
-	// **The sample is named by a LEASE ID, never by an address.** ADR 0011's入站 half is untouched:
+	// **The sample is named by a LEASE ID, never by an address.** ADR 0011's 入站 half is untouched:
 	// a caller still cannot hand this gateway a URL to fetch, because that is an SSRF primitive
 	// aimed at our own network. What changed is only the OUTBOUND hop — the gateway resolves the
 	// lease it already owns into its own public address (ADR 0012 clause 4's parked media subdomain),
@@ -229,7 +203,7 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	if name == "" {
 		return domvoice.Voice{}, apierr.ErrBadRequest
 	}
-	got, ae := s.authorize(ctx, installID)
+	got, ae := s.gen.Authorize(ctx, installID)
 	if ae != nil {
 		return domvoice.Voice{}, ae
 	}
@@ -251,7 +225,7 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	// voice to make room, because the person losing it did nothing and would never learn why.
 	// **我们**那条上限,只有本网关看得见的那条。**拒绝并记日志**——绝不驱逐别人的音色来腾地方:丢掉它
 	// 的那个人什么也没做,而且永远不会知道为什么。
-	if ceiling := s.cfg.Load().VoiceAccountCeiling; ceiling > 0 {
+	if ceiling := s.gen.Settings().VoiceAccountCeiling; ceiling > 0 {
 		total, err := s.store.CountAllVoices(ctx)
 		if err != nil {
 			return domvoice.Voice{}, apierr.Internal()
@@ -274,13 +248,9 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	if err != nil {
 		return domvoice.Voice{}, apierr.Internal()
 	}
-	reservation, err := s.quota.Reserve(ctx, got, plan, s.quota.SnapshotPeriod(s.clock.Now()))
-	if err != nil {
-		var ae *apierr.APIError
-		if errors.As(err, &ae) {
-			return domvoice.Voice{}, ae
-		}
-		return domvoice.Voice{}, apierr.Internal()
+	reservation, ae := s.gen.Reserve(ctx, got, plan)
+	if ae != nil {
+		return domvoice.Voice{}, ae
 	}
 
 	// Resolve the lease AFTER the wallet, not before: a caller who is out of daily allowance must
@@ -289,27 +259,25 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	// 音频铸出过一个公开地址。
 	token, terr := s.samples.SampleFetchToken(ctx, got, leaseID)
 	if terr != nil {
-		s.rollbackReservation(ctx, reservation)
+		_ = s.gen.Rollback(ctx, reservation)
 		return domvoice.Voice{}, apierr.ErrVoiceSampleInvalid
 	}
-	sampleURL, uerr := secureurl.PublicFetchURL(s.cfg.Load().MediaFetchDomain, leaseID, token)
+	sampleURL, uerr := secureurl.PublicFetchURL(s.gen.Settings().MediaFetchDomain, leaseID, token)
 	if uerr != nil {
 		// An unconfigured or `api.`-prefixed media host cannot serve the upstream, and the failure
 		// would be invisible on the wire — refuse locally with nothing spent.
 		// 未配置或 `api.` 前缀的媒体主机服务不了上游,而那种失败在线缆上**看不见**——本地拒绝,一分
 		// 钱不花。
-		s.rollbackReservation(ctx, reservation)
+		_ = s.gen.Rollback(ctx, reservation)
 		return domvoice.Voice{}, apierr.ErrVoiceUnavailable
 	}
 
 	upstreamID, unbilled, err := s.upstream.EnrollVoice(ctx, sampleURL)
 	if err != nil {
 		if unbilled {
-			if rbErr := s.quota.Rollback(ctx, reservation); rbErr != nil {
-				s.log.RollbackFailure()
-			}
-		} else if stErr := s.quota.Settle(ctx, reservation, reservation.ReservedPUSD); stErr != nil {
-			s.log.SettleFailure()
+			_ = s.gen.Rollback(ctx, reservation)
+		} else {
+			_ = s.gen.Settle(ctx, reservation, reservation.ReservedPUSD)
 		}
 		var ae *apierr.APIError
 		if errors.As(err, &ae) {
@@ -323,9 +291,7 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	// SLOT, never the fee.
 	// **在记录写之前**结算,且按全额报价。价格固定,没有用量可等——而这一点之后的一切都是**我们自己的**
 	// 记账,它退不掉上游已经收走的钱。写失败时删掉那份登记,收回的是**位置**、从来不是那笔费用。
-	if err := s.quota.Settle(ctx, reservation, reservation.ReservedPUSD); err != nil {
-		s.log.SettleFailure()
-	}
+	_ = s.gen.Settle(ctx, reservation, reservation.ReservedPUSD)
 
 	// **Spend the capability the moment the upstream is done with it.** The fetch URL is a bearer
 	// token: anyone holding it can download the user's voice until the lease TTL runs out. The
@@ -348,7 +314,7 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 		// 东西;上游做完之后它就能用了。
 		s.log.VoiceSlowToDeploy(upstreamID)
 	}
-	v := domvoice.Voice{ID: s.ids.New(), Name: name, UpstreamID: upstreamID, CreatedAt: s.clock.Now().UTC()}
+	v := domvoice.Voice{ID: s.ids.New(), Name: name, UpstreamID: upstreamID, CreatedAt: s.gen.Now().UTC()}
 	if err := s.store.CreateVoice(ctx, got, v); err != nil {
 		// Roll the paid registration back whichever way the write failed — a lost race is still a
 		// registration nobody will ever address. Then answer with the SAME code the pre-check would
@@ -373,14 +339,14 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	return v, nil
 }
 
-// List returns this install's voices plus the inventory arithmetic.
+// List returns this install's voices.
 //
-// List 返回本 install 的音色 + 库存算术。
+// List 返回本 install 的音色。
 func (s *Service) List(ctx context.Context, installID string) ([]domvoice.Voice, *apierr.APIError) {
 	if s == nil || s.store == nil {
 		return nil, apierr.Internal()
 	}
-	got, ae := s.authorize(ctx, installID)
+	got, ae := s.gen.Authorize(ctx, installID)
 	if ae != nil {
 		return nil, ae
 	}
@@ -401,7 +367,7 @@ func (s *Service) Delete(ctx context.Context, installID, id string) *apierr.APIE
 	if s == nil || s.store == nil || s.upstream == nil {
 		return apierr.Internal()
 	}
-	got, ae := s.authorize(ctx, installID)
+	got, ae := s.gen.Authorize(ctx, installID)
 	if ae != nil {
 		return ae
 	}
@@ -430,32 +396,6 @@ func (s *Service) Delete(ctx context.Context, installID, id string) *apierr.APIE
 		return apierr.Internal()
 	}
 	return nil
-}
-
-// rollbackReservation reverses a charge for work that provably never reached the provider.
-//
-// rollbackReservation 为一次**可证明从未抵达上游**的工作反转计费。
-func (s *Service) rollbackReservation(ctx context.Context, r *domquota.Reservation) {
-	if err := s.quota.Rollback(ctx, r); err != nil {
-		s.log.RollbackFailure()
-	}
-}
-
-func (s *Service) authorize(ctx context.Context, installID string) (string, *apierr.APIError) {
-	got, status, found, err := s.auth.LookupInstall(ctx, installID)
-	if err != nil {
-		return "", apierr.Internal()
-	}
-	if installID == "" || !found || got == "" {
-		return "", apierr.ErrInvalidInstall
-	}
-	if status == dominstall.StatusBanned {
-		return "", apierr.ErrAccountBanned
-	}
-	if s.rl != nil && !s.rl.Allow(got) {
-		return "", apierr.ErrRateLimited
-	}
-	return got, nil
 }
 
 type noopLogger struct{}
