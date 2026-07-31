@@ -507,7 +507,7 @@ func (c *Config) ValidateSemantics() error {
 		if len(c.QwenAPIKeys) == 0 {
 			return fmt.Errorf("SEC-2 config: IMAGE_ENABLED requires DASHSCOPE_API_KEY")
 		}
-		if _, err := billing.NewImagesPlan(billing.ProviderQwen, c.ImageUpstreamModel, 1); err != nil {
+		if _, err := billing.NewUnitPlan(billing.ProviderQwen, c.ImageUpstreamModel, billing.InputImages, 1); err != nil {
 			return fmt.Errorf("SEC-2 config: IMAGE_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}
 		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
@@ -519,7 +519,7 @@ func (c *Config) ValidateSemantics() error {
 		if len(c.QwenAPIKeys) == 0 {
 			return fmt.Errorf("SEC-2 config: SPEECH_ENABLED requires DASHSCOPE_API_KEY")
 		}
-		if _, err := billing.NewCharactersPlan(billing.ProviderQwen, c.TTSUpstreamModel, 1); err != nil {
+		if _, err := billing.NewUnitPlan(billing.ProviderQwen, c.TTSUpstreamModel, billing.InputCharacters, 1); err != nil {
 			return fmt.Errorf("SEC-2 config: TTS_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}
 		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
@@ -561,7 +561,7 @@ func (c *Config) ValidateSemantics() error {
 		if len(c.QwenAPIKeys) == 0 {
 			return fmt.Errorf("SEC-2 config: VIDEO_ENABLED requires DASHSCOPE_API_KEY")
 		}
-		if _, err := billing.NewVideoSecondsPlan(billing.ProviderQwen, c.VideoUpstreamModel, 1); err != nil {
+		if _, err := billing.NewUnitPlan(billing.ProviderQwen, c.VideoUpstreamModel, billing.InputVideoSeconds, 1); err != nil {
 			return fmt.Errorf("SEC-2 config: VIDEO_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}
 		if strings.TrimSpace(c.DashScopeNativeBase) == "" {

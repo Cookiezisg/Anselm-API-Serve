@@ -270,7 +270,7 @@ func (s *Service) Enroll(ctx context.Context, installID, name, leaseID string) (
 	// 钱包是钱动之前的**最后**一道闸,而品类日闸搭在它里面(VOICE_DAILY_LIMIT,与预留在同一个
 	// BEGIN IMMEDIATE 里消耗)。**它才是真正界住这个能力的那道闸**:上面那两条库存上限界的是**同时**
 	// 存在几个音色,而既然 Delete 会腾出位置,enroll→delete 循环在没有它的时候可以毫无上界地花钱。
-	plan, err := billing.NewVoicesPlan(billing.ProviderQwen, billing.QwenTTSClone, 1)
+	plan, err := billing.NewUnitPlan(billing.ProviderQwen, billing.QwenTTSClone, billing.InputVoices, 1)
 	if err != nil {
 		return domvoice.Voice{}, apierr.Internal()
 	}

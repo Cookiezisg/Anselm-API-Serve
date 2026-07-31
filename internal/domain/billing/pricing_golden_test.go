@@ -54,35 +54,37 @@ func unitCases() []unitCase {
 	return []unitCase{
 		{
 			label: "audio-seconds (realtime ASR)", model: Qwen3ASRFlashRealtime, class: InputAudioSeconds,
-			plan: func(u int64) (Plan, error) { return NewAudioSecondsPlan(ProviderQwen, Qwen3ASRFlashRealtime, u) },
-			cost: func(p Plan, u int64) (int64, error) { return p.AudioSecondsCost(u) },
+			plan: func(u int64) (Plan, error) {
+				return NewUnitPlan(ProviderQwen, Qwen3ASRFlashRealtime, InputAudioSeconds, u)
+			},
+			cost: func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			// 1s, a short clip, and the session ceiling.
 			units: []int64{1, 30, QwenASRInputLimit},
 		},
 		{
 			label: "images", model: QwenImage20, class: InputImages,
-			plan: func(u int64) (Plan, error) { return NewImagesPlan(ProviderQwen, QwenImage20, u) },
-			cost: func(p Plan, u int64) (int64, error) { return p.ImagesCost(u) },
+			plan: func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, QwenImage20, InputImages, u) },
+			cost: func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			// The wire fixes n=1; the headroom only bounds the card.
 			units: []int64{1, 2, QwenImageInputLimit},
 		},
 		{
 			label: "characters (speech synthesis)", model: QwenAudio30TTSFlash, class: InputCharacters,
-			plan:  func(u int64) (Plan, error) { return NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, u) },
-			cost:  func(p Plan, u int64) (int64, error) { return p.CharactersCost(u) },
+			plan:  func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, u) },
+			cost:  func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			units: []int64{1, 1_000, QwenTTSInputLimit},
 		},
 		{
 			label: "video-seconds", model: Wan27T2V, class: InputVideoSeconds,
-			plan: func(u int64) (Plan, error) { return NewVideoSecondsPlan(ProviderQwen, Wan27T2V, u) },
-			cost: func(p Plan, u int64) (int64, error) { return p.VideoSecondsCost(u) },
+			plan: func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, Wan27T2V, InputVideoSeconds, u) },
+			cost: func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			// The most expensive thing this gateway can be asked to do.
 			units: []int64{1, 5, QwenVideoInputLimit},
 		},
 		{
 			label: "voices (clone enrollment)", model: QwenTTSClone, class: InputVoices,
-			plan:  func(u int64) (Plan, error) { return NewVoicesPlan(ProviderQwen, QwenTTSClone, u) },
-			cost:  func(p Plan, u int64) (int64, error) { return p.VoicesCost(u) },
+			plan:  func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, QwenTTSClone, InputVoices, u) },
+			cost:  func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			units: []int64{1, QwenVoiceInputLimit},
 		},
 	}

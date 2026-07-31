@@ -56,7 +56,7 @@ func TestReserveBuildsASRAudioSecondsPlan(t *testing.T) {
 
 func TestSettleRoundsPCM16MonoBytesUpToSeconds(t *testing.T) {
 	q := &fakeQuota{}
-	plan, err := billing.NewAudioSecondsPlan(billing.ProviderQwen, DefaultModel, 120)
+	plan, err := billing.NewUnitPlan(billing.ProviderQwen, DefaultModel, billing.InputAudioSeconds, 120)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestSettleRoundsPCM16MonoBytesUpToSeconds(t *testing.T) {
 	if err := s.Settle(context.Background(), r, 32_001); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
-	want, err := plan.AudioSecondsCost(2)
+	want, err := plan.UnitCost(billing.InputAudioSeconds, 2)
 	if err != nil {
 		t.Fatalf("cost: %v", err)
 	}

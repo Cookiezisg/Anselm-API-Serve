@@ -631,7 +631,7 @@ func TestResetMonthlyRequestsRequiresTerminalLedgerAndPreservesSpend(t *testing.
 // speechPlan builds a frozen n-character speech plan (the second category).
 func speechPlan(t *testing.T, chars int64) billing.Plan {
 	t.Helper()
-	p, err := billing.NewCharactersPlan(billing.ProviderQwen, billing.QwenAudio30TTSFlash, chars)
+	p, err := billing.NewUnitPlan(billing.ProviderQwen, billing.QwenAudio30TTSFlash, billing.InputCharacters, chars)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestRollback_ReversesSpeechCharacters(t *testing.T) {
 // imagePlan builds a frozen one-image plan (the first category).
 func imagePlan(t *testing.T) billing.Plan {
 	t.Helper()
-	p, err := billing.NewImagesPlan(billing.ProviderQwen, billing.QwenImage20, 1)
+	p, err := billing.NewUnitPlan(billing.ProviderQwen, billing.QwenImage20, billing.InputImages, 1)
 	if err != nil {
 		t.Fatalf("images plan: %v", err)
 	}

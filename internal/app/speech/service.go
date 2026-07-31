@@ -127,7 +127,7 @@ func (s *Service) Reserve(ctx context.Context, installID string, maxAudioSeconds
 	if s == nil || s.quota == nil || s.clock == nil {
 		return nil, apierr.Internal()
 	}
-	plan, err := billing.NewAudioSecondsPlan(billing.ProviderQwen, DefaultModel, maxAudioSeconds)
+	plan, err := billing.NewUnitPlan(billing.ProviderQwen, DefaultModel, billing.InputAudioSeconds, maxAudioSeconds)
 	if err != nil {
 		return nil, apierr.Internal()
 	}
@@ -146,7 +146,7 @@ func (s *Service) Settle(ctx context.Context, r *domquota.Reservation, audioByte
 		return nil
 	}
 	seconds := AudioBytesToBillableSeconds(audioBytes)
-	cost, err := r.Plan.AudioSecondsCost(seconds)
+	cost, err := r.Plan.UnitCost(billing.InputAudioSeconds, seconds)
 	if err != nil {
 		return err
 	}

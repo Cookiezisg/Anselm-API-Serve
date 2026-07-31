@@ -183,7 +183,7 @@ func (s *Service) submit(ctx context.Context, installID, prompt string, seconds 
 
 	c := s.cfg.Load()
 	model := strings.TrimSpace(c.VideoUpstreamModel)
-	plan, err := billing.NewVideoSecondsPlan(billing.ProviderQwen, model, int64(seconds))
+	plan, err := billing.NewUnitPlan(billing.ProviderQwen, model, billing.InputVideoSeconds, int64(seconds))
 	if err != nil {
 		// Startup validation pins the card; reaching this means config drifted mid-flight.
 		// 启动校验已钉卡;走到这里说明配置在途漂移。
@@ -214,7 +214,7 @@ func (s *Service) submit(ctx context.Context, installID, prompt string, seconds 
 		return "", apierr.ErrUpstreamError
 	}
 
-	cost, err := reservation.Plan.VideoSecondsCost(int64(seconds))
+	cost, err := reservation.Plan.UnitCost(billing.InputVideoSeconds, int64(seconds))
 	if err != nil {
 		cost = reservation.ReservedPUSD // frozen-card failure cannot under-charge / 冻卡异常绝不少收
 	}

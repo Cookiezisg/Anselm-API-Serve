@@ -99,6 +99,45 @@ const (
 	InputVoices
 )
 
+// unitClass is everything that distinguishes one non-token pricing class from
+// another: the exact model it prices, and the smallest reservation that means
+// anything for it.
+//
+// This table replaced five near-identical validation branches and five
+// near-identical constructor/cost pairs. Collapsing them made ONE asymmetry
+// visible that had been invisible while it was spread across five copies: audio
+// alone admits a ZERO-unit reservation. A realtime session that opens and sends
+// no PCM has nothing to price, and refusing to build its plan would turn a legal
+// no-op into an error. The other four bill a discrete artifact — zero images,
+// zero characters, zero seconds of video, zero voices are all malformed asks.
+//
+// That difference was real before this table existed; it was just spelled as
+// "the audio branch happens not to have the `< 1` check", which reads like an
+// oversight rather than a decision. Here it is a column.
+//
+// unitClass 是「一个非 token 计费品类区别于另一个」的全部内容:它定价的确切模型,以及对它而言
+// 有意义的最小预留量。
+//
+// 这张表取代了五段几乎逐字相同的校验分支与五组几乎逐字相同的构造/计价函数。合并让**一处不对称**
+// 显形——它此前分散在五份拷贝里所以看不见:**只有音频允许 0 单位预留**。一个开了会话却没发 PCM
+// 的实时连接没有东西可定价,拒绝为它建 plan 等于把一次合法的空操作变成错误。另外四个计的是离散
+// 产物——零张图、零个字符、零秒视频、零个音色,都是畸形的请求。
+//
+// 这个差别在本表存在之前就是真的,只是它被写成「音频那个分支碰巧没有 `< 1` 检查」——那读起来像
+// 疏忽,而不像决定。在这里它是一列。
+type unitClass struct {
+	model    string
+	minUnits int64
+}
+
+var unitClasses = map[InputClass]unitClass{
+	InputAudioSeconds: {model: Qwen3ASRFlashRealtime, minUnits: 0},
+	InputImages:       {model: QwenImage20, minUnits: 1},
+	InputCharacters:   {model: QwenAudio30TTSFlash, minUnits: 1},
+	InputVideoSeconds: {model: Wan27T2V, minUnits: 1},
+	InputVoices:       {model: QwenTTSClone, minUnits: 1},
+}
+
 // Usage is a provider-neutral token vector extracted from an upstream usage
 // snapshot. Fields absent from a compatibility response remain zero. Present is
 // distinct from an all-zero usage object and lets callers conservatively retain
@@ -313,33 +352,16 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	if err != nil {
 		return Plan{}, err
 	}
-	switch inputClass {
-	case InputStandard:
+	if inputClass == InputStandard {
 		if card.OutputLimit == 0 {
 			return Plan{}, ErrUnknownRateCard
 		}
-	case InputAudioSeconds:
-		if provider != ProviderQwen || model != Qwen3ASRFlashRealtime || outputBound != 0 {
+	} else {
+		u, known := unitClasses[inputClass]
+		if !known || provider != ProviderQwen || model != u.model ||
+			outputBound != 0 || promptBound < u.minUnits {
 			return Plan{}, ErrUnknownRateCard
 		}
-	case InputImages:
-		if provider != ProviderQwen || model != QwenImage20 || outputBound != 0 || promptBound < 1 {
-			return Plan{}, ErrUnknownRateCard
-		}
-	case InputCharacters:
-		if provider != ProviderQwen || model != QwenAudio30TTSFlash || outputBound != 0 || promptBound < 1 {
-			return Plan{}, ErrUnknownRateCard
-		}
-	case InputVideoSeconds:
-		if provider != ProviderQwen || model != Wan27T2V || outputBound != 0 || promptBound < 1 {
-			return Plan{}, ErrUnknownRateCard
-		}
-	case InputVoices:
-		if provider != ProviderQwen || model != QwenTTSClone || outputBound != 0 || promptBound < 1 {
-			return Plan{}, ErrUnknownRateCard
-		}
-	default:
-		return Plan{}, ErrUnknownRateCard
 	}
 	if promptBound < 0 || outputBound < 0 || promptBound > card.InputLimit || outputBound > card.OutputLimit {
 		return Plan{}, ErrUnknownRateCard
@@ -367,106 +389,55 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 	}, nil
 }
 
-// NewAudioSecondsPlan prices a realtime ASR reservation in whole seconds. The
-// gateway rounds partial audio seconds up before calling it, so cost accounting
-// stays conservative without pretending audio duration is a text token count.
-func NewAudioSecondsPlan(provider Provider, model string, seconds int64) (Plan, error) {
-	return NewPlan(provider, model, InputAudioSeconds, seconds, 0)
+// NewUnitPlan prices a non-token capability by ITS OWN unit — seconds of audio,
+// images, characters, seconds of video, enrolled voices. The unit is whatever the
+// provider actually bills, which is why none of these can be expressed as tokens.
+//
+// Every one of them is deterministic before the call: the requested quantity IS
+// the billed quantity, so a successful capability settles for exactly what it
+// reserved. That is the property that lets four different products share one
+// reservation shape.
+//
+// NewUnitPlan 按**各自的单位**为非 token 能力定价——音频秒数、图张数、字符数、视频秒数、已登记
+// 音色个数。单位取的是 provider 真正计费的那个东西,这正是它们都表达不成 token 的原因。
+//
+// 它们全都在调用**之前**就已确定:请求的量**就是**计费的量,故一次成功的能力调用结算额恰等于它
+// 预留的额。正是这个性质,让四个不同的产品共用同一种预留形状。
+func NewUnitPlan(provider Provider, model string, class InputClass, units int64) (Plan, error) {
+	return NewPlan(provider, model, class, units, 0)
 }
 
-// AudioSecondsCost converts an authoritative audio duration under a frozen ASR
-// plan. It is intentionally separate from token Usage so chat and speech
-// accounting cannot be accidentally mixed.
-func (p Plan) AudioSecondsCost(seconds int64) (int64, error) {
-	if p.InputClass != InputAudioSeconds || seconds < 0 || seconds > p.card.InputLimit {
+// UnitCost converts an authoritative unit count under a frozen unit plan.
+//
+// The caller must NAME the unit it is passing, and it must match the plan's own
+// class. That parameter is not ceremony: a bare count carries no unit, and the
+// five methods this replaced each encoded theirs in the method name — so
+// dropping it would have let a video reservation be settled as if the number
+// were characters. Video is the most expensive card here, which makes the
+// crossover both the easiest to make and the costliest to make.
+//
+// It is also deliberately separate from Cost(Usage), so a token vector and a
+// unit count can never be settled through each other's arithmetic.
+//
+// UnitCost 在冻结的单位 plan 下换算权威单位数。
+//
+// 调用方**必须说出**自己传的是什么单位,且它必须与 plan 自己的品类一致。这个参数不是客套:一个
+// 裸计数**不携带单位**,而它取代的那五个方法各自把单位编码在方法名里——去掉它,就会让一次视频预留
+// 被当成字符数来结算。视频是这里最贵的卡,这让穿越既最容易犯、也最贵。
+//
+// 它同样与 Cost(Usage) **刻意分开**,使 token 向量与单位计数永远走不进对方的算术。
+func (p Plan) UnitCost(class InputClass, units int64) (int64, error) {
+	if _, ok := unitClasses[class]; !ok || p.InputClass != class {
 		return 0, ErrUnknownRateCard
 	}
-	tier, ok := p.card.tierForInput(seconds)
+	if units < 0 || units > p.card.InputLimit {
+		return 0, ErrUnknownRateCard
+	}
+	tier, ok := p.card.tierForInput(units)
 	if !ok {
 		return 0, ErrUnknownRateCard
 	}
-	return checkedMul(seconds, tier.InputPUSD)
-}
-
-// NewImagesPlan prices an image-generation reservation by image count (n=1 on
-// the gateway wire, WRK-082 P12). Deterministic per-image pricing means reserve
-// equals settle for a successful generation.
-//
-// NewImagesPlan 按图张数定价图像生成预留(网关线缆 n=1,P12)。按张确定性定价意味着成功生成时
-// reserve == settle。
-func NewImagesPlan(provider Provider, model string, images int64) (Plan, error) {
-	return NewPlan(provider, model, InputImages, images, 0)
-}
-
-// ImagesCost converts an authoritative generated-image count under a frozen
-// image plan — the AudioSecondsCost twin, kept separate from token Usage so
-// image accounting cannot be mixed with chat.
-//
-// ImagesCost 在冻结的图像 plan 下换算权威已生成张数——AudioSecondsCost 的孪生,与 token Usage
-// 刻意分离,图像账不与 chat 混。
-func (p Plan) ImagesCost(images int64) (int64, error) {
-	if p.InputClass != InputImages || images < 0 || images > p.card.InputLimit {
-		return 0, ErrUnknownRateCard
-	}
-	tier, ok := p.card.tierForInput(images)
-	if !ok {
-		return 0, ErrUnknownRateCard
-	}
-	return checkedMul(images, tier.InputPUSD)
-}
-
-// NewVoicesPlan prices a voice-ENROLLMENT reservation by voice count (always 1 on the wire). The
-// price is fixed and known before the call, so reserve equals settle for a successful enrollment —
-// the same deterministic shape as images, but for a purchase that persists after the request ends.
-//
-// NewVoicesPlan 按**音色个数**定价一次音色登记预留(线缆上恒为 1)。价格固定、调用前就已知,故登记成功
-// 时 reserve == settle——与图像同一种确定性形状,只是这笔购买在请求结束之后仍然存在。
-func NewVoicesPlan(provider Provider, model string, voices int64) (Plan, error) {
-	return NewPlan(provider, model, InputVoices, voices, 0)
-}
-
-// VoicesCost converts an authoritative created-voice count under a frozen enrollment plan.
-//
-// VoicesCost 在冻结的登记 plan 下换算权威已创建音色数。
-func (p Plan) VoicesCost(voices int64) (int64, error) {
-	if p.InputClass != InputVoices || voices < 0 || voices > p.card.InputLimit {
-		return 0, ErrUnknownRateCard
-	}
-	tier, ok := p.card.tierForInput(voices)
-	if !ok {
-		return 0, ErrUnknownRateCard
-	}
-	return checkedMul(voices, tier.InputPUSD)
-}
-
-// NewCharactersPlan prices a speech-synthesis reservation by INPUT character
-// count. The count is known exactly before the call (it is the request's own
-// text), so reserve equals settle for a successful synthesis — the same
-// deterministic shape as images, and the reason speech needs no usage feedback
-// from the upstream to close its books.
-//
-// NewCharactersPlan 按**输入**字符数定价语音合成预留。字符数在调用前就精确已知(它就是请求自带的
-// 文本),故合成成功时 reserve == settle——与图像同一种确定性形状,也正因如此语音不需要上游回报
-// usage 就能平账。
-func NewCharactersPlan(provider Provider, model string, characters int64) (Plan, error) {
-	return NewPlan(provider, model, InputCharacters, characters, 0)
-}
-
-// CharactersCost converts an authoritative character count under a frozen speech
-// plan — the ImagesCost twin, kept separate from token Usage so speech
-// accounting cannot be mixed with chat.
-//
-// CharactersCost 在冻结的语音 plan 下换算权威字符数——ImagesCost 的孪生,与 token Usage 刻意
-// 分离,语音账不与 chat 混。
-func (p Plan) CharactersCost(characters int64) (int64, error) {
-	if p.InputClass != InputCharacters || characters < 0 || characters > p.card.InputLimit {
-		return 0, ErrUnknownRateCard
-	}
-	tier, ok := p.card.tierForInput(characters)
-	if !ok {
-		return 0, ErrUnknownRateCard
-	}
-	return checkedMul(characters, tier.InputPUSD)
+	return checkedMul(units, tier.InputPUSD)
 }
 
 // Cost converts an authoritative cumulative usage snapshot under the frozen
@@ -564,29 +535,4 @@ func nonNegative(v int64) int64 {
 		return 0
 	}
 	return v
-}
-
-// NewVideoSecondsPlan prices a video reservation by clip SECONDS. Like images and characters the
-// cost is deterministic before the call (the requested duration IS the billed quantity), so
-// reserve equals settle for a successful generation — even though the generation itself is
-// asynchronous and minutes long.
-//
-// NewVideoSecondsPlan 按片长**秒数**定价视频预留。与图像、字符一样,成本在调用前即确定(请求的时长
-// **就是**计费量),故成功生成时 reserve == settle——尽管生成本身是异步且分钟级的。
-func NewVideoSecondsPlan(provider Provider, model string, seconds int64) (Plan, error) {
-	return NewPlan(provider, model, InputVideoSeconds, seconds, 0)
-}
-
-// VideoSecondsCost converts an authoritative clip length under a frozen video plan.
-//
-// VideoSecondsCost 在冻结的视频 plan 下换算权威片长。
-func (p Plan) VideoSecondsCost(seconds int64) (int64, error) {
-	if p.InputClass != InputVideoSeconds || seconds < 0 || seconds > p.card.InputLimit {
-		return 0, ErrUnknownRateCard
-	}
-	tier, ok := p.card.tierForInput(seconds)
-	if !ok {
-		return 0, ErrUnknownRateCard
-	}
-	return checkedMul(seconds, tier.InputPUSD)
 }

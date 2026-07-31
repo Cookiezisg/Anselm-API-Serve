@@ -96,7 +96,7 @@ func TestQwenQuoteUsesInclusiveLowTierBelow256K(t *testing.T) {
 }
 
 func TestQwenRealtimeASRPlanPricesAudioSeconds(t *testing.T) {
-	p, err := NewAudioSecondsPlan(ProviderQwen, Qwen3ASRFlashRealtime, 120)
+	p, err := NewUnitPlan(ProviderQwen, Qwen3ASRFlashRealtime, InputAudioSeconds, 120)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestQwenRealtimeASRPlanPricesAudioSeconds(t *testing.T) {
 	if p.ReservedPUSD != wantReserve {
 		t.Fatalf("reserve=%d want %d", p.ReservedPUSD, wantReserve)
 	}
-	actual, err := p.AudioSecondsCost(2)
+	actual, err := p.UnitCost(InputAudioSeconds, 2)
 	if err != nil {
 		t.Fatalf("AudioSecondsCost: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestCostDirectlyRejectsEveryNegativeUsageDimension(t *testing.T) {
 // persistence boundary relies on, and the closed-set rejections (wrong provider/model, zero
 // images, out-of-card counts, cross-class cost calls).
 func TestImagesPlanAndCost(t *testing.T) {
-	p, err := NewImagesPlan(ProviderQwen, QwenImage20, 1)
+	p, err := NewUnitPlan(ProviderQwen, QwenImage20, InputImages, 1)
 	if err != nil {
 		t.Fatalf("images plan: %v", err)
 	}
@@ -297,27 +297,27 @@ func TestImagesPlanAndCost(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
 	}
-	cost, err := p.ImagesCost(1)
+	cost, err := p.UnitCost(InputImages, 1)
 	if err != nil || cost != p.ReservedPUSD {
 		t.Fatalf("ImagesCost(1) = %d,%v — want reserve==settle", cost, err)
 	}
-	if _, err := NewImagesPlan(ProviderQwen, Qwen37Plus, 1); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, Qwen37Plus, InputImages, 1); err == nil {
 		t.Fatal("images plan on a text card must fail closed")
 	}
-	if _, err := NewImagesPlan(ProviderQwen, QwenImage20, 0); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenImage20, InputImages, 0); err == nil {
 		t.Fatal("zero-image plan must fail closed")
 	}
-	if _, err := NewImagesPlan(ProviderQwen, QwenImage20, QwenImageInputLimit+1); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenImage20, InputImages, QwenImageInputLimit+1); err == nil {
 		t.Fatal("over-card image count must fail closed")
 	}
-	if _, err := p.ImagesCost(QwenImageInputLimit + 1); err == nil {
+	if _, err := p.UnitCost(InputImages, QwenImageInputLimit+1); err == nil {
 		t.Fatal("over-card ImagesCost must fail closed")
 	}
 	chat, err := NewPlan(ProviderQwen, Qwen37Plus, InputStandard, 10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := chat.ImagesCost(1); err == nil {
+	if _, err := chat.UnitCost(InputImages, 1); err == nil {
 		t.Fatal("ImagesCost on a token plan must fail closed (accounts must not mix)")
 	}
 }
@@ -331,7 +331,7 @@ func TestImagesPlanAndCost(t *testing.T) {
 // TestCharactersPlanAndCost 钉语音卡对(批C)。最要紧的是**跨类**断言:字符 plan 不得答 ImagesCost、
 // 图像 plan 不得答 CharactersCost——两者单位不同,静默串线会把音频按每单位 35e9 计费。
 func TestCharactersPlanAndCost(t *testing.T) {
-	p, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 100)
+	p, err := NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, 100)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}
@@ -341,36 +341,36 @@ func TestCharactersPlanAndCost(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
 	}
-	cost, err := p.CharactersCost(100)
+	cost, err := p.UnitCost(InputCharacters, 100)
 	if err != nil || cost != p.ReservedPUSD {
 		t.Fatalf("CharactersCost(100) = %d,%v — want reserve==settle", cost, err)
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, QwenImage20, 100); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenImage20, InputCharacters, 100); err == nil {
 		t.Fatal("characters plan on the image card must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, Qwen37Plus, 100); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, Qwen37Plus, InputCharacters, 100); err == nil {
 		t.Fatal("characters plan on a text card must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 0); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, 0); err == nil {
 		t.Fatal("zero-character plan must fail closed")
 	}
-	if _, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, QwenTTSInputLimit+1); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, QwenTTSInputLimit+1); err == nil {
 		t.Fatal("over-card character count must fail closed")
 	}
-	if _, err := p.ImagesCost(1); err == nil {
+	if _, err := p.UnitCost(InputImages, 1); err == nil {
 		t.Fatal("a characters plan must refuse ImagesCost (unit crossover)")
 	}
-	img, err := NewImagesPlan(ProviderQwen, QwenImage20, 1)
+	img, err := NewUnitPlan(ProviderQwen, QwenImage20, InputImages, 1)
 	if err != nil {
 		t.Fatalf("images plan: %v", err)
 	}
-	if _, err := img.CharactersCost(1); err == nil {
+	if _, err := img.UnitCost(InputCharacters, 1); err == nil {
 		t.Fatal("an images plan must refuse CharactersCost (unit crossover)")
 	}
 }
 
 func TestVideoSecondsPlanAndCost(t *testing.T) {
-	p, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, 5)
+	p, err := NewUnitPlan(ProviderQwen, Wan27T2V, InputVideoSeconds, 5)
 	if err != nil {
 		t.Fatalf("video plan: %v", err)
 	}
@@ -380,20 +380,20 @@ func TestVideoSecondsPlanAndCost(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("frozen plan fails Validate roundtrip: %v", err)
 	}
-	cost, err := p.VideoSecondsCost(5)
+	cost, err := p.UnitCost(InputVideoSeconds, 5)
 	if err != nil || cost != p.ReservedPUSD {
 		t.Fatalf("VideoSecondsCost(5) = %d,%v — want reserve==settle", cost, err)
 	}
-	if _, err := NewVideoSecondsPlan(ProviderQwen, QwenImage20, 5); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, QwenImage20, InputVideoSeconds, 5); err == nil {
 		t.Fatal("video plan on the image card must fail closed")
 	}
-	if _, err := NewVideoSecondsPlan(ProviderQwen, Qwen37Plus, 5); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, Qwen37Plus, InputVideoSeconds, 5); err == nil {
 		t.Fatal("video plan on a text card must fail closed")
 	}
-	if _, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, 0); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, Wan27T2V, InputVideoSeconds, 0); err == nil {
 		t.Fatal("zero-second plan must fail closed")
 	}
-	if _, err := NewVideoSecondsPlan(ProviderQwen, Wan27T2V, QwenVideoInputLimit+1); err == nil {
+	if _, err := NewUnitPlan(ProviderQwen, Wan27T2V, InputVideoSeconds, QwenVideoInputLimit+1); err == nil {
 		t.Fatal("over-card duration must fail closed")
 	}
 	// Unit crossover in BOTH directions: a per-second plan must never be settled
@@ -401,17 +401,17 @@ func TestVideoSecondsPlanAndCost(t *testing.T) {
 	// most expensive card here, so a crossover mistake is also the costliest.
 	// **两个方向**的单位穿越:按秒的 plan 绝不能被当成字符或张来结算,反之亦然。视频是这里最贵的
 	// 卡,故穿越错得也最贵。
-	if _, err := p.CharactersCost(5); err == nil {
+	if _, err := p.UnitCost(InputCharacters, 5); err == nil {
 		t.Fatal("a video plan must refuse CharactersCost")
 	}
-	if _, err := p.ImagesCost(1); err == nil {
+	if _, err := p.UnitCost(InputImages, 1); err == nil {
 		t.Fatal("a video plan must refuse ImagesCost")
 	}
-	tts, err := NewCharactersPlan(ProviderQwen, QwenAudio30TTSFlash, 100)
+	tts, err := NewUnitPlan(ProviderQwen, QwenAudio30TTSFlash, InputCharacters, 100)
 	if err != nil {
 		t.Fatalf("characters plan: %v", err)
 	}
-	if _, err := tts.VideoSecondsCost(5); err == nil {
+	if _, err := tts.UnitCost(InputVideoSeconds, 5); err == nil {
 		t.Fatal("a characters plan must refuse VideoSecondsCost")
 	}
 }

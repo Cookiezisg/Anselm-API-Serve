@@ -189,7 +189,7 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 	c := s.cfg.Load()
 	model := strings.TrimSpace(c.TTSUpstreamModel)
 	characters := int64(utf8.RuneCountInString(text))
-	plan, err := billing.NewCharactersPlan(billing.ProviderQwen, model, characters)
+	plan, err := billing.NewUnitPlan(billing.ProviderQwen, model, billing.InputCharacters, characters)
 	if err != nil {
 		// Startup validation pins the card and the handler bounds the length; reaching
 		// this means config drifted mid-flight.
@@ -227,7 +227,7 @@ func (s *Service) Synthesize(ctx context.Context, installID, text, voice string)
 		return nil, apierr.ErrUpstreamError
 	}
 
-	cost, err := reservation.Plan.CharactersCost(characters)
+	cost, err := reservation.Plan.UnitCost(billing.InputCharacters, characters)
 	if err != nil {
 		cost = reservation.ReservedPUSD // frozen-card failure cannot under-charge / 冻卡异常绝不少收
 	}
