@@ -29,7 +29,7 @@ audience: [human, ai]
 | `POST /v1/images/edits` | `images_edit` | device proof | **改图** = generations 的形状 + **`image`**(必填,**base64 data URL**)。每一道闸与 generations 共用,按同一张图像卡计价、走同一条图像日额度。详见 §1.5 |
 | `POST /v1/audio/speech` | `audio_speech` | device proof | 同步语音合成。请求 `{model?,input,voice?}`——`input` 非空 ≤500 **字符**(按 rune 计)、`voice` 缺席取 `TTS_DEFAULT_VOICE`,未知字段拒;**响应是裸 `audio/wav` 字节,不是 JSON 信封**。详见 §1.6 |
 | `POST /v1/videos/generations` | `videos_generate` | device proof | **异步**视频生成提交。请求 `{model?,prompt,seconds?,aspect?,resolution?}`——`seconds` 缺席=5 且必须落在 2–15、`aspect` ∈ `landscape`(默认)/`portrait`/`square`、`resolution` ∈ `720p`(默认)/`1080p`,未知字段拒;响应 **202** `{id,object:"video.generation",status:"pending",created}`,`id` 是**签名句柄**。详见 §1.3 |
-| `POST /v1/videos/animations` | `videos_animate` | device proof | **图生视频** = generations 的形状 + **`image`**(必填,**base64 data URL**,首帧);`aspect`/`resolution` 照常解析但**转发时整个丢弃**。详见 §1.3 |
+| `POST /v1/videos/animations` | `videos_animate` | device proof | **图生视频** = generations 的形状 + **`image`**(必填,**base64 data URL**,首帧);`aspect` 只校验不转发,`resolution` 当前只接受/转发 `720p`。详见 §1.3 |
 | `POST /v1/voices` | `voice_enroll` | device proof | **参考音色登记**。请求 `{name,leaseId}`——`name` 非空 ≤120 字符;**`leaseId` 指名一个本 install 已上传好的媒体 lease,绝不是地址**。详见 §1.7 |
 | `GET /v1/voices` | `voice_list` | device proof | 列出本 install 的音色:`{voices:[{voiceId,name,createdAt}],capacity,remaining}`。返全集、无游标(**N4 豁免①**:有界可枚举资源)。详见 §1.7 |
 | `POST /v1/voices:delete` | `voice_delete` | device proof | 删除一个音色,请求 `{voiceId}`,成功 **204**。是 `:action`(**N5**)而非 `DELETE /v1/voices/{id}`。详见 §1.7 |
@@ -86,7 +86,7 @@ audience: [human, ai]
 
 **不可能的时长在预留之前被拒**。`seconds` 越界返 400 且分文未付,而不是把当天的一条额度花在一个上游 400 上。
 
-**图生视频(`/v1/videos/animations`)共用以上每一条**。它与 generations 只差一个必填的 `image` 首帧,其余闸(prompt 上限、预留之前就拒的时长窗、未知字段拒)、计价单位、日额度、轮询端点与签名句柄全部相同——一段动起来的片子**花的是视频的秒数、产出的也是视频**。`image` 必须是 `data:` 且不含 `://`(§1.4 的形状闸),自己的码 `VIDEO_FRAME_INVALID` 而非复用 `IMAGE_SOURCE_INVALID`:一个在让图动起来的客户端被告知「**改图**的源无效」会去查错的请求。`aspect`/`resolution` 照常解析、**转发时整个丢弃**——片子继承首帧几何,转发我们的等于静默要求上游对用户刚递来的那张图做信箱边或裁切;仍然解析,故词表外的值依旧 400、不被静默忽略。上游是与出视频**同一对**提交/轮询端点、input 多一个 `img_url`。
+**图生视频(`/v1/videos/animations`)共用以上每一条**。它与 generations 只差一个必填的 `image` 首帧,其余闸(prompt 上限、预留之前就拒的时长窗、未知字段拒)、计价单位、日额度、轮询端点与签名句柄全部相同——一段动起来的片子**花的是视频的秒数、产出的也是视频**。`image` 必须是 `data:` 且不含 `://`(§1.4 的形状闸),自己的码 `VIDEO_FRAME_INVALID` 而非复用 `IMAGE_SOURCE_INVALID`:一个在让图动起来的客户端被告知「**改图**的源无效」会去查错的请求。它使用独立、精确定价的 `VIDEO_I2V_UPSTREAM_MODEL`。上游虽与 T2V 共用提交/轮询端点,请求协议却不同:`input.media=[{"type":"first_frame","url":"data:..."}]`,**不是**旧版 `img_url`。`aspect` 只校验、不转发,故视频比例继承首帧;`resolution` 当前只接受并显式转发 `720P`——Wan 2.7 I2V 缺席时默认 1080P,而分辨率会改变每秒价格,所以绝不能一边按 720P 预留、一边让上游猜成 1080P。
 
 **拒绝码**:`VIDEO_UNAVAILABLE` / `VIDEO_QUOTA_EXHAUSTED` / `VIDEO_FRAME_INVALID`(仅 animations) / `BAD_REQUEST` / `UPSTREAM_*`;轮询另有 `VIDEO_TASK_NOT_FOUND`。
 
@@ -236,12 +236,12 @@ message `role` 是闭集 `system|user|assistant|tool`，且 tool message 必须�
 adapter 剥离历史 `reasoning_content`(provider 私有,回传即再计费),但保留 opaque `tool_calls`。`GET /v1/models` 在标准 model object 上追加：
 
 ```json
-{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true},"image_generation":{"available":true,"daily_limit":10},"speech_generation":{"available":true,"daily_limit":50000},"video_generation":{"available":true,"daily_limit":10}}}
+{"anselm_capabilities":{"version":1,"routing":"content","text":{"input_limit":1000000,"output_limit":16384,"available":true},"multimodal":{"input_limit":1000000,"output_limit":16384,"available":true},"image_generation":{"available":true,"daily_limit":10},"speech_generation":{"available":true,"daily_limit":50000},"video_generation":{"available":true,"daily_limit":10,"image_to_video":true}}}
 ```
 
 `output_limit` 取各 route 模型硬上限与 live `MAX_TOKENS_CAP` 的较小值。
 
-`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：byte estimate 只作账务证据、在模型 input limit 处 clamp;reserve 恒用完整模型 input/output hard limits 后按自洽 usage 退款。
+`available` 一律描述**调用方将要走完的整条路**、而非某一半:`multimodal` 要 Qwen key **且** `MEDIA_ENABLED`(没有上传通道时,信了这个标志的客户端会在第一次发媒体时**晚**失败、失败在对话中途);`image_generation`/`speech_generation` 要各自能力开关 **且** Qwen key;`video_generation.available` 还要**第三半**——句柄签名密钥,因为一个「提交得了却永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。`video_generation.image_to_video` 更窄:除完整视频路径外还要求 `VIDEO_I2V_UPSTREAM_MODEL` 命中精确冻结的 I2V rate card;客户端不得从父级 `available` 猜测动画能力。三个 `*_generation` 都是增量字段(`version` 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 `nil`=不可用。`daily_limit` 的**单位逐能力不同**——图像是**张**、语音是**字符**、视频是**条**。通用 OpenAI client 可忽略该扩展，Anselm 按实际 prompt 是否含 native media 动态选 route budget。成本仍按冻结 rate card 预留：byte estimate 只作账务证据、在模型 input limit 处 clamp;reserve 恒用完整模型 input/output hard limits 后按自洽 usage 退款。
 
 `DASHSCOPE_API_KEY` 与 Qwen endpoint/workspace 是启动期必需配置；缺失会 fail-fast，绝不以“纯文本照常”静默降级。音频不依赖 Qwen 视觉配置，始终先返回 `503 AUDIO_UNAVAILABLE`；未来音频 route 只能经新 capability 决策启用。Qwen 故障同样只返回自身归一错误，不跨 provider。
 

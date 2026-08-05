@@ -37,12 +37,8 @@ import (
 // Upstream 是异步视频端口:**两个**动词,因为本族没有同步形态。unbilled=true **仅限**可证明未计费
 // 的显式拒绝(GW-INV-50)。
 type Upstream interface {
-	// SubmitVideo takes an optional firstFrame data URL: empty = text-to-video, present =
-	// image-to-video. One method rather than two because the upstream is the same endpoint with
-	// one more input field, and the entire settlement dance is identical.
-	// SubmitVideo 收一个可选的 firstFrame data URL:空=文生视频,有=图生视频。**一个方法**而非两个,
-	// 因为上游是同一条端点多一个输入字段,而整套结算舞步一模一样。
-	SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (taskID string, unbilled bool, err error)
+	SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (taskID string, unbilled bool, err error)
+	SubmitAnimation(ctx context.Context, model, prompt string, seconds int, resolution, firstFrame string) (taskID string, unbilled bool, err error)
 	PollVideo(ctx context.Context, taskID string) (status VideoStatus, err error)
 }
 
@@ -95,7 +91,13 @@ func (s *Service) Available() bool {
 // Submit 跑完用例的钱那一半,返回签名句柄。按秒 plan 在调用前即确定(请求的时长**就是**计费量),
 // 故受理成功时 settle == reserve。
 func (s *Service) Submit(ctx context.Context, installID, prompt string, seconds int, ratio, resolution string) (string, *apierr.APIError) {
-	return s.submit(ctx, installID, prompt, seconds, ratio, resolution, "")
+	if s == nil || !s.gen.Ready() || s.upstream == nil {
+		return "", apierr.Internal()
+	}
+	model := strings.TrimSpace(s.gen.Settings().VideoUpstreamModel)
+	return s.submit(ctx, installID, seconds, model, func(ctx context.Context) (string, bool, error) {
+		return s.upstream.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+	})
 }
 
 // Animate is Submit with a first frame: image-to-video. It shares every gate and the whole
@@ -106,9 +108,9 @@ func (s *Service) Submit(ctx context.Context, installID, prompt string, seconds 
 // an address this gateway would fetch is an SSRF primitive aimed at our own network. A data URL
 // cannot be fetched — it IS the bytes.
 //
-// **Geometry is dropped, not defaulted.** The clip inherits the frame, so passing our ratio and
-// resolution through would ask the upstream to letterbox or crop the very picture the user handed
-// over — silently.
+// **Aspect is inherited, resolution is explicit.** Passing a ratio would ask the
+// upstream to crop the user's frame; omitting resolution would let Wan default
+// to a more expensive 1080P generation than the frozen 720P quote.
 //
 // Animate 是「带首帧的 Submit」:图生视频。它共用每一道闸与整条结算路径——一段动起来的片子花的是视频
 // 的秒数、产出的也是视频。
@@ -116,16 +118,31 @@ func (s *Service) Submit(ctx context.Context, installID, prompt string, seconds 
 // **形状闸与改图那条是同一个安全决定**,同样的理由、同样的边界:ADR 0011 禁止带 scheme 或 host 的
 // 受管媒体输入,因为一个本网关会去取的地址是指向我们自己网络的 SSRF 原语。data URL 取不了——它就是字节。
 //
-// **几何被丢弃、不是被默认。** 片子继承首帧,把我们的 ratio 与 resolution 递过去,等于要求上游对用户
-// 刚递来的那张图做信箱边或裁切——而且是静默地做。
-func (s *Service) Animate(ctx context.Context, installID, prompt string, seconds int, firstFrame string) (string, *apierr.APIError) {
+// **比例继承、分辨率显式。** ratio 不上线缆,避免裁切用户首帧;resolution 必须显式,避免 Wan 默认到
+// 比冻结 720P 报价更贵的 1080P。
+func (s *Service) Animate(ctx context.Context, installID, prompt string, seconds int, resolution, firstFrame string) (string, *apierr.APIError) {
 	if !strings.HasPrefix(firstFrame, "data:") || strings.Contains(firstFrame, "://") {
 		return "", apierr.ErrVideoFrameInvalid
 	}
-	return s.submit(ctx, installID, prompt, seconds, "", "", firstFrame)
+	if resolution != "720P" {
+		// Resolution changes the provider's per-second price. Until it is part of
+		// the frozen plan identity, accepting 1080P would reserve a 720P quote for
+		// a more expensive generation.
+		return "", apierr.ErrBadRequest
+	}
+	if s == nil || !s.gen.Ready() || s.upstream == nil {
+		return "", apierr.Internal()
+	}
+	if !s.gen.Settings().VideoI2VAvailable() {
+		return "", apierr.ErrVideoUnavailable
+	}
+	model := strings.TrimSpace(s.gen.Settings().VideoI2VUpstreamModel)
+	return s.submit(ctx, installID, seconds, model, func(ctx context.Context) (string, bool, error) {
+		return s.upstream.SubmitAnimation(ctx, model, prompt, seconds, resolution, firstFrame)
+	})
 }
 
-func (s *Service) submit(ctx context.Context, installID, prompt string, seconds int, ratio, resolution, firstFrame string) (string, *apierr.APIError) {
+func (s *Service) submit(ctx context.Context, installID string, seconds int, model string, submit func(context.Context) (string, bool, error)) (string, *apierr.APIError) {
 	if s == nil || !s.gen.Ready() || s.upstream == nil {
 		return "", apierr.Internal()
 	}
@@ -138,7 +155,6 @@ func (s *Service) submit(ctx context.Context, installID, prompt string, seconds 
 	}
 
 	c := s.gen.Settings()
-	model := strings.TrimSpace(c.VideoUpstreamModel)
 	plan, err := billing.NewUnitPlan(billing.ProviderQwen, model, billing.InputVideoSeconds, int64(seconds))
 	if err != nil {
 		// Startup validation pins the card; reaching this means config drifted mid-flight.
@@ -147,9 +163,7 @@ func (s *Service) submit(ctx context.Context, installID, prompt string, seconds 
 	}
 	taskID, ae := genrun.Do(ctx, s.gen, got,
 		genrun.Charge{Plan: plan, Class: billing.InputVideoSeconds, Units: int64(seconds)},
-		func(ctx context.Context) (string, bool, error) {
-			return s.upstream.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution, firstFrame)
-		})
+		submit)
 	if ae != nil {
 		return "", ae
 	}

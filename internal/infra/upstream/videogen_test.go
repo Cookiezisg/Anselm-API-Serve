@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,7 +56,7 @@ func TestVideoGen_StatusToChargeMapping(t *testing.T) {
 			defer srv.Close()
 			g := NewVideoGen(srv.URL, "sk")
 
-			_, unbilled, err := g.SubmitVideo(context.Background(), "wan", "p", 5, "16:9", "720P", "")
+			_, unbilled, err := g.SubmitVideo(context.Background(), "wan", "p", 5, "16:9", "720P")
 			var ae *apierr.APIError
 			if !asAPIErr(err, &ae) || ae.Code != tc.wantCode {
 				t.Fatalf("err = %v, want %s", err, tc.wantCode)
@@ -85,7 +86,7 @@ func TestVideoGen_SubmitSpeaksTheAsyncWire(t *testing.T) {
 	defer srv.Close()
 
 	taskID, unbilled, err := NewVideoGen(srv.URL, "sk-secret").
-		SubmitVideo(context.Background(), "wan", "a cat", 5, "16:9", "720P", "")
+		SubmitVideo(context.Background(), "wan", "a cat", 5, "16:9", "720P")
 	if err != nil || taskID != "task-abc" {
 		t.Fatalf("SubmitVideo = %q, %v", taskID, err)
 	}
@@ -100,6 +101,46 @@ func TestVideoGen_SubmitSpeaksTheAsyncWire(t *testing.T) {
 	}
 	if gotPath != "/api/v1/services/aigc/video-generation/video-synthesis" {
 		t.Fatalf("path = %q", gotPath)
+	}
+}
+
+func TestVideoGen_SubmitAnimationUsesWan27MediaWire(t *testing.T) {
+	var payload struct {
+		Model string `json:"model"`
+		Input struct {
+			Prompt string `json:"prompt"`
+			Media  []struct {
+				Type string `json:"type"`
+				URL  string `json:"url"`
+			} `json:"media"`
+		} `json:"input"`
+		Parameters map[string]any `json:"parameters"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode animation payload: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"output":{"task_id":"task-i2v"}}`))
+	}))
+	defer srv.Close()
+
+	const frame = "data:image/png;base64,iVBORw0KGgo="
+	taskID, _, err := NewVideoGen(srv.URL, "sk").SubmitAnimation(
+		context.Background(), "wan2.7-i2v-2026-04-25", "move naturally", 5, "720P", frame)
+	if err != nil || taskID != "task-i2v" {
+		t.Fatalf("SubmitAnimation = %q, %v", taskID, err)
+	}
+	if payload.Model != "wan2.7-i2v-2026-04-25" || payload.Input.Prompt != "move naturally" {
+		t.Fatalf("identity = model %q prompt %q", payload.Model, payload.Input.Prompt)
+	}
+	if len(payload.Input.Media) != 1 || payload.Input.Media[0].Type != "first_frame" || payload.Input.Media[0].URL != frame {
+		t.Fatalf("media = %#v, want one typed first_frame", payload.Input.Media)
+	}
+	if payload.Parameters["resolution"] != "720P" || payload.Parameters["duration"] != float64(5) {
+		t.Fatalf("parameters = %#v", payload.Parameters)
+	}
+	if _, leaked := payload.Parameters["ratio"]; leaked {
+		t.Fatalf("animation must inherit the first frame ratio: %#v", payload.Parameters)
 	}
 }
 
@@ -172,7 +213,7 @@ func TestVideoGen_PollMapsPhasesAndForgottenTasks(t *testing.T) {
 //
 // 没有 origin 或 key 时无处可打,而调用方必须在向任何人收费**之前**就知道这件事。
 func TestVideoGen_Unconfigured(t *testing.T) {
-	_, _, err := NewVideoGen("", "").SubmitVideo(context.Background(), "wan", "p", 5, "", "", "")
+	_, _, err := NewVideoGen("", "").SubmitVideo(context.Background(), "wan", "p", 5, "", "")
 	var ae *apierr.APIError
 	if !asAPIErr(err, &ae) || ae.Code != "VIDEO_UNAVAILABLE" {
 		t.Fatalf("err = %v, want VIDEO_UNAVAILABLE", err)

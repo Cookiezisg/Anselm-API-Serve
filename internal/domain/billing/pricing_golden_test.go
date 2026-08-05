@@ -75,10 +75,16 @@ func unitCases() []unitCase {
 			units: []int64{1, 1_000, QwenTTSInputLimit},
 		},
 		{
-			label: "video-seconds", model: Wan27T2V, class: InputVideoSeconds,
+			label: "video-seconds (text-to-video)", model: Wan27T2V, class: InputVideoSeconds,
 			plan: func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, Wan27T2V, InputVideoSeconds, u) },
 			cost: func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			// The most expensive thing this gateway can be asked to do.
+			units: []int64{1, 5, QwenVideoInputLimit},
+		},
+		{
+			label: "video-seconds (image-to-video)", model: Wan27I2V, class: InputVideoSeconds,
+			plan:  func(u int64) (Plan, error) { return NewUnitPlan(ProviderQwen, Wan27I2V, InputVideoSeconds, u) },
+			cost:  func(p Plan, u int64) (int64, error) { return p.UnitCost(p.InputClass, u) },
 			units: []int64{1, 5, QwenVideoInputLimit},
 		},
 		{

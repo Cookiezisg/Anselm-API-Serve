@@ -175,13 +175,9 @@ func (h *Handler) Generate(w http.ResponseWriter, r *http.Request) {
 			response.WriteError(w, apierr.ErrVideoFrameInvalid)
 			return
 		}
-		// Aspect and resolution were parsed above and are deliberately DROPPED here: the clip
-		// inherits the frame's geometry, so forwarding ours would ask the upstream to letterbox or
-		// crop the very picture the user handed over. They stay parsed so an out-of-vocabulary value
-		// is still a 400 rather than silently ignored.
-		// 上面解出的 aspect 与 resolution 在这里**刻意丢弃**:片子继承首帧几何,转发我们的等于要求上游
-		// 对用户刚递来的那张图做信箱边或裁切。仍然照常解析,故词表外的值依旧 400、而不是被静默忽略。
-		handle, ae = h.svc.Animate(r.Context(), installID, prompt, seconds, body.Image)
+		// Aspect is dropped because the clip follows the frame; resolution remains
+		// explicit because it is a quality and billing tier, not an aspect ratio.
+		handle, ae = h.svc.Animate(r.Context(), installID, prompt, seconds, resolution, body.Image)
 	} else {
 		handle, ae = h.svc.Submit(r.Context(), installID, prompt, seconds, ratio, resolution)
 	}

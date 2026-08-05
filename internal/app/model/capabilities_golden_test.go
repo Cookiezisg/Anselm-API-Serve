@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sunweilin/anselm/gateway/internal/domain/billing"
 	"github.com/sunweilin/anselm/gateway/internal/domain/config"
 )
 
@@ -45,17 +46,18 @@ const goldenPath = "testdata/capabilities.golden.json"
 // 写死**而不是从部署脚本读取——golden 不该因为某个部署默认值变了就悄悄跟着动。
 func productionShapedConfig() *config.Config {
 	return &config.Config{
-		PublicModelID:    "anselm-auto",
-		MaxTokensCap:     16384,
-		QwenAPIKeys:      []string{"present"},
-		MediaEnabled:     true,
-		ImageEnabled:     true,
-		ImageDailyLimit:  10,
-		SpeechEnabled:    true,
-		SpeechDailyLimit: 50000,
-		VideoEnabled:     true,
-		VideoDailyLimit:  10,
-		VoiceDailyLimit:  2,
+		PublicModelID:         "anselm-auto",
+		MaxTokensCap:          16384,
+		QwenAPIKeys:           []string{"present"},
+		MediaEnabled:          true,
+		ImageEnabled:          true,
+		ImageDailyLimit:       10,
+		SpeechEnabled:         true,
+		SpeechDailyLimit:      50000,
+		VideoEnabled:          true,
+		VideoI2VUpstreamModel: billing.Wan27I2V,
+		VideoDailyLimit:       10,
+		VoiceDailyLimit:       2,
 		// Video needs a SECOND half: the handle key derived from the media signing
 		// secret. Production has it, so the fixture must too — the first draft of
 		// this file omitted it and froze `video_generation.available:false`, a shape

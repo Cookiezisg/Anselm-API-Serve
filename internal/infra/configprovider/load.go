@@ -88,6 +88,7 @@ func LoadBase(getenv func(string) string) (config.Config, error) {
 	c.DashScopeNativeBase = g.str("DASHSCOPE_NATIVE_BASE", nativeBaseFrom(c.QwenBaseURL))
 	c.TTSUpstreamModel = g.str("TTS_UPSTREAM_MODEL", billing.QwenAudio30TTSFlash)
 	c.VideoUpstreamModel = g.str("VIDEO_UPSTREAM_MODEL", billing.Wan27T2V)
+	c.VideoI2VUpstreamModel = g.str("VIDEO_I2V_UPSTREAM_MODEL", billing.Wan27I2V)
 	// Cherry is the cross-generation default voice. The parameter stays on the wire; the desktop
 	// settings page does not expose it — one good default beats a picker nobody tunes.
 	// Cherry 是跨代默认音色(参数留在线缆上、桌面设置页不开——一个好默认胜过没人调的选择器)。

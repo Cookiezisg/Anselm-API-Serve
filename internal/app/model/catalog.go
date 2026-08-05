@@ -100,9 +100,10 @@ func (c *Catalog) List() model.ListEnvelope {
 				// 视频是第三个生成能力,同守整条路法则、外加一半:句柄签名密钥。一个「提交得了、却
 				// 永远不让调用方轮询」的网关,宣告的是一个吃掉一条日额度、什么也不给的功能。
 				// 此处 DailyLimit 的单位是**条**。
-				VideoGeneration: &model.GenProfile{
-					Available:  cfg.VideoAvailable(),
-					DailyLimit: cfg.VideoDailyLimit,
+				VideoGeneration: &model.VideoGenProfile{
+					Available:    cfg.VideoAvailable(),
+					DailyLimit:   cfg.VideoDailyLimit,
+					ImageToVideo: cfg.VideoI2VAvailable(),
 				},
 			},
 		})

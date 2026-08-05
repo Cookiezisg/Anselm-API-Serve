@@ -106,6 +106,38 @@ func TestSemanticsMultimodalQuoteAtMonthlyBudgetBoundPasses(t *testing.T) {
 	}
 }
 
+func TestSemanticsVideoRequiresExactI2VRateCard(t *testing.T) {
+	c := validBase()
+	c.VideoEnabled = true
+	c.VideoUpstreamModel = billing.Wan27T2V
+	c.VideoI2VUpstreamModel = "wan-not-an-i2v-card"
+	c.DashScopeNativeBase = "https://ws-test.cn-beijing.maas.aliyuncs.com"
+	c.VideoHandleKey = []byte("derived-handle-key")
+	err := c.ValidateSemantics()
+	if err == nil || !strings.Contains(err.Error(), "VIDEO_I2V_UPSTREAM_MODEL") {
+		t.Fatalf("want exact I2V rate-card error, got %v", err)
+	}
+}
+
+func TestVideoI2VAvailabilityRequiresTheWholeVideoPathAndPricedModel(t *testing.T) {
+	c := validBase()
+	c.VideoEnabled = true
+	c.VideoHandleKey = []byte("derived-handle-key")
+	c.VideoI2VUpstreamModel = billing.Wan27I2V
+	if !c.VideoI2VAvailable() {
+		t.Fatal("complete I2V path must be advertised")
+	}
+	c.VideoI2VUpstreamModel = "unknown"
+	if c.VideoI2VAvailable() {
+		t.Fatal("an unpriced I2V model must not be advertised")
+	}
+	c.VideoI2VUpstreamModel = billing.Wan27I2V
+	c.VideoHandleKey = nil
+	if c.VideoI2VAvailable() {
+		t.Fatal("I2V without a pollable video path must not be advertised")
+	}
+}
+
 // The rate card is required UNCONDITIONALLY, because there is no longer any
 // deployment shape in which the model goes unused. This replaces an older test
 // that asserted the opposite — that a credential-less Qwen could not constrain

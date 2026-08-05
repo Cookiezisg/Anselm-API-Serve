@@ -1,5 +1,7 @@
 package config
 
+import "github.com/sunweilin/anselm/gateway/internal/domain/billing"
+
 // The double-half rule: a capability exists on this deployment only when BOTH
 // halves are present — its own switch is on, AND the Qwen credential that pays
 // for it is configured.
@@ -62,6 +64,18 @@ func (c *Config) SpeechAvailable() bool {
 // 的是一个吃掉一条日额度、什么也不给的功能。
 func (c *Config) VideoAvailable() bool {
 	return c.Credentialed() && c.VideoEnabled && len(c.VideoHandleKey) > 0
+}
+
+// VideoI2VAvailable is narrower than VideoAvailable: publishing animation also
+// requires the separately priced first-frame model. It is intentionally derived
+// from the whole video path so a caller never sees a capability whose task it
+// cannot later poll.
+func (c *Config) VideoI2VAvailable() bool {
+	if !c.VideoAvailable() {
+		return false
+	}
+	_, err := billing.NewUnitPlan(billing.ProviderQwen, c.VideoI2VUpstreamModel, billing.InputVideoSeconds, 1)
+	return err == nil
 }
 
 // VoiceAvailable rides the speech switch — a deployment that cannot speak has no

@@ -387,6 +387,7 @@ func Specs() []Spec {
 		{Key: "TTS_DEFAULT_VOICE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.TTSDefaultVoice }},
 		{Key: "VIDEO_ENABLED", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.FormatBool(c.VideoEnabled) }},
 		{Key: "VIDEO_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.VideoUpstreamModel }},
+		{Key: "VIDEO_I2V_UPSTREAM_MODEL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.VideoI2VUpstreamModel }},
 		{Key: "DASHSCOPE_NATIVE_BASE", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.DashScopeNativeBase }},
 		{Key: "DASHSCOPE_BASE_URL", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return c.QwenBaseURL }},
 		{Key: "GOMEMLIMIT_MIB", Tier: TierStartupHard, RestartRequired: true, get: func(c *Config) string { return strconv.Itoa(c.GoMemLimitMiB) }},

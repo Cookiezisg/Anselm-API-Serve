@@ -319,8 +319,12 @@ func (q quotaCfg) Limits() appquota.Limits {
 // so it never imports infra).
 type videoUp struct{ g *upstream.VideoGen }
 
-func (v videoUp) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution, firstFrame string) (string, bool, error) {
-	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution, firstFrame)
+func (v videoUp) SubmitVideo(ctx context.Context, model, prompt string, seconds int, ratio, resolution string) (string, bool, error) {
+	return v.g.SubmitVideo(ctx, model, prompt, seconds, ratio, resolution)
+}
+
+func (v videoUp) SubmitAnimation(ctx context.Context, model, prompt string, seconds int, resolution, firstFrame string) (string, bool, error) {
+	return v.g.SubmitAnimation(ctx, model, prompt, seconds, resolution, firstFrame)
 }
 
 func (v videoUp) PollVideo(ctx context.Context, taskID string) (appvideo.VideoStatus, error) {
@@ -1801,6 +1805,7 @@ func generationEnabled(native string) func(*config.Config) {
 		c.ImageEnabled, c.ImageUpstreamModel, c.ImageDailyLimit = true, billing.QwenImage20, 10
 		c.SpeechEnabled, c.TTSUpstreamModel, c.TTSDefaultVoice, c.SpeechDailyLimit = true, billing.QwenAudio30TTSFlash, "Cherry", 50_000
 		c.VideoEnabled, c.VideoUpstreamModel, c.VideoDailyLimit = true, billing.Wan27T2V, 10
+		c.VideoI2VUpstreamModel = billing.Wan27I2V
 		c.MediaSigningSecret = []byte("e2e-media-signing-secret-32-bytes!!")
 		c.VideoHandleKey = domvideo.DeriveKey(c.MediaSigningSecret)
 	}

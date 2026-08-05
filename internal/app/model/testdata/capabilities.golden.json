@@ -28,7 +28,8 @@
         },
         "video_generation": {
           "available": true,
-          "daily_limit": 10
+          "daily_limit": 10,
+          "image_to_video": true
         }
       }
     }

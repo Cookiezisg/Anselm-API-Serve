@@ -39,6 +39,7 @@ const (
 	QwenImage20           = "qwen-image-2.0"
 	QwenAudio30TTSFlash   = "qwen-audio-3.0-tts-flash"
 	Wan27T2V              = "wan2.7-t2v"
+	Wan27I2V              = "wan2.7-i2v-2026-04-25"
 	// QwenTTSClone is the voice-ENROLLMENT model — the `model` field of the customization call, not
 	// the synthesis model. It is a separate card because it is a separate purchase: enrollment buys
 	// a persistent registration once, synthesis buys characters every time.
@@ -126,16 +127,24 @@ const (
 // 这个差别在本表存在之前就是真的,只是它被写成「音频那个分支碰巧没有 `< 1` 检查」——那读起来像
 // 疏忽,而不像决定。在这里它是一列。
 type unitClass struct {
-	model    string
+	models   map[string]struct{}
 	minUnits int64
 }
 
 var unitClasses = map[InputClass]unitClass{
-	InputAudioSeconds: {model: Qwen3ASRFlashRealtime, minUnits: 0},
-	InputImages:       {model: QwenImage20, minUnits: 1},
-	InputCharacters:   {model: QwenAudio30TTSFlash, minUnits: 1},
-	InputVideoSeconds: {model: Wan27T2V, minUnits: 1},
-	InputVoices:       {model: QwenTTSClone, minUnits: 1},
+	InputAudioSeconds: {models: modelSet(Qwen3ASRFlashRealtime), minUnits: 0},
+	InputImages:       {models: modelSet(QwenImage20), minUnits: 1},
+	InputCharacters:   {models: modelSet(QwenAudio30TTSFlash), minUnits: 1},
+	InputVideoSeconds: {models: modelSet(Wan27T2V, Wan27I2V), minUnits: 1},
+	InputVoices:       {models: modelSet(QwenTTSClone), minUnits: 1},
+}
+
+func modelSet(models ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		set[model] = struct{}{}
+	}
+	return set
 }
 
 // Usage is a provider-neutral token vector extracted from an upstream usage
@@ -249,6 +258,16 @@ var rateCards = map[Provider]map[string]RateCard{
 			// 这笔债保持可见。
 			tiers: []pricingTier{{InputUpperBound: QwenVideoInputLimit, InputPUSD: 83_000_000_000, OutputPUSD: 0}},
 		},
+		Wan27I2V: {
+			ID: "wan2.7-i2v-2026-04-25-720p-conservative-2026-08-06", Provider: ProviderQwen, Model: Wan27I2V,
+			InputLimit: QwenVideoInputLimit, OutputLimit: QwenVideoOutputLimit,
+			// Official list prices verified 2026-08-06: CNY 0.6/s in Beijing and
+			// CNY 0.74942/s in Singapore at 720P. The card uses a conservative
+			// USD conversion of the higher regional price ($0.105/s). Input frames
+			// are free; only output duration is billed. Managed animation is held
+			// to 720P until resolution becomes part of the frozen price identity.
+			tiers: []pricingTier{{InputUpperBound: QwenVideoInputLimit, InputPUSD: 105_000_000_000, OutputPUSD: 0}},
+		},
 		QwenTTSClone: {
 			ID: "qwen-tts-clone-2026-07-28", Provider: ProviderQwen, Model: QwenTTSClone,
 			InputLimit: QwenVoiceInputLimit, OutputLimit: QwenVoiceOutputLimit,
@@ -358,7 +377,8 @@ func NewPlan(provider Provider, model string, inputClass InputClass, promptBound
 		}
 	} else {
 		u, known := unitClasses[inputClass]
-		if !known || provider != ProviderQwen || model != u.model ||
+		_, modelAllowed := u.models[model]
+		if !known || provider != ProviderQwen || !modelAllowed ||
 			outputBound != 0 || promptBound < u.minUnits {
 			return Plan{}, ErrUnknownRateCard
 		}

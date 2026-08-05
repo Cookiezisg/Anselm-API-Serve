@@ -234,10 +234,11 @@ type Config struct {
 	// 东西——VideoHandleKey,把任务绑到**付过钱的那个 install** 上的派生密钥。这把 key **不是** env:
 	// 它由本部署已有的 media 签名材料**域分离**派生,于是开视频不必新配 secret,而其中一把泄露仍伪造
 	// 不出另一把。
-	VideoEnabled       bool   // VIDEO_ENABLED
-	VideoUpstreamModel string // VIDEO_UPSTREAM_MODEL(exact priced DashScope video model id)
-	VideoDailyLimit    int64  // VIDEO_DAILY_LIMIT(per-install per-day CLIP count;0=off)
-	VideoHandleKey     []byte // derived, never read from env; empty => video unavailable
+	VideoEnabled          bool   // VIDEO_ENABLED
+	VideoUpstreamModel    string // VIDEO_UPSTREAM_MODEL(exact priced DashScope video model id)
+	VideoI2VUpstreamModel string // VIDEO_I2V_UPSTREAM_MODEL(exact priced DashScope first-frame video model id)
+	VideoDailyLimit       int64  // VIDEO_DAILY_LIMIT(per-install per-day CLIP count;0=off)
+	VideoHandleKey        []byte // derived, never read from env; empty => video unavailable
 
 	// Voice cloning rides SPEECH_ENABLED (a deployment that cannot speak has no use for a voice) and
 	// has no upstream-model knob of its own: enrollment is a fixed service, not a model choice. Its
@@ -567,6 +568,9 @@ func (c *Config) ValidateSemantics() error {
 		}
 		if _, err := billing.NewUnitPlan(billing.ProviderQwen, c.VideoUpstreamModel, billing.InputVideoSeconds, 1); err != nil {
 			return fmt.Errorf("SEC-2 config: VIDEO_UPSTREAM_MODEL has no exact rate card: %w", err)
+		}
+		if _, err := billing.NewUnitPlan(billing.ProviderQwen, c.VideoI2VUpstreamModel, billing.InputVideoSeconds, 1); err != nil {
+			return fmt.Errorf("SEC-2 config: VIDEO_I2V_UPSTREAM_MODEL has no exact rate card: %w", err)
 		}
 		if strings.TrimSpace(c.DashScopeNativeBase) == "" {
 			return fmt.Errorf("SEC-2 config: VIDEO_ENABLED requires DASHSCOPE_NATIVE_BASE")

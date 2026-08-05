@@ -39,6 +39,15 @@ type GenProfile struct {
 	DailyLimit int64 `json:"daily_limit"`
 }
 
+// VideoGenProfile carries the independently routable first-frame path. A
+// deployment may support text-to-video without having a priced I2V model, so
+// clients must never infer animation from the parent availability bit.
+type VideoGenProfile struct {
+	Available    bool  `json:"available"`
+	DailyLimit   int64 `json:"daily_limit"`
+	ImageToVideo bool  `json:"image_to_video"`
+}
+
 // AnselmCapabilities is a namespaced, backwards-compatible extension on the
 // OpenAI model object. Unknown fields are ignored by generic clients; Anselm
 // uses it to select a context budget per concrete outbound request.
@@ -49,13 +58,13 @@ type GenProfile struct {
 // ImageGeneration 为增量字段(version 仍 1):旧桌面忽略之,旧网关缺席之而新桌面读 nil=不可用
 // ——双向滚动兼容。
 type AnselmCapabilities struct {
-	Version          int          `json:"version"`
-	Routing          string       `json:"routing"`
-	Text             RouteProfile `json:"text"`
-	Multimodal       RouteProfile `json:"multimodal"`
-	ImageGeneration  *GenProfile  `json:"image_generation,omitempty"`
-	SpeechGeneration *GenProfile  `json:"speech_generation,omitempty"`
-	VideoGeneration  *GenProfile  `json:"video_generation,omitempty"`
+	Version          int              `json:"version"`
+	Routing          string           `json:"routing"`
+	Text             RouteProfile     `json:"text"`
+	Multimodal       RouteProfile     `json:"multimodal"`
+	ImageGeneration  *GenProfile      `json:"image_generation,omitempty"`
+	SpeechGeneration *GenProfile      `json:"speech_generation,omitempty"`
+	VideoGeneration  *VideoGenProfile `json:"video_generation,omitempty"`
 }
 
 // ListEnvelope is the OpenAI list wrapper: {"object":"list","data":[...]}.

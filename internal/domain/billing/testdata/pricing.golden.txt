@@ -27,10 +27,15 @@ characters (speech synthesis)  model=qwen-audio-3.0-tts-flash class=3
   units=1000     reserved=14000000000          settled=14000000000          card=qwen-audio-3.0-tts-flash-assumed-2026-07-28
   units=4000     reserved=56000000000          settled=56000000000          card=qwen-audio-3.0-tts-flash-assumed-2026-07-28
 
-video-seconds  model=wan2.7-t2v class=4
+video-seconds (text-to-video)  model=wan2.7-t2v class=4
   units=1        reserved=83000000000          settled=83000000000          card=wan2.7-t2v-assumed-2026-07-27
   units=5        reserved=415000000000         settled=415000000000         card=wan2.7-t2v-assumed-2026-07-27
   units=15       reserved=1245000000000        settled=1245000000000        card=wan2.7-t2v-assumed-2026-07-27
+
+video-seconds (image-to-video)  model=wan2.7-i2v-2026-04-25 class=4
+  units=1        reserved=105000000000         settled=105000000000         card=wan2.7-i2v-2026-04-25-720p-conservative-2026-08-06
+  units=5        reserved=525000000000         settled=525000000000         card=wan2.7-i2v-2026-04-25-720p-conservative-2026-08-06
+  units=15       reserved=1575000000000        settled=1575000000000        card=wan2.7-i2v-2026-04-25-720p-conservative-2026-08-06
 
 voices (clone enrollment)  model=qwen-tts-clone class=5
   units=1        reserved=200000000000         settled=200000000000         card=qwen-tts-clone-2026-07-28

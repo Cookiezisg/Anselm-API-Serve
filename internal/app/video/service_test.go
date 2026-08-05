@@ -57,6 +57,7 @@ func (f *fakeQuota) Rollback(context.Context, *domquota.Reservation) error {
 }
 
 type fakeUpstream struct {
+	gotModel      string
 	gotRatio      string
 	gotResolution string
 	gotFrame      string
@@ -69,8 +70,13 @@ type fakeUpstream struct {
 	polledFor string
 }
 
-func (f *fakeUpstream) SubmitVideo(_ context.Context, _, _ string, _ int, ratio, resolution, firstFrame string) (string, bool, error) {
-	f.gotRatio, f.gotResolution, f.gotFrame = ratio, resolution, firstFrame
+func (f *fakeUpstream) SubmitVideo(_ context.Context, model, _ string, _ int, ratio, resolution string) (string, bool, error) {
+	f.gotModel, f.gotRatio, f.gotResolution = model, ratio, resolution
+	return f.taskID, f.unbilled, f.submitErr
+}
+
+func (f *fakeUpstream) SubmitAnimation(_ context.Context, model, _ string, _ int, resolution, firstFrame string) (string, bool, error) {
+	f.gotModel, f.gotResolution, f.gotFrame = model, resolution, firstFrame
 	return f.taskID, f.unbilled, f.submitErr
 }
 
@@ -89,10 +95,11 @@ func (fixedClock) Now() time.Time { return time.Unix(1_800_000_000, 0) }
 
 func enabledCfg() *fakeCfg {
 	return &fakeCfg{c: config.Config{
-		VideoEnabled:       true,
-		VideoUpstreamModel: billing.Wan27T2V,
-		QwenAPIKeys:        []string{"sk-test"},
-		VideoHandleKey:     domvideo.DeriveKey([]byte("media-signing-secret-at-least-32b!!")),
+		VideoEnabled:          true,
+		VideoUpstreamModel:    billing.Wan27T2V,
+		VideoI2VUpstreamModel: billing.Wan27I2V,
+		QwenAPIKeys:           []string{"sk-test"},
+		VideoHandleKey:        domvideo.DeriveKey([]byte("media-signing-secret-at-least-32b!!")),
 	}}
 }
 
@@ -276,7 +283,7 @@ func TestAnimate_RefusesAnAddressShapedFrame(t *testing.T) {
 	} {
 		up := &fakeUpstream{taskID: "task_1"}
 		svc := newSvc(enabledCfg(), &fakeQuota{}, up)
-		_, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, frame)
+		_, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, "720P", frame)
 		if ae == nil || ae.Code != "VIDEO_FRAME_INVALID" {
 			t.Fatalf("frame %q: err = %v, want VIDEO_FRAME_INVALID", frame, ae)
 		}
@@ -286,25 +293,37 @@ func TestAnimate_RefusesAnAddressShapedFrame(t *testing.T) {
 	}
 }
 
-// TestAnimate_DropsGeometrySoTheClipInheritsTheFrame is the whole reason animate is not just
-// "submit with one more field". A clip made from a picture takes that picture's aspect and size;
-// forwarding ours would ask the upstream to letterbox or crop the user's own image, silently.
+func TestAnimate_RefusesUnpricedResolutionBeforeUpstream(t *testing.T) {
+	up := &fakeUpstream{taskID: "task_1"}
+	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
+	_, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, "1080P", "data:image/png;base64,iVBORw0KGgo=")
+	if ae != apierr.ErrBadRequest {
+		t.Fatalf("1080P animation = %v, want BAD_REQUEST", ae)
+	}
+	if up.gotModel != "" {
+		t.Fatal("unpriced animation reached the upstream")
+	}
+}
+
+// Animation uses the independently priced model, inherits only the frame's
+// aspect, and keeps 720P explicit so the provider cannot choose a pricier tier.
 //
-// TestAnimate_DropsGeometrySoTheClipInheritsTheFrame 正是「animate 不只是多一个字段的 submit」的
-// 全部理由。由一张图做出的片子取那张图的比例与尺寸;转发我们的,等于**静默地**要求上游对用户自己的
-// 图做信箱边或裁切。
-func TestAnimate_DropsGeometrySoTheClipInheritsTheFrame(t *testing.T) {
+// 动画使用独立定价模型,只继承首帧比例,并显式发送 720P,不让上游自行选择更贵档位。
+func TestAnimate_UsesI2VModelAndKeepsPricedResolution(t *testing.T) {
 	up := &fakeUpstream{taskID: "task_1"}
 	svc := newSvc(enabledCfg(), &fakeQuota{}, up)
 	const frame = "data:image/png;base64,iVBORw0KGgo="
-	if _, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, frame); ae != nil {
+	if _, ae := svc.Animate(context.Background(), "ins_1", "make it move", 5, "720P", frame); ae != nil {
 		t.Fatalf("animate failed: %v", ae)
 	}
 	if up.gotFrame != frame {
 		t.Fatalf("upstream frame = %q, want the data URL unchanged", up.gotFrame)
 	}
-	if up.gotRatio != "" || up.gotResolution != "" {
-		t.Fatalf("geometry leaked to the upstream: ratio=%q resolution=%q — the clip must inherit the frame",
+	if up.gotModel != billing.Wan27I2V {
+		t.Fatalf("upstream model = %q, want %q", up.gotModel, billing.Wan27I2V)
+	}
+	if up.gotRatio != "" || up.gotResolution != "720P" {
+		t.Fatalf("animation geometry = ratio %q resolution %q, want inherited ratio and explicit 720P",
 			up.gotRatio, up.gotResolution)
 	}
 }

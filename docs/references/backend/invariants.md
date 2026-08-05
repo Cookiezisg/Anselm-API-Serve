@@ -89,6 +89,7 @@ audience: [human, ai]
 | GW-INV-55 | 视频句柄是**签名**的:`GET /v1/videos/{id}` 只对签发给**同一个 install** 的句柄作答,常数时间比较;签名验不过与上游已忘掉该任务**同答** `VIDEO_TASK_NOT_FOUND`,且被拒句柄**绝不到达上游**。句柄密钥由 `MEDIA_SIGNING_SECRET` **域分离**派生(`HMAC(secret,"anselm-gateway-video-handle-v1")`),`VIDEO_ENABLED` 而 secret 缺席则启动即失败 | 裸转发上游 task id = 任一 install 可枚举并读走**别人**的视频 URL;两种拒绝分开答 = 确认「有别人拥有它」;空 key 会让每个句柄对每个 install 都验得过 |
 | GW-INV-56 | 视频的钱**落在提交**:受理成功即按冻结卡全额 settle(reserve==settle,确定性按秒成本),**轮询绝不动钱**——成功不动、失败也不动、重复轮询也不动;上游生成失败**照样付费**,唯一会退的仍是可证明未计费的显式拒绝(GW-INV-50) | 「只在客户端回来轮询时退款」= 走开的人白拿视频、等着的人付钱;轮询动钱 = 一个等三分钟问十几次的客户端会被自己的耐心罚款 |
 | GW-INV-57 | 品类账本与钱账本**允许数不同的单位**:视频钱按**秒**(`InputVideoSeconds`)、`video` 品类按**条**(恒 1)。`planCategory` 是这条分歧唯一的立法处,新品类连同 `Limits` 字段、`categoryCap` 分支与 wire 码一起在此立法;**且必须活着穿过 bootstrap 适配器**(`quotaCfgSource.Limits`)——`SPEECH_DAILY_LIMIT` 曾集齐配置、宣告、账本、分支与 wire 码却漏了那一行,于是 store 读到的上限恒为 0、闸一次都没生效过,而没有任何测试是红的 | 按秒配给只会让用户写更短的提示词而不是少生成视频;一个没穿过适配器的上限是一句谎——每层各自都对,中间那根线根本不存在 |
+| GW-INV-58 | T2V 与 I2V 是**两个模型、两份请求协议、两张冻结卡**:I2V 必须用 `VIDEO_I2V_UPSTREAM_MODEL` 与 `input.media[type=first_frame]`,绝不把首帧塞给 T2V 的 `img_url`;能力目录只在整条 I2V 路可走时声明 `video_generation.image_to_video=true`。受管 I2V 当前固定 720P 并显式上线缆,`aspect` 则继承首帧而不转发 | T2V 模型可能受理却忽略首帧,产出一条几乎完全重绘的视频;省略 resolution 会让 Wan 2.7 默认 1080P,形成 720P 预留覆盖不了的真钱账单 |
 
 ## E. 跨切配置 / 可观测
 
