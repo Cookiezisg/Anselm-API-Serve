@@ -1,16 +1,20 @@
 // Package voice holds the cloned-voice vocabulary shared by the use case and its store.
 //
-// The two sentinels here exist because the SAME two refusals arise in two places that cannot see
-// each other: the service checks both preconditions before it spends money, and the store's
+// The inventory/name sentinels exist because the SAME two refusals arise in two places that cannot
+// see each other: the service checks both preconditions before it spends money, and the store's
 // transaction re-checks them inside BEGIN IMMEDIATE where a concurrent enrollment is finally
-// visible. A caller must not be able to tell which layer refused — losing a race and arriving late
-// are the same fact about the world, and one wire code says it.
+// visible. ErrUpstreamAlreadyAbsent is the separate delete-retry convergence signal: it is never a
+// wire error and only means the provider has already removed the exact registration.
+// A caller must not be able to tell which layer refused — losing a race and arriving late are the
+// same fact about the world, and one wire code says it.
 //
 // Package voice 持有用例与其 store 共用的克隆音色词汇。
 //
-// 这里的两个 sentinel 存在,是因为**同样的两条拒绝**出现在两个互相看不见的地方:service 在花钱之前
-// 查两个前置条件,而 store 的事务在 BEGIN IMMEDIATE 里**重查**一遍——并发登记只有在那里才终于可见。
-// 调用方不该分辨得出是哪一层拒的:输掉竞态与来晚了,是关于世界的**同一个事实**,由同一个 wire code 说出。
+// 这里的 inventory/name 两个 sentinel 存在,是因为**同样的两条拒绝**出现在两个互相看不见的地方:
+// service 在花钱之前查两个前置条件,而 store 的事务在 BEGIN IMMEDIATE 里**重查**一遍——并发登记
+// 只有在那里才终于可见。ErrUpstreamAlreadyAbsent 是另一种删除重试收敛信号:它不是 wire error,只
+// 表示 provider 已经删掉了**这一个**登记。调用方不该分辨得出哪一层拒绝:输掉竞态与来晚了,是关于
+// 世界的**同一个事实**,由同一个 wire code 说出。
 package voice
 
 import (
@@ -45,6 +49,7 @@ type Voice struct {
 //
 // ErrInventoryFull / ErrNameTaken:那两条拒绝,由 service 的前置检查提出、又由 store 的事务再提一次。
 var (
-	ErrInventoryFull = errors.New("voice: inventory full")
-	ErrNameTaken     = errors.New("voice: name taken")
+	ErrInventoryFull         = errors.New("voice: inventory full")
+	ErrNameTaken             = errors.New("voice: name taken")
+	ErrUpstreamAlreadyAbsent = errors.New("voice: upstream registration already absent")
 )

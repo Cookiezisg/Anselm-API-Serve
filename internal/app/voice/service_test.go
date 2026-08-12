@@ -387,6 +387,25 @@ func TestDelete_UpstreamFirst(t *testing.T) {
 	}
 }
 
+// TestDelete_AlreadyAbsentUpstreamStillReleasesLocalPointer: a previous attempt may have deleted
+// the provider resource but failed before our local transaction completed. Retrying must converge
+// instead of leaving a permanent inventory slot occupied.
+//
+// TestDelete_AlreadyAbsentUpstreamStillReleasesLocalPointer:上一次尝试可能已经删掉 provider 资源,
+// 却在本地事务完成前失败。重试必须收敛,不能永久占住一个库存位。
+func TestDelete_AlreadyAbsentUpstreamStillReleasesLocalPointer(t *testing.T) {
+	st := newStore()
+	st.rows["ins_1"] = []domvoice.Voice{{ID: "vce_1", Name: "n", UpstreamID: "u1"}}
+	up := &fakeUpstream{deleteErr: domvoice.ErrUpstreamAlreadyAbsent}
+	svc, _, _ := newSvc(t, st, up, 0)
+	if ae := svc.Delete(context.Background(), "ins_1", "vce_1"); ae != nil {
+		t.Fatalf("ae = %v, want nil", ae)
+	}
+	if len(st.rows["ins_1"]) != 0 {
+		t.Fatal("the local pointer must be released after the provider confirms it is already absent")
+	}
+}
+
 // TestDelete_OtherInstallsVoiceIsAbsent: ownership enforcement — another install's id must read as
 // absent so voice ids never become an existence oracle.
 //

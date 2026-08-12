@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sunweilin/anselm/gateway/internal/domain/apierr"
+	domvoice "github.com/sunweilin/anselm/gateway/internal/domain/voice"
 )
 
 // VoiceGen is the DashScope voice-CLONING client.
@@ -241,6 +242,11 @@ func (g *VoiceGen) customization(ctx context.Context, payload map[string]any) ([
 	switch {
 	case status == http.StatusOK:
 		return body, false, nil
+	case status == http.StatusBadRequest && voiceDeleteRequested(payload) && providerVoiceAlreadyAbsent(body):
+		// A delete of an already-absent provider resource is idempotent. This is deliberately a
+		// closed provider-code set: generic 400s and 404s still retain the local pointer.
+		// 上游已不存在的删除是幂等成功。这里刻意只认闭集 provider code:普通 400 与 404 仍保留本地指针。
+		return nil, false, domvoice.ErrUpstreamAlreadyAbsent
 	case status == http.StatusTooManyRequests:
 		return nil, true, apierr.ErrUpstreamBusy
 	case rejectedBeforeGeneration(status):
@@ -252,5 +258,35 @@ func (g *VoiceGen) customization(ctx context.Context, payload map[string]any) ([
 		return nil, true, apierr.UpstreamRejected(apierr.RejectedInvalid)
 	default:
 		return nil, false, apierr.ErrUpstreamError
+	}
+}
+
+const (
+	voiceDeleteAction            = "delete_voice"
+	providerResourceNotExistCode = "InvalidParameter.ResourceNotExist"
+	providerVoiceNotFoundCode    = "BadRequest.VoiceNotFound"
+)
+
+func voiceDeleteRequested(payload map[string]any) bool {
+	input, ok := payload["input"].(map[string]any)
+	if !ok {
+		return false
+	}
+	action, ok := input["action"].(string)
+	return ok && strings.TrimSpace(action) == voiceDeleteAction
+}
+
+func providerVoiceAlreadyAbsent(body []byte) bool {
+	var wire struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return false
+	}
+	switch strings.TrimSpace(wire.Code) {
+	case providerResourceNotExistCode, providerVoiceNotFoundCode:
+		return true
+	default:
+		return false
 	}
 }

@@ -134,7 +134,7 @@ audience: [human, ai]
 
 **列表返全集、无游标**(N4 豁免①:有界可枚举资源,而库存上限**就是**那个界)。`capacity`/`remaining` 随响应走,因为上限正是调用方来读它的理由:一个列出两行却不说「就这些了」的列表,会让下一次登记的失败无从解释。空库存序列化为 `[]` 而非 `null`。
 
-**删除是 `:action`(N5)而不是 `DELETE /v1/voices/{id}`**:本网关受管面每条路由都是「header 带 device proof + POST」,一条带路径参数的 DELETE 会是整个面上唯一的异形;顺带让音色 id 不进 URL、因而不进代理日志与 referrer。**先删上游、再删记录**——记录是唯一持有上游 id 的东西,上游失败即中止且记录留着(可重试、库存计数继续说真话);在这里「成功」会留下一份还活着、已付费、永久不可见的登记。删除收回的是**库存位、不是费用**。别的 install 的 id 读作不存在(`VOICE_NOT_FOUND`),故音色 id **不是存在性预言机**。
+**删除是 `:action`(N5)而不是 `DELETE /v1/voices/{id}`**:本网关受管面每条路由都是「header 带 device proof + POST」,一条带路径参数的 DELETE 会是整个面上唯一的异形;顺带让音色 id 不进 URL、因而不进代理日志与 referrer。**先删上游、再删记录**——记录是唯一持有上游 id 的东西,普通上游失败即中止且记录留着(可重试、库存计数继续说真话);唯一幂等例外是 `voice-enrollment/delete_voice` 收到 provider 明确的 `InvalidParameter.ResourceNotExist` 或 `BadRequest.VoiceNotFound`,此时说明上游登记已经不存在,网关继续删除自己的记录并返回 `204`。绝不把泛化的 400/404 当成功。删除收回的是**库存位、不是费用**。别的 install 的 id 读作不存在(`VOICE_NOT_FOUND`),故音色 id **不是存在性预言机**。
 
 **拒绝码**:`VOICE_UNAVAILABLE` / `VOICE_SAMPLE_INVALID` / `VOICE_INVENTORY_FULL` / `VOICE_NAME_TAKEN` / `VOICE_CAPACITY_REACHED` / `VOICE_QUOTA_EXHAUSTED` / `BAD_REQUEST` / `UPSTREAM_*`;列表与删除另有 `VOICE_NOT_FOUND`。
 

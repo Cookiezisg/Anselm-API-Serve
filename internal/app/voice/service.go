@@ -359,10 +359,12 @@ func (s *Service) List(ctx context.Context, installID string) ([]domvoice.Voice,
 
 // Delete removes the upstream registration and then the record. Upstream first: the record is the
 // only thing holding the upstream id, so dropping it first strands a voice that keeps consuming
-// the shared ceiling forever.
+// the shared ceiling forever. A provider response that explicitly says this registration is already
+// absent is the one idempotent exception; it lets a retry finish a previously interrupted local delete.
 //
 // Delete 先删上游登记、再删记录。**上游在先**:记录是唯一持有上游 id 的东西,先丢掉它会让一个音色搁浅,
-// 而它会永远占着那份共享上限。
+// 而它会永远占着那份共享上限。只有 provider 明确说**这份登记已经不存在**,才把它视作幂等例外——这样
+// 一次在本地删除中断的重试才能收敛。
 func (s *Service) Delete(ctx context.Context, installID, id string) *apierr.APIError {
 	if s == nil || s.store == nil || s.upstream == nil {
 		return apierr.Internal()
@@ -385,7 +387,7 @@ func (s *Service) Delete(ctx context.Context, installID, id string) *apierr.APIE
 	if target == nil {
 		return apierr.ErrVoiceNotFound
 	}
-	if err := s.upstream.DeleteVoice(ctx, target.UpstreamID); err != nil {
+	if err := s.upstream.DeleteVoice(ctx, target.UpstreamID); err != nil && !errors.Is(err, domvoice.ErrUpstreamAlreadyAbsent) {
 		// Abort with the record intact: the caller can retry, and the inventory count keeps telling
 		// the truth. "Succeeding" here would leave a paid registration alive and invisible.
 		// **保留记录并中止**:调用方可重试、库存计数继续说真话。在这里「成功」会留下一个还活着、
