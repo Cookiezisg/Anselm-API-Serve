@@ -23,7 +23,6 @@ DASHSCOPE_API_KEY='alpha\beta"gamma$delta' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	GATEWAY_DOMAIN='api.example.com' \
-	SITE_DOMAIN='' \
 	ACME_EMAIL='ops+anselm@example.com' \
 	SHA='0123456789ab' \
 	bash "${SCRIPT_DIR}/build-stage.sh" "${STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
@@ -118,7 +117,6 @@ mkdir -m 0700 "${RESET_STAGE}"
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	RESET_UNLAUNCHED_GATEWAY_DATA='1' \
 	GATEWAY_DOMAIN='api.example.com' \
-	SITE_DOMAIN='example.com' \
 	ACME_EMAIL='ops@example.com' \
 	SHA='0123456789ab' \
 	bash "${SCRIPT_DIR}/build-stage.sh" "${RESET_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}"
@@ -130,9 +128,8 @@ fi
 RENDERED_CADDY="${TEST_ROOT}/rendered.Caddyfile"
 bash "${STAGE}/render-caddy.sh" \
 	"${STAGE}/Caddyfile" "${RENDERED_CADDY}" \
-	'api.example.com' 'example.com' 'ops+anselm@example.com' 'media.example.com'
+	'api.example.com' 'ops+anselm@example.com' 'media.example.com'
 grep -Fq 'api.example.com {' "${RENDERED_CADDY}" || fail "gateway domain was not rendered"
-grep -Fq 'example.com {' "${RENDERED_CADDY}" || fail "site domain was not rendered"
 grep -Fq 'email ops+anselm@example.com' "${RENDERED_CADDY}" || fail "ACME email was not rendered"
 grep -Fq 'media.example.com {' "${RENDERED_CADDY}" || fail "media domain was not rendered"
 
@@ -147,7 +144,7 @@ grep -Fq 'handle /v1/media/leases/*' "${RENDERED_CADDY}" || fail "media host doe
 # api.* 的媒体主机对着真上游会**无形地**失败(ADR 0012:三次 400、源站日志为空),故渲染器必须拒绝
 # 它,而不是吐出一份看着没问题的配置。
 if bash "${STAGE}/render-caddy.sh" "${STAGE}/Caddyfile" "${TEST_ROOT}/nope.Caddyfile" \
-	'api.example.com' 'example.com' 'ops@example.com' 'api.media.example.com' 2>/dev/null; then
+	'api.example.com' 'ops@example.com' 'api.media.example.com' 2>/dev/null; then
 	fail "renderer accepted an api.* MEDIA_DOMAIN"
 fi
 if grep -Fq '{$' "${RENDERED_CADDY}"; then
@@ -160,7 +157,6 @@ if DASHSCOPE_API_KEY=$'bad\nsecret' \
 	DASHSCOPE_WORKSPACE_ID='ws-test' \
 	MEDIA_SIGNING_SECRET='media-signing-secret-at-least-32-bytes' \
 	GATEWAY_DOMAIN='api.example.com' \
-	SITE_DOMAIN='example.com' \
 	ACME_EMAIL='ops@example.com' \
 	SHA='0123456789ab' \
 	bash "${SCRIPT_DIR}/build-stage.sh" "${BAD_STAGE}" "${REPO_ROOT}/go.mod" "${REPO_ROOT}" \

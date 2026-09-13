@@ -68,9 +68,8 @@ go run ./cmd/docs -write-baseline    # 清理完一批后重新生成禁词基�
 | `media-public-base-url` | 3 | 6 | 阶段 2 |
 
 **永久豁免**（不进基线，因为「提到它」正是它们的职责）：`docs/decisions/`（ADR 不可变，一篇讲
-「撤掉 DeepSeek」的 ADR 必须能说出 DeepSeek）、`docs/archive/`、`deploy/site/`（公开信任页，
-自称目的即「声明官方 API 域名」；那个主机名本来就不是机密，每个客户端都要解析它）、本文件、
-闸自己的两个文件。
+「撤掉 DeepSeek」的 ADR 必须能说出 DeepSeek）、`docs/archive/`、本文件、闸自己的两个文件。
+（`deploy/site/` 曾在此列，2026-09-13 随 apex 域名迁往 GitHub Pages 官网一起删除。）
 
 ---
 
@@ -168,8 +167,8 @@ bcrypt、前端三个文件的分支、部署脚本的模式分派与三组模�
   "absolute https to our own host" 承载，不靠主机名字面值）
 - `docs/how-to/cloudflare-deployment.md`（3 处）→ `<你的域名>` 占位符，并点明它就是部署时的
   `GATEWAY_DOMAIN`
-- `deploy/site/index.html` → **不改，改为永久豁免**（用户 2026-07-31 决定）。那是公开信任页，
-  自称目的即「声明官方 API 域名」；主机名本来就不是机密，每个客户端都要解析它才连得上
+- `deploy/site/index.html` → 2026-07-31 决定永久豁免；2026-09-13 整个目录删除，服务域名声明
+  改由官网 `anselm.website/service/` 承载
 
 **其余**：
 - 删空目录 `docs/references/domains/`（只有 `.gitkeep`，建立后从未使用）

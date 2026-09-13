@@ -77,7 +77,6 @@ REPO_ROOT="$3"
 : "${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}"
 : "${ACME_EMAIL:?ACME_EMAIL is required}"
 : "${SHA:?SHA is required}"
-SITE_DOMAIN="${SITE_DOMAIN:-}"
 MEDIA_DOMAIN="${MEDIA_DOMAIN:-}"
 RESET_UNLAUNCHED_GATEWAY_DATA="${RESET_UNLAUNCHED_GATEWAY_DATA:-0}"
 
@@ -90,32 +89,26 @@ done
 	die "DASHSCOPE_WORKSPACE_ID must contain only letters, digits, underscore, or hyphen"
 require_single_line GATEWAY_DOMAIN "${GATEWAY_DOMAIN}"
 valid_hostname "${GATEWAY_DOMAIN}" || die "GATEWAY_DOMAIN is not a valid hostname"
-if [[ -z "${SITE_DOMAIN}" ]]; then
-	[[ "${GATEWAY_DOMAIN}" == api.* ]] ||
-		die "SITE_DOMAIN is unset and GATEWAY_DOMAIN is not api.<root>"
-	SITE_DOMAIN="${GATEWAY_DOMAIN#api.}"
-fi
-require_single_line SITE_DOMAIN "${SITE_DOMAIN}"
-
-# MEDIA_DOMAIN defaults to media.<root>, the same derivation SITE_DOMAIN uses. It is required
+# MEDIA_DOMAIN defaults to media.<root>, where <root> is GATEWAY_DOMAIN without its api. prefix. It is required
 # because Caddy cannot render an empty host — the gateway binary tolerates an unset one (voice
 # enrollment simply unavailable), but a deploy must make the choice explicit.
 #
 # It must NOT be an api.* name: the upstream fetcher blacklists that shape at its own edge
 # (ADR 0012's production experiment — three 400s while the origin log proved no request arrived).
 #
-# MEDIA_DOMAIN 缺省取 media.<root>,与 SITE_DOMAIN 同一套推导。它是**必需**的,因为 Caddy 渲染不了
+# MEDIA_DOMAIN 缺省取 media.<root>(<root> 即去掉 api. 前缀的 GATEWAY_DOMAIN)。它是**必需**的,因为 Caddy 渲染不了
 # 空主机名——网关二进制容许不设(音色登记不可用而已),但部署必须把这个选择摆到明面上。
 #
 # 它**绝不能**是 api.* 的名字:拉取器在它自己的边缘拒绝那个形状(ADR 0012 生产实验——三次 400,而
 # 源站日志证明请求从未到达)。
 if [[ -z "${MEDIA_DOMAIN}" ]]; then
-	MEDIA_DOMAIN="media.${SITE_DOMAIN}"
+	[[ "${GATEWAY_DOMAIN}" == api.* ]] ||
+		die "MEDIA_DOMAIN is unset and GATEWAY_DOMAIN is not api.<root>"
+	MEDIA_DOMAIN="media.${GATEWAY_DOMAIN#api.}"
 fi
 require_single_line MEDIA_DOMAIN "${MEDIA_DOMAIN}"
 [[ "${MEDIA_DOMAIN}" != api.* ]] ||
 	die "MEDIA_DOMAIN must not be an api.* host; the upstream fetcher blacklists that shape"
-valid_hostname "${SITE_DOMAIN}" || die "SITE_DOMAIN is not a valid hostname"
 require_single_line ACME_EMAIL "${ACME_EMAIL}"
 [[ "${ACME_EMAIL}" =~ ^[A-Za-z0-9.!#$%\&\'*+/=?^_\`{|}~-]+@[A-Za-z0-9.-]+$ ]] ||
 	die "ACME_EMAIL is not a valid deployment email"
@@ -131,9 +124,7 @@ install -m 0644 "${REPO_ROOT}/deploy/anselm-caddy-deploy-guard.conf" "${STAGE}/a
 install -m 0755 "${REPO_ROOT}/deploy/install.sh" "${STAGE}/install.sh"
 install -m 0755 "${REPO_ROOT}/deploy/render-caddy.sh" "${STAGE}/render-caddy.sh"
 install -m 0755 "${REPO_ROOT}/deploy/rollback.sh" "${STAGE}/rollback.sh"
-install -d -m 0700 "${STAGE}/site" "${STAGE}/meta"
-install -m 0644 "${REPO_ROOT}/deploy/site/index.html" "${STAGE}/site/index.html"
-install -m 0644 "${REPO_ROOT}/deploy/site/styles.css" "${STAGE}/site/styles.css"
+install -d -m 0700 "${STAGE}/meta"
 
 ENV_FILE="${STAGE}/gateway.env"
 : >"${ENV_FILE}"
@@ -248,7 +239,6 @@ write_env LOG_LEVEL "info"
 write_env ADMIN_ADDR "127.0.0.1:9090"
 
 write_meta gateway-domain "${GATEWAY_DOMAIN}"
-write_meta site-domain "${SITE_DOMAIN}"
 write_meta media-domain "${MEDIA_DOMAIN}"
 write_meta acme-email "${ACME_EMAIL}"
 write_meta reset-unlaunched-gateway-data "${RESET_UNLAUNCHED_GATEWAY_DATA}"

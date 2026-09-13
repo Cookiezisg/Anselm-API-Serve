@@ -104,15 +104,12 @@ EXPECTED_FILES=$(printf '%s\n' \
 	'meta/media-domain' \
 	'meta/reset-unlaunched-gateway-data' \
 	'meta/sha' \
-	'meta/site-domain' \
 	'render-caddy.sh' \
-	'rollback.sh' \
-	'site/index.html' \
-	'site/styles.css' | LC_ALL=C sort)
+	'rollback.sh' | LC_ALL=C sort)
 ACTUAL_FILES=$(find "${STAGE}" -mindepth 1 -type f -printf '%P\n' | LC_ALL=C sort)
 [[ "${ACTUAL_FILES}" == "${EXPECTED_FILES}" ]] || die "stage file set differs from the reviewed payload"
 
-EXPECTED_DIRS=$(printf '%s\n' meta site | LC_ALL=C sort)
+EXPECTED_DIRS=$(printf '%s\n' meta | LC_ALL=C sort)
 ACTUAL_DIRS=$(find "${STAGE}" -mindepth 1 -type d -printf '%P\n' | LC_ALL=C sort)
 [[ "${ACTUAL_DIRS}" == "${EXPECTED_DIRS}" ]] || die "stage directory set differs from the reviewed payload"
 

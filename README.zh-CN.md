@@ -101,7 +101,7 @@ ssh -L 8081:127.0.0.1:8081 <user>@<server>   # 然后浏览器开 http://localho
 
 VPS 上的 Caddy + systemd:
 
-- Caddy 终结 TLS 并把 API 域名反代到 `127.0.0.1:8080`(SSE 即时下发)。根域可从 `deploy/site/` 提供纯静态说明页。Go 进程只绑 `127.0.0.1`,不直面公网。
+- Caddy 终结 TLS 并把 API 域名反代到 `127.0.0.1:8080`(SSE 即时下发)。根域不由这里提供:产品官网在 GitHub Pages 上,服务域名声明也放在官网。Go 进程只绑 `127.0.0.1`,不直面公网。
 - systemd socket activation 在普通 service restart 时持有 `:8080` fd。发版时会有意先停 Caddy、socket、service,形成一段 fail-closed 维护窗,确保 SQLite 快照到 commit 之间没有请求写账本。
 - 只有本仓 `ci` 对 `main` push 全绿后,deploy workflow 才接收该次不可变 `head_sha`;失败、未完成或已经不是 `main` tip 的过期 CI 都绝不能部署。deploy 会 checkout 这个精确 SHA,并再次执行发布关键门项:gofmt/module verify/vet/build、race unit + integration e2e、公开 parser fuzz smoke、记账覆盖率地板、docs governance、rollback shell 模拟、高危 npm audit + 内嵌后台重建/drift、golangci-lint 与 govulncheck;全绿后才静态编译 `linux/amd64` → 全部 artifact 进入远端不可预测的 `0700` stage → 校验精确 regular-file 集与 SHA-256 manifest → 停写后快照 SQLite main/WAL/SHM → 安装并跑 loopback gate → 持久化本地 commit → 重开 Caddy。commit 前任一路径失败都会把 DB、binary/symlink、env、unit、Caddy、静态站与旧全局 rollback 入口(首次部署则精确恢复为不存在)作为一个兼容单元完整自动恢复。root filesystem 上的 transition marker 配合永久 systemd Caddy condition,即使进程死亡或整机重启也保持公网入口关闭;commit 后 Caddy 启动失败则绝不冒险回卷可能已承接流量的 DB。
 - 生产强制配置 GitHub Environment secret `SERVER_KNOWN_HOSTS`,缺失或不含 `SERVER_HOST` 条目即 fail closed;不存在 `ssh-keyscan`/TOFU 回退。远端 data dir 为 `0700`,DB/WAL/SHM 与 secret env 为 `0600`;成功发版后只保留一个 root-only rollback bundle。

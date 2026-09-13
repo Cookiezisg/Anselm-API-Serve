@@ -71,13 +71,11 @@ read_meta() {
 }
 
 GATEWAY_DOMAIN="$(read_meta gateway-domain)"
-SITE_DOMAIN="$(read_meta site-domain)"
 MEDIA_DOMAIN="$(read_meta media-domain)"
 ACME_EMAIL="$(read_meta acme-email)"
 RESET_UNLAUNCHED_GATEWAY_DATA="$(read_meta reset-unlaunched-gateway-data)"
 SHA="$(read_meta sha)"
 [[ "${GATEWAY_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid gateway domain"
-[[ "${SITE_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid site domain"
 [[ "${MEDIA_DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid media domain"
 [[ "${SHA}" =~ ^[0-9a-f]{12}$ ]] || die "invalid SHA"
 [[ -n "${ACME_EMAIL}" ]] || die "ACME email is empty"
@@ -126,7 +124,7 @@ WORK="${STAGE}/work"
 mkdir -m 0700 "${WORK}"
 bash "${STAGE}/render-caddy.sh" \
 	"${STAGE}/Caddyfile" "${WORK}/Caddyfile" \
-	"${GATEWAY_DOMAIN}" "${SITE_DOMAIN}" "${ACME_EMAIL}" "${MEDIA_DOMAIN}"
+	"${GATEWAY_DOMAIN}" "${ACME_EMAIL}" "${MEDIA_DOMAIN}"
 caddy validate --config "${WORK}/Caddyfile" --adapter caddyfile >/dev/null
 
 if sudo test -e "${ROLLBACK_ROOT}" || sudo test -L "${ROLLBACK_ROOT}"; then
@@ -459,11 +457,15 @@ sudo install -o root -g root -m 0644 "${STAGE}/anselm-gateway.socket" "${SOCKET_
 sudo install -o root -g root -m 0600 "${STAGE}/gateway.env" "${ENV_PATH}"
 sudo install -o root -g root -m 0644 "${WORK}/Caddyfile" "${CADDY_PATH}"
 
+# The apex domain is served by the product website on GitHub Pages since 2026-09-13;
+# Caddy no longer has a vhost for it, so a leftover static site directory from an
+# earlier release is removed. It was snapshotted into the rollback bundle above, so rolling this
+# release back still restores it together with the Caddyfile that served it.
+# apex 域名自 2026-09-13 起由 GitHub Pages 上的产品官网提供;Caddy 不再有它的 vhost,
+# 故旧版本遗留的静态站目录在此删除。上面已把它快照进回滚包,回滚本次发布时会连同当时的 Caddyfile
+# 一起恢复。
 [[ "${SITE_PATH}" == /var/www/anselm-site ]] || die "unsafe static site target"
 sudo rm -rf -- "${SITE_PATH}"
-sudo install -d -o root -g root -m 0755 "${SITE_PATH}"
-sudo install -o root -g root -m 0444 "${STAGE}/site/index.html" "${SITE_PATH}/index.html"
-sudo install -o root -g root -m 0444 "${STAGE}/site/styles.css" "${SITE_PATH}/styles.css"
 
 sudo ln -sfn "${NEW}" "${LINK}.tmp"
 sudo mv -Tf "${LINK}.tmp" "${LINK}"
@@ -572,9 +574,4 @@ if curl -fsS --max-time 15 "https://${GATEWAY_DOMAIN}/healthz" 2>/dev/null | gre
 	log "public API healthz is green"
 else
 	log "WARNING: public API probe is not green yet (deploy remains committed)"
-fi
-if curl -fsS --max-time 15 "https://${SITE_DOMAIN}/" 2>/dev/null | grep -q '<title>Anselm</title>'; then
-	log "public static site is green"
-else
-	log "WARNING: public site probe is not green yet (deploy remains committed)"
 fi
