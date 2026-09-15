@@ -92,7 +92,7 @@ Secrets：`DASHSCOPE_API_KEY`(**启动必需**——每一条路由都去这一�
 | dashboard 配置表 `Dump()`、override 基准 | `Provider.Configured()`（**未掩码**） | 它是**编辑器**：显示掩码值会诱使运营者把被掩成 0 的值「改回」8，等于把掩码写进自己的配置 |
 | 启动 `config_snapshot` 日志 | `Provider.Load()`（**掩码后**），`gateway_mode` 打头 | 该行唯一要回答的是「本进程此刻在执行什么」 |
 
-默认 `debug` 是本仓**唯一**方向上放宽的默认值（`deploy/build-stage.sh` 显式写 `GATEWAY_MODE="debug"`），理由是全新部署首先面对的是运营者自己，而被自家日限挡住的开发者看不出是十几道闸里的哪一道。启动时 debug 会额外打一条 `runtime_mode_debug` WARN 列明所有被打开的闸。**对运营者以外的人开放之前必须切 production**——它是 runtime-hot，后台改一行即可，不必重启、不必重新部署。
+loader 默认 `debug` 是本仓**唯一**方向上放宽的默认值，理由是全新裸部署首先面对的是运营者自己，而被自家日限挡住的开发者看不出是十几道闸里的哪一道；启动时 debug 会额外打一条 `runtime_mode_debug` WARN 列明所有被打开的闸。**生产发行姿态则是 production**：`deploy/build-stage.sh` 显式写 `GATEWAY_MODE="production"`，并把配给闸落成具体数值（`MONTHLY_QUOTA=5000`、`RATE_PER_MIN=20`、`DAILY_SUBLIMIT=500`、`INSTALL_GLOBAL_DAILY_CAP=500`、`INSTALL_PER_FP_DAILY=3`、`INSTALL_PER_FP_COOLDOWN_SEC=600`、`INSTALL_PER_IP_HOUR=20`、`TOKEN_ANOMALY_RPM=20`），媒体日闸见 §2 各行。开发时需要放开可在后台热切 debug（runtime-hot，不必重启），用完切回；DB overlay 覆盖 env，故后台切过的模式在重新部署后仍然生效，要以 `config_snapshot` 日志或后台 Dump 的 `gateway_mode` 为准。
 
 ## 3. startup-hard / env-only
 

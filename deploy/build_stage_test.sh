@@ -32,7 +32,8 @@ first_line="$(head -n 1 "${STAGE}/gateway.env")"
 	fail "systemd quoting did not preserve/escape secret bytes"
 
 for pair in \
-	'GATEWAY_MODE="debug"' \
+	'GATEWAY_MODE="production"' \
+	'MONTHLY_QUOTA="5000"' \
 	'GLOBAL_MONTHLY_SPEND_MICRO_USD="420000000"' \
 	'INPUT_TOKEN_CAP="0"' \
 	'MAX_TOKENS_CAP="16384"' \
@@ -51,13 +52,13 @@ for pair in \
 	'SPEECH_DAILY_LIMIT="50000"' \
 	'VIDEO_ENABLED="true"' \
 	'VIDEO_DAILY_LIMIT="10"' \
-	'RATE_PER_MIN="0"' \
-	'DAILY_SUBLIMIT="0"' \
-	'INSTALL_GLOBAL_DAILY_CAP="0"' \
-	'INSTALL_PER_FP_DAILY="0"' \
-	'INSTALL_PER_FP_COOLDOWN_SEC="0"' \
-	'INSTALL_PER_IP_HOUR="0"' \
-	'TOKEN_ANOMALY_RPM="0"'; do
+	'RATE_PER_MIN="20"' \
+	'DAILY_SUBLIMIT="500"' \
+	'INSTALL_GLOBAL_DAILY_CAP="500"' \
+	'INSTALL_PER_FP_DAILY="3"' \
+	'INSTALL_PER_FP_COOLDOWN_SEC="600"' \
+	'INSTALL_PER_IP_HOUR="20"' \
+	'TOKEN_ANOMALY_RPM="20"'; do
 	grep -Fqx "${pair}" "${STAGE}/gateway.env" || fail "missing production config: ${pair}"
 done
 # The generation origin must stay DERIVED from the credential. Pinning a region in

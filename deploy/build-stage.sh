@@ -137,27 +137,30 @@ write_env MEDIA_SIGNING_SECRET "${MEDIA_SIGNING_SECRET}"
 # from SQLite, but a fresh install is safe to expose without a later hardening
 # pass.
 #
-# GATEWAY_MODE is the rationing master switch (config.EffectiveLimits). debug opens
-# EVERY per-user gate — monthly request quota, operator spend wallet, rate bucket,
-# daily sublimit, image/speech/video daily caps, install-issuance gates, PoW — while
-# leaving body/media/memory protection and full spend accounting in place. It ships
-# debug because this gateway is still being developed against; flip it to production
-# (this file, or live from the dashboard — it is runtime-hot, no restart) before the
-# gateway serves anyone but its operator.
+# GATEWAY_MODE is the rationing master switch (config.EffectiveLimits). production
+# enforces every per-user gate below AS WRITTEN; debug masks them all open (monthly
+# request quota, operator spend wallet, rate bucket, daily sublimit, media daily caps,
+# install-issuance gates, PoW) while keeping body/media/memory protection and full
+# spend accounting. The gateway has served people other than its operator since the
+# 0.1.x desktop releases, so the shipped posture is production with the numbers below;
+# debug is a dashboard flip (runtime-hot) for a development session, never a default.
 #
-# NOTE the values below are the CURRENT posture, most of them 0 = off from the dev
-# phase. Selecting production arms them AS WRITTEN, so it is only a hardening if they
-# hold hardened numbers. The set recorded in cde6b91 ("deploy: tighten public API
-# abuse controls") was: RATE_PER_MIN=8, DAILY_SUBLIMIT=100, INSTALL_GLOBAL_DAILY_CAP=100,
-# INSTALL_PER_FP_DAILY=3, INSTALL_PER_FP_COOLDOWN_SEC=3600, TOKEN_ANOMALY_RPM=8.
+# Posture: 5,000 requests per install per month is the product promise; the daily
+# sublimit stops one runaway workflow from spending a month in a day; the 20 rpm bucket
+# leaves room for an agent's parallel tool calls; the install gates are anti-Sybil
+# coarse valves that must stay far above real daily signups, and the per-fingerprint
+# cooldown must stay short enough for the desktop client's self-heal re-registration.
 #
-# GATEWAY_MODE 是配额总闸(config.EffectiveLimits)。debug 打开**每一道**面向用户的闸——月请求额度、
-# operator 花费钱包、令牌桶、日次数子限、图/语音/视频日闸、领号闸、PoW——同时保留 body/media/内存
-# 保护与**完整记账**。默认发 debug 是因为本网关仍在自研阶段;在它开始服务运营者以外的人之前,
-# 把它切成 production(改本文件,或后台热切——它是 runtime-hot、不必重启)。
-# 注意下面这些值是**当前**姿态、多数是开发期留下的 0=关。选 production 是**照写下的值**上膛,
-# 所以只有当它们是收紧后的数字时才算收紧。cde6b91 记录的那套值见上方英文注释。
-write_env GATEWAY_MODE "debug"
+# GATEWAY_MODE 是配额总闸(config.EffectiveLimits)。production 照下面写的数值执行每一道面向用户
+# 的闸;debug 把它们全部掩开(月请求额度、operator 花费钱包、令牌桶、日次数子限、媒体日闸、领号闸、
+# PoW),同时保留 body/media/内存保护与完整记账。自 0.1.x 桌面版发布起网关已服务运营者以外的人,
+# 所以发行姿态是 production + 下列数值;debug 只是开发时在后台热切的一次性动作,不再是默认。
+#
+# 数值取舍:每 install 每月 5,000 次是产品承诺;日子限防一个失控 workflow 一天花光一个月;20 rpm
+# 给 agent 并行工具调用留余量;领号闸是防 Sybil 的粗阀,必须远高于真实日新增,fingerprint 冷却又
+# 必须短到不挡桌面端的自愈重注册。
+write_env GATEWAY_MODE "production"
+write_env MONTHLY_QUOTA "5000"
 write_env PUBLIC_MODEL_ID "anselm-auto"
 write_env MULTIMODAL_UPSTREAM_MODEL "qwen3.7-plus"
 write_env GLOBAL_MONTHLY_SPEND_MICRO_USD "420000000"
@@ -217,13 +220,13 @@ write_env VIDEO_DAILY_LIMIT "10"
 # 恒一致。它是 chat 把**相对** lease 引用绝对化后交给上游 provider 的前缀(ADR 0011)。
 write_env N_GLOBAL_CONCURRENCY "16"
 write_env QUEUE_WAIT_MS "1500"
-write_env RATE_PER_MIN "0"
-write_env DAILY_SUBLIMIT "0"
-write_env INSTALL_GLOBAL_DAILY_CAP "0"
-write_env INSTALL_PER_FP_DAILY "0"
-write_env INSTALL_PER_FP_COOLDOWN_SEC "0"
-write_env INSTALL_PER_IP_HOUR "0"
-write_env TOKEN_ANOMALY_RPM "0"
+write_env RATE_PER_MIN "20"
+write_env DAILY_SUBLIMIT "500"
+write_env INSTALL_GLOBAL_DAILY_CAP "500"
+write_env INSTALL_PER_FP_DAILY "3"
+write_env INSTALL_PER_FP_COOLDOWN_SEC "600"
+write_env INSTALL_PER_IP_HOUR "20"
+write_env TOKEN_ANOMALY_RPM "20"
 write_env TOKEN_THROTTLE_FACTOR "4"
 write_env TOKEN_THROTTLE_COOLDOWN_SEC "600"
 write_env GOMEMLIMIT_MIB "768"
