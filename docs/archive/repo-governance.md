@@ -1,13 +1,13 @@
 ---
 id: DOC-036
 type: working
-status: active
+status: superseded
 owner: @weilin
 created: 2026-07-31
 reviewed: 2026-07-31
 review-due: 2026-10-29
 audience: [human, ai]
-landed-into:
+landed-into: ../references/backend/invariants.md
 ---
 
 # 仓库治理战役 —— 执行工单（可独立交接）
