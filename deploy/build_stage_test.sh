@@ -93,6 +93,19 @@ switch_line="$(grep -nF 'sudo mv -Tf "${ROLLBACK_TOOL_TMP}" "${ROLLBACK_TOOL}"' 
 	fail "rollback-entry transaction boundaries are missing"
 (( snapshot_line < marker_line && marker_line < switch_line )) ||
 	fail "rollback entry is not snapshotted/marked/switched in crash-safe order"
+# A fresh host has no Caddy: the installer must install it before the
+# required-command check can reject the deploy, and the install must verify
+# the binary it just produced.
+ensure_call_line="$(grep -nFx 'ensure_caddy' "${INSTALL_SCRIPT}" | cut -d: -f1)"
+required_line="$(grep -nF 'for command in caddy' "${INSTALL_SCRIPT}" | cut -d: -f1)"
+[[ -n "${ensure_call_line}" && -n "${required_line}" ]] ||
+	fail "Caddy auto-install is missing"
+(( ensure_call_line < required_line )) ||
+	fail "Caddy is not installed before the required-command check"
+grep -Fq 'command -v caddy >/dev/null 2>&1 && return 0' "${INSTALL_SCRIPT}" ||
+	fail "Caddy auto-install does not skip hosts that already have Caddy"
+grep -Fq 'command -v caddy >/dev/null 2>&1 || die "Caddy installation did not produce a caddy binary"' "${INSTALL_SCRIPT}" ||
+	fail "Caddy auto-install does not verify the installed binary"
 grep -Fq 'sudo "${BUNDLE}/recovery/rollback.sh" --automatic --bundle "${BUNDLE}"' "${INSTALL_SCRIPT}" ||
 	fail "automatic restore does not use the bundle-local recovery program"
 grep -Fq 'diagnose_gateway_start_failure()' "${INSTALL_SCRIPT}" ||

@@ -89,6 +89,35 @@ for required in anselm-gateway Caddyfile anselm-caddy-deploy-guard.conf \
 done
 
 sudo -n true || die "passwordless sudo is required"
+
+# A fresh host has no Caddy yet, and the deploy is the only shell access this
+# migration has, so install it here instead of failing the deploy. This runs
+# before any state is snapshotted or mutated, so a failed install aborts the
+# deploy with the live deployment untouched. A host that already has Caddy
+# skips every apt operation, so ordinary deploys never touch the package
+# manager.
+ensure_caddy() {
+	command -v caddy >/dev/null 2>&1 && return 0
+	log "Caddy is not installed; installing it from the official Caddy repository"
+	command -v apt-get >/dev/null 2>&1 || die "apt-get is required to install Caddy"
+	export DEBIAN_FRONTEND=noninteractive
+	sudo -n apt-get update || die "failed to refresh package lists before installing Caddy"
+	sudo -n apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg ||
+		die "failed to install Caddy prerequisites"
+	curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' |
+		sudo -n gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg ||
+		die "failed to fetch the Caddy signing key"
+	curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' |
+		sudo -n tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null ||
+		die "failed to add the Caddy repository"
+	sudo -n apt-get update || die "failed to refresh package lists after adding the Caddy repository"
+	sudo -n apt-get install -y caddy || die "failed to install Caddy"
+	command -v caddy >/dev/null 2>&1 || die "Caddy installation did not produce a caddy binary"
+	log "Caddy installed: $(caddy version)"
+}
+
+ensure_caddy
+
 for command in caddy cmp curl getent groupadd sha256sum systemctl useradd; do
 	command -v "${command}" >/dev/null 2>&1 || die "required command is missing: ${command}"
 done
